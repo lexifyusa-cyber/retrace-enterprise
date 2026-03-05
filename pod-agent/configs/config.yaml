@@ -1,0 +1,46 @@
+# ReTrace — POD Agent Configuration
+# Lumena Technologies — lumenatech.io
+
+pod:
+  # POD ID - leave empty to auto-generate
+  id: ""
+  # Human-readable name for this POD
+  name: "Development POD"
+
+main_app:
+  # WebSocket URL of the main application
+  url: "ws://localhost:8001"
+  # Reconnection interval in seconds
+  reconnect_interval_seconds: 30
+
+storage:
+  # Directory for storing POD data
+  data_dir: "./pod-data"
+  
+  vector_db:
+    # Vector database type: chromadb, qdrant, faiss
+    type: "chromadb"
+    path: "./pod-data/vector.db"
+  
+  metadata_db:
+    # Metadata database type: sqlite
+    type: "sqlite"
+    path: "./pod-data/metadata.db"
+
+resources:
+  # Maximum memory usage in MB
+  max_memory_mb: 2048
+  # Maximum CPU usage percentage
+  max_cpu_percent: 50
+
+file_watcher:
+  # Enable file watching for auto-sync
+  enabled: true
+  # Debounce interval in seconds
+  debounce_seconds: 5
+
+logging:
+  # Log level: debug, info, warn, error
+  level: "info"
+  # Log format: json, console
+  format: "console"

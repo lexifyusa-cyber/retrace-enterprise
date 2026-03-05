@@ -1,0 +1,365 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ===================================================================
+   THEME DEFINITIONS
+   =================================================================== */
+
+/* Dark Theme (default — Nord-inspired) */
+:root,
+[data-theme="dark"] {
+  --rt-bg: #1e2128;
+  --rt-bg-light: #252932;
+  --rt-bg-lighter: #2e3440;
+  --rt-surface: #3b4252;
+  --rt-border: #434c5e;
+  --rt-text: #eceff4;
+  --rt-text-muted: #9ca3af;
+  --rt-primary: #88c0d0;
+  --rt-primary-dark: #5e81ac;
+  --rt-accent: #bf616a;
+  --rt-success: #a3be8c;
+  --rt-warning: #ebcb8b;
+  --rt-toast-bg: #3b4252;
+  --rt-toast-text: #eceff4;
+  --rt-toast-border: #434c5e;
+  --rt-shadow: rgba(0,0,0,0.4);
+  color-scheme: dark;
+}
+
+/* Light Theme (clean, corporate white) */
+[data-theme="light"] {
+  --rt-bg: #f8f9fc;
+  --rt-bg-light: #ffffff;
+  --rt-bg-lighter: #f1f3f9;
+  --rt-surface: #e8ecf4;
+  --rt-border: #d1d9e6;
+  --rt-text: #1a1d23;
+  --rt-text-muted: #64748b;
+  --rt-primary: #3b82f6;
+  --rt-primary-dark: #2563eb;
+  --rt-accent: #ef4444;
+  --rt-success: #22c55e;
+  --rt-warning: #f59e0b;
+  --rt-toast-bg: #ffffff;
+  --rt-toast-text: #1a1d23;
+  --rt-toast-border: #d1d9e6;
+  --rt-shadow: rgba(0,0,0,0.08);
+  color-scheme: light;
+}
+
+/* Colorful Theme (vibrant, gradient-heavy) */
+[data-theme="colorful"] {
+  --rt-bg: #0f0a1a;
+  --rt-bg-light: #16102b;
+  --rt-bg-lighter: #1e1538;
+  --rt-surface: #2a2045;
+  --rt-border: #3d2f66;
+  --rt-text: #f0eeff;
+  --rt-text-muted: #a898d4;
+  --rt-primary: #a78bfa;
+  --rt-primary-dark: #7c3aed;
+  --rt-accent: #fb7185;
+  --rt-success: #34d399;
+  --rt-warning: #fbbf24;
+  --rt-toast-bg: #2a2045;
+  --rt-toast-text: #f0eeff;
+  --rt-toast-border: #3d2f66;
+  --rt-shadow: rgba(0,0,0,0.5);
+  color-scheme: dark;
+}
+
+/* ===================================================================
+   BASE STYLES
+   =================================================================== */
+
+@layer base {
+  * {
+    border-color: var(--rt-border);
+  }
+
+  body {
+    background-color: var(--rt-bg);
+    color: var(--rt-text);
+    transition: background-color 0.3s ease, color 0.3s ease;
+  }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: var(--rt-bg-light);
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: var(--rt-border);
+    border-radius: 9999px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--rt-text-muted);
+  }
+}
+
+/* ===================================================================
+   COMPONENT STYLES
+   =================================================================== */
+
+@layer components {
+  .btn {
+    @apply px-4 py-2 rounded-lg font-medium transition-all duration-200;
+    @apply focus:outline-none focus:ring-2 focus:ring-offset-2;
+    --tw-ring-offset-color: var(--rt-bg);
+  }
+
+  .btn-primary {
+    @apply btn;
+    background-color: var(--rt-primary);
+    color: var(--rt-bg);
+    --tw-ring-color: var(--rt-primary);
+  }
+  .btn-primary:hover {
+    opacity: 0.9;
+  }
+
+  .btn-secondary {
+    @apply btn border;
+    background-color: var(--rt-surface);
+    color: var(--rt-text);
+    border-color: var(--rt-border);
+    --tw-ring-color: var(--rt-border);
+  }
+  .btn-secondary:hover {
+    background-color: var(--rt-border);
+  }
+
+  .btn-danger {
+    @apply btn;
+    background-color: var(--rt-accent);
+    color: white;
+    --tw-ring-color: var(--rt-accent);
+  }
+  .btn-danger:hover {
+    opacity: 0.9;
+  }
+
+  .card {
+    background-color: var(--rt-bg-light);
+    border: 1px solid var(--rt-border);
+    @apply rounded-xl p-6;
+  }
+
+  .input {
+    @apply w-full px-4 py-2 rounded-lg transition-all duration-200;
+    background-color: var(--rt-surface);
+    border: 1px solid var(--rt-border);
+    color: var(--rt-text);
+    --tw-ring-color: var(--rt-primary);
+  }
+  .input::placeholder {
+    color: var(--rt-text-muted);
+  }
+  .input:focus {
+    @apply outline-none ring-2 border-transparent;
+  }
+
+  .label {
+    @apply block text-sm font-medium mb-2;
+    color: var(--rt-text-muted);
+  }
+
+  .badge {
+    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
+  }
+
+  .badge-success {
+    @apply badge;
+    background-color: color-mix(in srgb, var(--rt-success) 20%, transparent);
+    color: var(--rt-success);
+  }
+
+  .badge-warning {
+    @apply badge;
+    background-color: color-mix(in srgb, var(--rt-warning) 20%, transparent);
+    color: var(--rt-warning);
+  }
+
+  .badge-error {
+    @apply badge;
+    background-color: color-mix(in srgb, var(--rt-accent) 20%, transparent);
+    color: var(--rt-accent);
+  }
+
+  .badge-info {
+    @apply badge;
+    background-color: color-mix(in srgb, var(--rt-primary) 20%, transparent);
+    color: var(--rt-primary);
+  }
+}
+
+/* ===================================================================
+   COLORFUL THEME — Extra gradient flair
+   =================================================================== */
+
+[data-theme="colorful"] .card {
+  background: linear-gradient(135deg, var(--rt-bg-light), var(--rt-bg-lighter));
+  border-color: var(--rt-border);
+}
+
+[data-theme="colorful"] .btn-primary {
+  background: linear-gradient(135deg, #a78bfa, #7c3aed);
+  color: white;
+}
+
+[data-theme="colorful"] .input {
+  background: rgba(42, 32, 69, 0.8);
+  border-color: var(--rt-border);
+}
+
+/* Light theme prose adjustments */
+[data-theme="light"] .prose code {
+  background-color: var(--rt-surface);
+}
+
+[data-theme="light"] .prose pre {
+  background-color: var(--rt-surface);
+  color: var(--rt-text);
+}
+
+/* ===================================================================
+   LIGHT THEME — Contrast fixes for badges, icons, status colors
+   =================================================================== */
+
+/* --- Status badge text: darken -400 colors to -700 for readability --- */
+[data-theme="light"] .text-emerald-400 { color: #047857 !important; }
+[data-theme="light"] .text-amber-400   { color: #b45309 !important; }
+[data-theme="light"] .text-blue-400    { color: #1d4ed8 !important; }
+[data-theme="light"] .text-red-400     { color: #b91c1c !important; }
+[data-theme="light"] .text-purple-400  { color: #7e22ce !important; }
+[data-theme="light"] .text-indigo-400  { color: #4338ca !important; }
+[data-theme="light"] .text-orange-400  { color: #c2410c !important; }
+[data-theme="light"] .text-pink-400    { color: #be185d !important; }
+[data-theme="light"] .text-violet-400  { color: #6d28d9 !important; }
+[data-theme="light"] .text-teal-400    { color: #0f766e !important; }
+[data-theme="light"] .text-cyan-400    { color: #0e7490 !important; }
+[data-theme="light"] .text-gray-300    { color: #374151 !important; }
+[data-theme="light"] .text-gray-400    { color: #4b5563 !important; }
+
+/* --- Muted icon variants: -400/60 opacity → stronger for light bg --- */
+[data-theme="light"] .text-emerald-400\/60 { color: rgba(4,120,87,0.7) !important; }
+[data-theme="light"] .text-amber-400\/60   { color: rgba(180,83,9,0.7) !important; }
+[data-theme="light"] .text-blue-400\/60    { color: rgba(29,78,216,0.7) !important; }
+[data-theme="light"] .text-red-400\/60     { color: rgba(185,28,28,0.7) !important; }
+[data-theme="light"] .text-purple-400\/60  { color: rgba(126,34,206,0.7) !important; }
+[data-theme="light"] .text-indigo-400\/60  { color: rgba(67,56,202,0.7) !important; }
+[data-theme="light"] .text-orange-400\/60  { color: rgba(194,65,12,0.7) !important; }
+
+/* --- Badge backgrounds: increase opacity from /15 to /12 for contrast --- */
+[data-theme="light"] .bg-emerald-500\/15 { background-color: rgba(16,185,129,0.12) !important; }
+[data-theme="light"] .bg-amber-500\/15   { background-color: rgba(245,158,11,0.15) !important; }
+[data-theme="light"] .bg-blue-500\/15    { background-color: rgba(59,130,246,0.12) !important; }
+[data-theme="light"] .bg-red-500\/15     { background-color: rgba(239,68,68,0.1) !important; }
+[data-theme="light"] .bg-purple-500\/15  { background-color: rgba(168,85,247,0.12) !important; }
+[data-theme="light"] .bg-indigo-500\/15  { background-color: rgba(99,102,241,0.12) !important; }
+[data-theme="light"] .bg-orange-500\/15  { background-color: rgba(249,115,22,0.12) !important; }
+
+/* --- Hover states for icon buttons --- */
+[data-theme="light"] .hover\:bg-emerald-500\/15:hover { background-color: rgba(16,185,129,0.12) !important; }
+[data-theme="light"] .hover\:bg-blue-500\/15:hover    { background-color: rgba(59,130,246,0.12) !important; }
+[data-theme="light"] .hover\:bg-red-500\/15:hover     { background-color: rgba(239,68,68,0.1) !important; }
+[data-theme="light"] .hover\:bg-purple-500\/15:hover   { background-color: rgba(168,85,247,0.12) !important; }
+[data-theme="light"] .hover\:bg-indigo-500\/15:hover   { background-color: rgba(99,102,241,0.12) !important; }
+[data-theme="light"] .hover\:bg-orange-500\/15:hover   { background-color: rgba(249,115,22,0.12) !important; }
+
+/* --- Hover text colors: darken for light --- */
+[data-theme="light"] .hover\:text-emerald-400:hover { color: #047857 !important; }
+[data-theme="light"] .hover\:text-blue-400:hover    { color: #1d4ed8 !important; }
+[data-theme="light"] .hover\:text-red-400:hover     { color: #b91c1c !important; }
+[data-theme="light"] .hover\:text-purple-400:hover   { color: #7e22ce !important; }
+[data-theme="light"] .hover\:text-indigo-400:hover   { color: #4338ca !important; }
+[data-theme="light"] .hover\:text-orange-400:hover   { color: #c2410c !important; }
+
+/* --- Code/terminal output blocks in light theme (use theme surface so text is visible) --- */
+[data-theme="light"] .bg-\[\#0d1117\] { background-color: var(--rt-surface) !important; }
+[data-theme="light"] .bg-\[\#1e293b\] { background-color: var(--rt-surface) !important; }
+
+/* --- Primary opacity backgrounds --- */
+[data-theme="light"] .bg-rt-primary\/10 { background-color: rgba(59,130,246,0.08) !important; }
+[data-theme="light"] .bg-rt-primary\/5  { background-color: rgba(59,130,246,0.05) !important; }
+
+/* --- Gradient accent for command center top bar --- */
+[data-theme="light"] .from-rt-primary { --tw-gradient-from: #3b82f6 !important; }
+
+/* --- Extra opacity variants used in some components --- */
+[data-theme="light"] .bg-emerald-500\/10 { background-color: rgba(16,185,129,0.1) !important; }
+[data-theme="light"] .bg-emerald-500\/20 { background-color: rgba(16,185,129,0.15) !important; }
+[data-theme="light"] .hover\:bg-emerald-500\/20:hover { background-color: rgba(16,185,129,0.15) !important; }
+
+/* --- Brand gradient text: darken for light theme readability --- */
+[data-theme="light"] .from-indigo-400 { --tw-gradient-from: #4338ca !important; }
+[data-theme="light"] .via-purple-400  { --tw-gradient-via: #7e22ce !important; }
+[data-theme="light"] .to-violet-400   { --tw-gradient-to: #6d28d9 !important; }
+
+/* --- Shadow adjustments for light theme cards --- */
+[data-theme="light"] .shadow-xl { box-shadow: 0 20px 25px -5px rgba(0,0,0,0.06), 0 8px 10px -6px rgba(0,0,0,0.04) !important; }
+[data-theme="light"] .shadow-lg { box-shadow: 0 10px 15px -3px rgba(0,0,0,0.06), 0 4px 6px -4px rgba(0,0,0,0.03) !important; }
+
+/* ===================================================================
+   PROSE / MARKDOWN STYLES
+   =================================================================== */
+
+.prose {
+  color: var(--rt-text);
+  @apply max-w-none;
+}
+
+.prose h1, .prose h2, .prose h3, .prose h4 {
+  @apply font-display font-semibold mt-6 mb-4;
+  color: var(--rt-text);
+}
+
+.prose h1 { @apply text-2xl; }
+.prose h2 { @apply text-xl; }
+.prose h3 { @apply text-lg; }
+
+.prose p {
+  @apply mb-4 leading-relaxed;
+}
+
+.prose ul, .prose ol {
+  @apply mb-4 pl-6;
+}
+
+.prose li {
+  @apply mb-2;
+}
+
+.prose code {
+  @apply font-mono text-sm px-1.5 py-0.5 rounded;
+  background-color: var(--rt-surface);
+}
+
+.prose pre {
+  @apply font-mono text-sm p-4 rounded-lg overflow-x-auto mb-4;
+  background-color: var(--rt-surface);
+}
+
+.prose pre code {
+  background: transparent;
+  @apply p-0;
+}
+
+.prose a {
+  color: var(--rt-primary);
+  @apply hover:underline;
+}
+
+.prose blockquote {
+  border-left: 4px solid var(--rt-primary);
+  color: var(--rt-text-muted);
+  @apply pl-4 italic;
+}

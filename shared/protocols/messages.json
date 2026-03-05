@@ -1,0 +1,227 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ReTrace WebSocket Protocol",
+  "description": "Message format specifications for Main App <-> POD Agent communication",
+  
+  "definitions": {
+    "BaseMessage": {
+      "type": "object",
+      "required": ["event", "data"],
+      "properties": {
+        "event": { "type": "string" },
+        "data": { "type": "object" }
+      }
+    },
+    
+    "RegisterMessage": {
+      "allOf": [
+        { "$ref": "#/definitions/BaseMessage" },
+        {
+          "properties": {
+            "event": { "const": "register" },
+            "data": {
+              "type": "object",
+              "required": ["pod_id", "pod_name"],
+              "properties": {
+                "pod_id": { "type": "string", "format": "uuid" },
+                "pod_name": { "type": "string" },
+                "hostname": { "type": "string" },
+                "os": { "type": "string", "enum": ["linux", "darwin", "windows"] }
+              }
+            }
+          }
+        }
+      ]
+    },
+    
+    "HeartbeatMessage": {
+      "allOf": [
+        { "$ref": "#/definitions/BaseMessage" },
+        {
+          "properties": {
+            "event": { "const": "heartbeat" },
+            "data": {
+              "type": "object",
+              "required": ["pod_id", "timestamp", "status"],
+              "properties": {
+                "pod_id": { "type": "string" },
+                "timestamp": { "type": "string", "format": "date-time" },
+                "status": { "type": "string", "enum": ["healthy", "degraded", "unhealthy"] },
+                "metrics": {
+                  "type": "object",
+                  "properties": {
+                    "cpu_usage": { "type": "number", "minimum": 0, "maximum": 1 },
+                    "memory_usage": { "type": "number", "minimum": 0, "maximum": 1 },
+                    "disk_usage": { "type": "number", "minimum": 0, "maximum": 1 }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    
+    "RPCRequest": {
+      "allOf": [
+        { "$ref": "#/definitions/BaseMessage" },
+        {
+          "properties": {
+            "event": { "const": "rpc_request" },
+            "data": {
+              "type": "object",
+              "required": ["call_id", "method", "params"],
+              "properties": {
+                "call_id": { "type": "string", "format": "uuid" },
+                "method": { 
+                  "type": "string",
+                  "enum": ["list_directory", "read_file", "start_training", "vector_search", "graph_query"]
+                },
+                "params": { "type": "object" }
+              }
+            }
+          }
+        }
+      ]
+    },
+    
+    "RPCResponse": {
+      "allOf": [
+        { "$ref": "#/definitions/BaseMessage" },
+        {
+          "properties": {
+            "event": { "const": "rpc_response" },
+            "data": {
+              "type": "object",
+              "required": ["call_id"],
+              "properties": {
+                "call_id": { "type": "string", "format": "uuid" },
+                "result": { "type": "object" },
+                "error": { "type": "string" }
+              }
+            }
+          }
+        }
+      ]
+    },
+    
+    "TrainingProgressMessage": {
+      "allOf": [
+        { "$ref": "#/definitions/BaseMessage" },
+        {
+          "properties": {
+            "event": { "const": "training_progress" },
+            "data": {
+              "type": "object",
+              "required": ["job_id", "phase", "progress", "total"],
+              "properties": {
+                "job_id": { "type": "string", "format": "uuid" },
+                "phase": { 
+                  "type": "string",
+                  "enum": ["initializing", "scanning", "processing", "embedding", "indexing", "completed"]
+                },
+                "progress": { "type": "integer", "minimum": 0 },
+                "total": { "type": "integer", "minimum": 0 },
+                "current_file": { "type": "string" }
+              }
+            }
+          }
+        }
+      ]
+    },
+    
+    "FileChangedMessage": {
+      "allOf": [
+        { "$ref": "#/definitions/BaseMessage" },
+        {
+          "properties": {
+            "event": { "const": "file_changed" },
+            "data": {
+              "type": "object",
+              "required": ["pod_id", "file_path", "change_type"],
+              "properties": {
+                "pod_id": { "type": "string" },
+                "file_path": { "type": "string" },
+                "change_type": { "type": "string", "enum": ["created", "modified", "deleted", "renamed"] },
+                "timestamp": { "type": "string", "format": "date-time" }
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  
+  "rpcMethods": {
+    "list_directory": {
+      "description": "List contents of a directory on the POD",
+      "params": {
+        "path": { "type": "string", "description": "Absolute path to list" },
+        "recursive": { "type": "boolean", "default": false },
+        "filters": {
+          "type": "object",
+          "properties": {
+            "include": { "type": "array", "items": { "type": "string" } },
+            "exclude": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      },
+      "result": {
+        "files": { "type": "array" },
+        "total_count": { "type": "integer" },
+        "total_size": { "type": "integer" }
+      }
+    },
+    
+    "read_file": {
+      "description": "Read contents of a file",
+      "params": {
+        "path": { "type": "string" },
+        "encoding": { "type": "string", "default": "utf-8" }
+      },
+      "result": {
+        "content": { "type": "string" },
+        "size": { "type": "integer" }
+      }
+    },
+    
+    "start_training": {
+      "description": "Start a training job",
+      "params": {
+        "job_id": { "type": "string" },
+        "group_id": { "type": "string" },
+        "namespace": { "type": "string" },
+        "group_type": { "type": "string" },
+        "folder_paths": { "type": "array", "items": { "type": "string" } },
+        "file_filters": { "type": "object" }
+      },
+      "result": {
+        "status": { "type": "string" },
+        "job_id": { "type": "string" }
+      }
+    },
+    
+    "vector_search": {
+      "description": "Search vector database",
+      "params": {
+        "embedding": { "type": "array", "items": { "type": "number" } },
+        "namespace_filter": { "type": "string" },
+        "top_k": { "type": "integer", "default": 10 }
+      },
+      "result": {
+        "results": { "type": "array" }
+      }
+    },
+    
+    "graph_query": {
+      "description": "Query knowledge graph",
+      "params": {
+        "entities": { "type": "array", "items": { "type": "string" } },
+        "namespace_filter": { "type": "string" }
+      },
+      "result": {
+        "entities": { "type": "array" }
+      }
+    }
+  }
+}

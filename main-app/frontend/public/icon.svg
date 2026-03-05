@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#4f46e5"/>
+      <stop offset="100%" style="stop-color:#7c3aed"/>
+    </linearGradient>
+    <linearGradient id="glow" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#818cf8"/>
+      <stop offset="100%" style="stop-color:#c084fc"/>
+    </linearGradient>
+    <linearGradient id="trace" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#e0e7ff;stop-opacity:0.4"/>
+      <stop offset="50%" style="stop-color:#a5b4fc;stop-opacity:0.7"/>
+      <stop offset="100%" style="stop-color:#c4b5fd;stop-opacity:1"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#4f46e5" flood-opacity="0.4"/>
+    </filter>
+  </defs>
+  <!-- Background with rounded square -->
+  <rect x="4" y="4" width="92" height="92" rx="22" fill="url(#bg)"/>
+  <!-- Inner glow ring -->
+  <rect x="10" y="10" width="80" height="80" rx="16" fill="none" stroke="url(#glow)" stroke-width="0.8" opacity="0.5"/>
+  <!-- Orbital trace path -->
+  <path d="M26 68 C26 36, 50 22, 68 34 C82 44, 74 64, 56 62 C42 60, 40 48, 50 42"
+        stroke="url(#trace)" stroke-width="2.5" stroke-linecap="round" fill="none" stroke-dasharray="4 3"/>
+  <!-- Trace glow dot -->
+  <circle cx="50" cy="42" r="3.5" fill="#e0e7ff" filter="url(#shadow)"/>
+  <circle cx="50" cy="42" r="1.8" fill="#fff"/>
+  <!-- Bold R letterform — high contrast white -->
+  <path d="M32 30 L32 70" stroke="#fff" stroke-width="7" stroke-linecap="round" fill="none"/>
+  <path d="M32 30 L52 30 C62 30 66 36 66 43 C66 50 62 55 52 55 L32 55"
+        stroke="#fff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <!-- R leg — bold -->
+  <path d="M50 55 L68 72" stroke="#e0e7ff" stroke-width="6" stroke-linecap="round" fill="none"/>
+  <!-- Curved return arrow (retrace!) — brighter -->
+  <path d="M68 72 C72 68, 72 62, 66 58" stroke="#c7d2fe" stroke-width="3.5" stroke-linecap="round" fill="none"/>
+  <path d="M69 62 L66 58 L62 61" stroke="#c7d2fe" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+</svg>
