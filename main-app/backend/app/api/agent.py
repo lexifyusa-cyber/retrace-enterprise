@@ -312,15 +312,31 @@ async def delete_conversation(
     conversation_id: str,
     session: AsyncSession = Depends(get_session),
 ):
-    """Delete a conversation and all its messages."""
+    """Delete a conversation, its messages, and its terminal session."""
     result = await session.execute(
         select(Conversation).where(Conversation.conversation_id == conversation_id)
     )
     convo = result.scalar_one_or_none()
     if not convo:
         raise HTTPException(status_code=404, detail="Conversation not found")
+
+    # Kill the PTY process if one is running for this conversation
+    from app.services.pty_manager import pty_manager
+    pty_manager.destroy(conversation_id)
+
     await session.delete(convo)
     return {"status": "deleted", "conversation_id": conversation_id}
+
+
+@router.get("/conversations/{conversation_id}/terminal")
+async def get_terminal_status(conversation_id: str):
+    """Check whether a PTY session is active for a conversation."""
+    from app.services.pty_manager import pty_manager
+    session = pty_manager.get(conversation_id)
+    return {
+        "active": session is not None,
+        "conversation_id": conversation_id,
+    }
 
 
 @router.post("/conversations/{conversation_id}/messages")

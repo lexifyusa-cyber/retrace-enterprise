@@ -18,6 +18,7 @@ from app.core.config import settings
 from app.core.logging import setup_logging
 from app.api import pods, groups, products, training, query, health, settings as settings_api, files as files_api
 from app.api import agent as agent_api
+from app.api import terminal_ws as terminal_ws_api
 from app.api import email as email_api
 from app.api import channels as channels_api
 from app.services.websocket_manager import websocket_manager
@@ -26,6 +27,7 @@ from app.models.automation_run import AutomationRun  # ensure table creation
 # Import models to ensure they're registered with Base
 from app.models import pod, folder_group, product, query as query_model, settings as settings_model
 from app.models import agent_session as agent_session_model  # noqa: F401  – registers AgentSession table
+from app.models import terminal_session as terminal_session_model  # noqa: F401  – registers TerminalSession table
 from app.models import sop as sop_model  # noqa: F401  – registers SOP table
 from app.models import documentation as documentation_model  # noqa: F401  – registers Documentation table
 from app.rag import models as rag_models  # noqa: F401  – registers ChunkRecord table
@@ -188,6 +190,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     
     # Shutdown
     logger.info("Shutting down ReTrace")
+    from app.services.pty_manager import pty_manager
+    pty_manager.destroy_all()
     from app.services.scheduler_service import automation_scheduler
     await automation_scheduler.stop()
     from app.services.email_poller import email_poller as _ep
@@ -240,6 +244,7 @@ app.include_router(agent_api.router, prefix="/api/v1/agent", tags=["Agent"])
 app.include_router(files_api.router, prefix="/api/v1/files", tags=["Local Files"])
 app.include_router(email_api.router, prefix="/api/v1/email", tags=["Email"])
 app.include_router(channels_api.router, prefix="/api/v1/channels", tags=["Channels"])
+app.include_router(terminal_ws_api.router, tags=["Terminal WebSocket"])
 app.include_router(email_api.product_email_router, prefix="/api/v1/products", tags=["Product Email"])
 
 # RAG product-assistant router

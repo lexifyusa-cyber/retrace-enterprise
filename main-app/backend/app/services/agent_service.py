@@ -84,8 +84,13 @@ That text becomes the final answer shown to the user.
 - Generate Python code in ```python blocks to call tools.
 - Always print() results so you can see output.
 - When done, respond with plain text (no code block) — that is your final answer.
-- Use the `search_knowledge_base` tool when you need information about the product's architecture, code, documentation, or any trained content. The tool uses intelligent keyword expansion — e.g. a search for "credentials" will also find content about passwords, authentication, tokens, etc. Be specific in your queries for best results.
-- You can call `search_knowledge_base` multiple times with different queries to gather comprehensive information.
+- You have 4 knowledge base tools. Use them strategically:
+  * `list_kb_entries` — Use FIRST to discover what the product contains (skills, files, directories). Like checking a table of contents.
+  * `search_knowledge_base` — Hybrid search for specific topics. Uses multi-query expansion, structural matching, vector similarity, and LLM re-ranking.
+  * `read_kb_file` — Read the full content of a specific file by path. Use after search or list to get complete details.
+  * `browse_kb_structure` — Browse the folder tree. Start from "/" and drill down. Like `ls` for the knowledge base.
+- When answering questions about specific features, skills, or components: start with `list_kb_entries` to see what exists, then `search_knowledge_base` for details, then `read_kb_file` for full content.
+- You can call tools multiple times with different queries to gather comprehensive information.
 - If the evidence is insufficient, say so.
 - Do NOT generate code after your final text answer.
 - Maximum {max_iterations} tool-use iterations allowed.
@@ -435,6 +440,7 @@ class AgentService:
                 product_description=product_description,
                 api_key=llm_settings.get("api_key", ""),
                 api_url=llm_settings.get("api_url"),
+                conversation_id=thread_id,
             )
             # Filter by user-disabled tools
             disabled = set((llm_settings.get("agent_tools_config") or {}).get("disabled") or [])

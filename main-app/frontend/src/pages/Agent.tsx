@@ -11,6 +11,7 @@ import ReactMarkdown from 'react-markdown'
 import toast from 'react-hot-toast'
 import { productApi, agentApi } from '@/utils/api'
 import { Product, AgentTool, Conversation } from '@/types'
+import TerminalPanel from '@/components/TerminalPanel'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -46,6 +47,9 @@ export default function Agent() {
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null)
   const [editingTitle, setEditingTitle] = useState<string | null>(null)
   const [editTitleValue, setEditTitleValue] = useState('')
+
+  // Terminal panel state
+  const [showTerminal, setShowTerminal] = useState(false)
 
   const { data: products = [] } = useQuery({
     queryKey: ['products'],
@@ -692,6 +696,19 @@ export default function Agent() {
             <div className={`w-2 h-2 rounded-full ${enabledToolsCount > 0 ? 'bg-rt-success' : 'bg-rt-warning'}`} />
             <span>{enabledToolsCount}/{tools.length} tools</span>
           </span>
+          <button
+            type="button"
+            onClick={() => setShowTerminal(prev => !prev)}
+            title={showTerminal ? 'Hide terminal' : 'Show terminal'}
+            className={`flex items-center gap-1.5 px-2 py-1 rounded-lg transition-all text-xs font-medium ${
+              showTerminal
+                ? 'bg-rt-primary/15 text-rt-primary border border-rt-primary/30'
+                : 'hover:bg-rt-surface text-rt-text-muted hover:text-rt-text border border-transparent'
+            }`}
+          >
+            <Terminal className="w-3.5 h-3.5" />
+            <span>Terminal</span>
+          </button>
           <div className="flex gap-1">
             {tools.map(t => {
               const Icon = toolIcons[t.name] || Bot
@@ -880,6 +897,13 @@ export default function Agent() {
           </div>
         )}
       </div>
+
+      {/* Terminal panel (collapsible bottom panel) */}
+      <TerminalPanel
+        conversationId={activeConversationId}
+        isVisible={showTerminal && !!activeConversationId}
+        onToggle={() => setShowTerminal(false)}
+      />
 
       {/* Input area */}
       <div className="p-8 pt-4 border-t border-rt-border bg-rt-bg-light">

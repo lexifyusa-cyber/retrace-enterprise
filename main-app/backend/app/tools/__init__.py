@@ -2,7 +2,7 @@
 ReTrace Tools Package.
 
 Provides 6 tools for the LangGraph CodeAct agent:
-  1. terminal       — Execute shell commands
+  1. terminal       — Execute shell commands (persistent PTY per conversation)
   2. read_file      — Read file contents
   3. write_file     — Write text to files
   4. basic_search   — DuckDuckGo web search
@@ -17,22 +17,34 @@ from typing import Any, Optional
 
 from langchain_core.tools import StructuredTool
 
-from app.tools.terminal import terminal
+from app.tools.terminal import terminal, make_terminal_for_conversation
 from app.tools.file_ops import read_file, write_file
 from app.tools.basic_search import basic_search
 
 
-def get_base_tools() -> list[StructuredTool]:
-    """Return the always-available tools (no extra API keys required)."""
+def get_base_tools(conversation_id: Optional[str] = None) -> list[StructuredTool]:
+    """Return the always-available tools (no extra API keys required).
+
+    When *conversation_id* is provided the terminal tool is backed by a
+    persistent PTY session (env/PATH/CWD persist across calls).  Otherwise
+    falls back to the legacy subprocess-per-call terminal.
+    """
+    if conversation_id:
+        terminal_fn = make_terminal_for_conversation(conversation_id)
+    else:
+        terminal_fn = terminal
+
     return [
         StructuredTool.from_function(
             name="terminal",
             description=(
                 "Execute a shell/terminal command on the system. "
-                "Use for running commands, checking system info, executing scripts, "
-                "managing files via CLI. Returns stdout + stderr."
+                "This is a persistent terminal session — environment variables, "
+                "PATH changes, and working directory persist across calls. "
+                "Use for running commands, installing packages, checking system info, "
+                "executing scripts, managing files via CLI. Returns stdout + stderr."
             ),
-            func=terminal,
+            func=terminal_fn,
         ),
         StructuredTool.from_function(
             name="read_file",
@@ -96,16 +108,16 @@ def get_screenops_tool(
         return None
 
 
-def get_knowledge_base_tool(
+def get_knowledge_base_tools(
     product_id: str,
     product_description: Optional[str] = None,
     api_key: str = "",
     model: str = "",
     base_url: Optional[str] = None,
-) -> StructuredTool:
-    """Return the knowledge base search tool for a specific product."""
-    from app.tools.knowledge_base import make_knowledge_base_tool
-    return make_knowledge_base_tool(
+) -> list[StructuredTool]:
+    """Return the knowledge base tools for a specific product (search, list, read, browse)."""
+    from app.tools.knowledge_base import make_knowledge_base_tools
+    return make_knowledge_base_tools(
         product_id=product_id,
         product_description=product_description,
         api_key=api_key,
@@ -124,6 +136,7 @@ def get_all_tools(
     product_description: Optional[str] = None,
     api_key: str = "",
     api_url: Optional[str] = None,
+    conversation_id: Optional[str] = None,
 ) -> list[StructuredTool]:
     """Assemble the full tool list based on available credentials.
 
@@ -137,11 +150,12 @@ def get_all_tools(
         product_description: Optional product description to include in knowledge base tool
         api_key: LLM API key (used by knowledge base query expansion)
         api_url: LLM API base URL (used by knowledge base query expansion)
+        conversation_id: Conversation ID for persistent PTY terminal session
     """
-    tools = get_base_tools()
+    tools = get_base_tools(conversation_id=conversation_id)
 
     if product_id:
-        tools.append(get_knowledge_base_tool(
+        tools.extend(get_knowledge_base_tools(
             product_id=product_id,
             product_description=product_description,
             api_key=api_key,
