@@ -12,7 +12,6 @@ interface Chunk {
   text: string
   metadata: Record<string, any>
   created_at: string | null
-  has_embedding: boolean
 }
 
 interface ChunksResponse {
@@ -291,9 +290,6 @@ function ChunkCard({ chunk }: { chunk: Chunk }) {
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-2">
             <span className="badge badge-info text-xs">{chunk.processing_type}</span>
-            {chunk.has_embedding && (
-              <span className="badge badge-success text-xs">Embedded</span>
-            )}
             {chunk.metadata?.language && (
               <span className="badge text-xs">{chunk.metadata.language}</span>
             )}

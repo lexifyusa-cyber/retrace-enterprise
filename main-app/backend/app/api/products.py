@@ -308,7 +308,7 @@ async def delete_product(
     product_id: str,
     session: AsyncSession = Depends(get_session)
 ):
-    """Delete a product and its RAG index data (ChromaDB + chunk records)."""
+    """Delete a product."""
     result = await session.execute(
         select(Product).where(Product.product_id == product_id)
     )
@@ -319,31 +319,6 @@ async def delete_product(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Product {product_id} not found"
         )
-
-    # Clear RAG index for this product (ChromaDB + chunk records) before deleting the product
-    try:
-        from app.api.settings import get_active_llm_settings
-        from app.rag.clients import OpenAIEmbeddingClient
-        from app.rag.embedding_index import EmbeddingIndexService
-
-        llm = await get_active_llm_settings(session)
-        emb_key = llm.get("embeddings_api_key") or llm.get("api_key")
-        if emb_key:
-            if llm.get("embeddings_api_key"):
-                emb_base_url = llm.get("embeddings_api_url") or None
-            else:
-                emb_base_url = llm.get("embeddings_api_url") or llm.get("api_url") or None
-            embedding_client = OpenAIEmbeddingClient(
-                api_key=emb_key,
-                base_url=emb_base_url,
-                model=llm.get("embeddings_model") or "text-embedding-3-small",
-            )
-            index = EmbeddingIndexService(embedding_client=embedding_client)
-            cleared = await index.clear_product(product_id)
-            logger.info("product_rag_cleared", product_id=product_id, chunks_cleared=cleared)
-    except Exception as exc:
-        logger.warning("product_rag_clear_failed", product_id=product_id, error=str(exc))
-        # Continue with product delete; orphaned index data can be cleaned up later
 
     await session.delete(product)
     await session.commit()
@@ -756,16 +731,8 @@ async def sync_qa_to_training(
 ):
     """Sync agent Q&A pairs into the product's training index.
 
-    Clears any previously synced Q&A chunks, then embeds and indexes
-    the provided pairs so they become searchable by the RAG pipeline.
+    Embedding-based sync is disabled. Use KB-based training instead.
     """
-    from app.api.settings import get_active_llm_settings
-    from app.db.database import async_session_maker
-    from app.rag.clients import OpenAIEmbeddingClient
-    from app.rag.embedding_index import EmbeddingIndexService
-    from app.rag.models import Chunk, ChunkMetadata, ProcessingType
-
-    # Verify product exists
     result = await session.execute(
         select(Product).where(Product.product_id == product_id)
     )
@@ -775,64 +742,10 @@ async def sync_qa_to_training(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Product {product_id} not found",
         )
-
-    # Load embedding settings
-    async with async_session_maker() as settings_session:
-        llm = await get_active_llm_settings(settings_session)
-
-    api_key = llm.get("api_key")
-    emb_key = llm.get("embeddings_api_key") or api_key
-    if not emb_key:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No embedding API key configured. Set one in Settings.",
-        )
-
-    if llm.get("embeddings_api_key"):
-        emb_base_url = llm.get("embeddings_api_url") or None
-    else:
-        emb_base_url = llm.get("embeddings_api_url") or llm.get("api_url") or None
-
-    embedding_client = OpenAIEmbeddingClient(
-        api_key=emb_key,
-        base_url=emb_base_url,
-        model=llm.get("embeddings_model") or "text-embedding-3-small",
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail="Q&A sync to embedding index is disabled. Use KB-based training.",
     )
-    index = EmbeddingIndexService(embedding_client=embedding_client)
-
-    # Clear previously synced Q&A chunks for this product (from Chroma)
-    old_paths = await index.get_source_paths_by_prefix(product_id, "agent-qa://")
-    if old_paths:
-        await index.clear_file_chunks(product_id, old_paths)
-
-    # Build chunks from Q&A pairs
-    chunks: list[Chunk] = []
-    for pair in body.qa_pairs:
-        chunks.append(
-            Chunk(
-                id=str(uuid4()),
-                source_path=f"agent-qa://{uuid4()}",
-                processing_type=ProcessingType.DOC,
-                text=f"Q: {pair.question}\n\nA: {pair.answer}",
-                metadata=ChunkMetadata(
-                    sub_category="agent-conversation",
-                    component="agent-qa",
-                    file_description=pair.question[:100],
-                ),
-            )
-        )
-
-    # Embed and index
-    indexed = await index.index_chunks(product_id, chunks)
-
-    logger.info(
-        "qa_synced_to_training",
-        product_id=product_id,
-        pairs=len(body.qa_pairs),
-        indexed=indexed,
-    )
-
-    return {"synced": indexed, "product_id": product_id}
 
 
 @router.get("/{product_id}/training-status")
@@ -891,16 +804,10 @@ async def get_training_tree(
     product_id: str,
     session: AsyncSession = Depends(get_session)
 ):
-    """Return the training data as a hierarchical tree for visualization (from Chroma).
+    """Return the training data as a hierarchical tree for visualization.
 
-    Structure: processing_type → sub_category → files (with chunk counts).
+    Returns empty tree when embedding index is not used.
     """
-    from app.api.settings import get_active_llm_settings
-    from app.db.database import async_session_maker
-    from app.rag.clients import OpenAIEmbeddingClient
-    from app.rag.embedding_index import EmbeddingIndexService
-
-    # Verify product exists
     result = await session.execute(
         select(Product).where(Product.product_id == product_id)
     )
@@ -912,93 +819,12 @@ async def get_training_tree(
             detail=f"Product {product_id} not found"
         )
 
-    async with async_session_maker() as settings_session:
-        llm = await get_active_llm_settings(settings_session)
-    api_key = llm.get("api_key") or ""
-    emb_key = llm.get("embeddings_api_key") or api_key
-    emb_base_url = llm.get("embeddings_api_url") or llm.get("api_url") or None
-    embedding_client = OpenAIEmbeddingClient(
-        api_key=emb_key,
-        base_url=emb_base_url,
-        model=llm.get("embeddings_model") or "text-embedding-3-small",
-    )
-    index = EmbeddingIndexService(embedding_client=embedding_client)
-    rows = await index.get_training_tree_data(product_id)
-
-    # Build the tree: type → sub_category → files
-    type_map: dict = {}
-    total_chunks = 0
-    total_files = 0
-
-    for ptype, path, count, sub_cat in rows:
-        total_chunks += count
-
-        if ptype not in type_map:
-            type_map[ptype] = {"chunks": 0, "files": 0, "sub_categories": {}}
-
-        type_map[ptype]["chunks"] += count
-
-        if sub_cat not in type_map[ptype]["sub_categories"]:
-            type_map[ptype]["sub_categories"][sub_cat] = {"chunks": 0, "files": []}
-
-        short_name = path.split("/")[-1] if "/" in path else path
-        type_map[ptype]["sub_categories"][sub_cat]["chunks"] += count
-        type_map[ptype]["sub_categories"][sub_cat]["files"].append({
-            "path": path,
-            "name": short_name,
-            "chunks": count,
-        })
-
-    for ptype, data in type_map.items():
-        file_count = 0
-        for sub_cat, sub_data in data["sub_categories"].items():
-            file_count += len(sub_data["files"])
-        data["files"] = file_count
-        total_files += file_count
-
-    # Build ordered tree array
-    type_order = ["expert_qa", "summary", "code", "doc", "ticket_export", "diagram_image", "doc_with_diagrams", "other"]
-    tree = []
-    for ptype in type_order:
-        if ptype in type_map:
-            sub_cats = []
-            for sub_cat, sub_data in sorted(type_map[ptype]["sub_categories"].items()):
-                sub_cats.append({
-                    "name": sub_cat,
-                    "chunks": sub_data["chunks"],
-                    "files": sorted(sub_data["files"], key=lambda f: f["name"]),
-                    "file_count": len(sub_data["files"]),
-                })
-            tree.append({
-                "type": ptype,
-                "chunks": type_map[ptype]["chunks"],
-                "file_count": type_map[ptype]["files"],
-                "sub_categories": sub_cats,
-            })
-    # Add any types not in the order list
-    for ptype in type_map:
-        if ptype not in type_order:
-            sub_cats = []
-            for sub_cat, sub_data in sorted(type_map[ptype]["sub_categories"].items()):
-                sub_cats.append({
-                    "name": sub_cat,
-                    "chunks": sub_data["chunks"],
-                    "files": sorted(sub_data["files"], key=lambda f: f["name"]),
-                    "file_count": len(sub_data["files"]),
-                })
-            tree.append({
-                "type": ptype,
-                "chunks": type_map[ptype]["chunks"],
-                "file_count": type_map[ptype]["files"],
-                "sub_categories": sub_cats,
-            })
-
     return {
         "product_id": product_id,
         "product_name": product.product_name,
-        "total_chunks": total_chunks,
-        "total_files": total_files,
-        "tree": tree,
+        "total_chunks": 0,
+        "total_files": 0,
+        "tree": [],
     }
 
 
@@ -1010,12 +836,7 @@ async def list_product_chunks(
     offset: int = 0,
     session: AsyncSession = Depends(get_session)
 ):
-    """List indexed chunks for a product (from Chroma)."""
-    from app.api.settings import get_active_llm_settings
-    from app.db.database import async_session_maker
-    from app.rag.clients import OpenAIEmbeddingClient
-    from app.rag.embedding_index import EmbeddingIndexService
-
+    """List indexed chunks for a product. Returns empty list when embedding index is not used."""
     result = await session.execute(
         select(Product).where(Product.product_id == product_id)
     )
@@ -1027,26 +848,11 @@ async def list_product_chunks(
             detail=f"Product {product_id} not found"
         )
 
-    async with async_session_maker() as settings_session:
-        llm = await get_active_llm_settings(settings_session)
-    api_key = llm.get("api_key") or ""
-    emb_key = llm.get("embeddings_api_key") or api_key
-    emb_base_url = llm.get("embeddings_api_url") or llm.get("api_url") or None
-    embedding_client = OpenAIEmbeddingClient(
-        api_key=emb_key,
-        base_url=emb_base_url,
-        model=llm.get("embeddings_model") or "text-embedding-3-small",
-    )
-    index = EmbeddingIndexService(embedding_client=embedding_client)
-    chunk_dicts, total = await index.get_chunks_list(
-        product_id, processing_type=processing_type, limit=limit, offset=offset
-    )
-
     return {
         "product_id": product_id,
         "product_name": product.product_name,
-        "total": total,
+        "total": 0,
         "limit": limit,
         "offset": offset,
-        "chunks": chunk_dicts,
+        "chunks": [],
     }

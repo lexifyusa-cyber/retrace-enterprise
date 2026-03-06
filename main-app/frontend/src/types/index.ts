@@ -72,7 +72,6 @@ export interface TrainingJob {
 export interface StepTimings {
   init_clients_ms: number
   classify_ms: number
-  vector_search_ms: number
   context_assembly_ms: number
   llm_answer_ms: number
   related_queries_ms: number

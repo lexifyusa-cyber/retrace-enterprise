@@ -25,14 +25,12 @@ class LLMSettingsModel(Base):
     model_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     provider: Mapped[str] = mapped_column(String(50), default="openai")
     
-    # Embeddings settings
-    embeddings_api_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    embeddings_api_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    embeddings_model: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    
-    # ScreenOps (Computer Use) — Anthropic API key and model for Claude coordinate finder
+    # ScreenOps (Computer Use) — URL, model, and API key for coordinate finder (OpenAI-compatible API)
+    screenops_api_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     screenops_api_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     screenops_model: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # Keyboard-only mode: seconds to wait when a mouse click is unavoidable and no coord finder
+    screenops_mouse_timeout: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=30)
 
     # Agent tools — JSON {"disabled": ["screenops", "basic_search"]} for user-enabled/disabled tools
     agent_tools_config: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -53,11 +51,10 @@ class LLMSettingsModel(Base):
             "api_key": self.api_key,
             "model_name": self.model_name,
             "provider": self.provider,
-            "embeddings_api_url": self.embeddings_api_url,
-            "embeddings_api_key": self.embeddings_api_key,
-            "embeddings_model": self.embeddings_model,
+            "screenops_api_url": self.screenops_api_url,
             "screenops_api_key": self.screenops_api_key,
             "screenops_model": self.screenops_model,
+            "screenops_mouse_timeout": self.screenops_mouse_timeout if self.screenops_mouse_timeout is not None else 30,
             "agent_tools_config": self.agent_tools_config,
             "debug_logging": bool(self.debug_logging) if self.debug_logging is not None else False,
             "max_parallel_files": self.max_parallel_files if self.max_parallel_files is not None else 1,

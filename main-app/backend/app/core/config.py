@@ -49,8 +49,6 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str = ""
     
     # Models
-    EMBEDDING_MODEL: str = "text-embedding-3-small"
-    EMBEDDING_DIMENSION: int = 1536
     REASONING_MODEL: str = "gpt-4o"
     VISION_MODEL: str = "gpt-4-vision-preview"
     

@@ -49,8 +49,7 @@ beautifulsoup4>=4.12.3
 pytesseract>=0.3.10
 pdf2image>=1.16.3
 
-# Vector/Embeddings
-chromadb>=1.0.0
+# Numerical
 numpy>=1.24.0,<2.0.0
 
 # Excel support (for ticket export processing)

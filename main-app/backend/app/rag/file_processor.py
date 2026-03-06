@@ -15,8 +15,15 @@ from uuid import uuid4
 
 import structlog
 
-from app.rag.interfaces import VisionLLMClient
+from typing import Protocol, runtime_checkable
+
 from app.rag.models import ClassifiedFile, Chunk, ChunkMetadata, ProcessingType
+
+
+@runtime_checkable
+class VisionLLMClient(Protocol):
+    """Minimal protocol for a vision-capable LLM client."""
+    async def describe_image(self, image_bytes: bytes, prompt: str) -> str: ...
 
 logger = structlog.get_logger()
 

@@ -81,6 +81,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
                 cursor.execute("ALTER TABLE llm_settings ADD COLUMN screenops_model VARCHAR(255)")
                 conn.commit()
                 print("[STARTUP] Added screenops_model column to llm_settings", flush=True)
+            if "screenops_api_url" not in cols:
+                cursor.execute("ALTER TABLE llm_settings ADD COLUMN screenops_api_url TEXT")
+                conn.commit()
+                print("[STARTUP] Added screenops_api_url column to llm_settings", flush=True)
             if "debug_logging" not in cols:
                 cursor.execute("ALTER TABLE llm_settings ADD COLUMN debug_logging INTEGER")
                 conn.commit()
@@ -89,17 +93,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
                 cursor.execute("ALTER TABLE llm_settings ADD COLUMN max_parallel_files INTEGER DEFAULT 1")
                 conn.commit()
                 print("[STARTUP] Added max_parallel_files column to llm_settings", flush=True)
+            if "screenops_mouse_timeout" not in cols:
+                cursor.execute("ALTER TABLE llm_settings ADD COLUMN screenops_mouse_timeout INTEGER DEFAULT 30")
+                conn.commit()
+                print("[STARTUP] Added screenops_mouse_timeout column to llm_settings", flush=True)
             conn.close()
     except Exception as exc:
         print(f"[STARTUP] llm_settings migration skipped: {exc}", flush=True)
-    
-    # Migrate existing embeddings from SQLite → ChromaDB (one-time, no-op if already done)
-    try:
-        from app.rag.embedding_index import migrate_sqlite_to_chroma
-        migrated = await migrate_sqlite_to_chroma()
-        print(f"[STARTUP] ChromaDB migration: {migrated} chunks", flush=True)
-    except Exception as exc:
-        print(f"[STARTUP] ChromaDB migration skipped: {exc}", flush=True)
     
     # Ensure synthetic __local__ pod exists for local filesystem browse
     try:

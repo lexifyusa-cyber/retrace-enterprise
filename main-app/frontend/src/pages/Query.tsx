@@ -659,7 +659,6 @@ function PipelineStatus({ step, message, timings }: { step: string; message: str
   const steps = [
     { id: 'init', label: 'Initialize', icon: Database, timing: timings.init_clients_ms },
     { id: 'classify', label: 'Classify Question', icon: Search, timing: timings.classify_ms },
-    { id: 'search', label: 'Targeted Search', icon: Search, timing: timings.vector_search_ms },
     { id: 'context', label: 'Context Assembly', icon: FileText, timing: timings.context_assembly_ms },
     { id: 'answer', label: 'LLM Answer', icon: Send, timing: timings.llm_answer_ms },
     { id: 'related', label: 'Related Queries', icon: Package, timing: timings.related_queries_ms },
@@ -714,7 +713,6 @@ function TimingsBreakdown({ timings }: { timings: StepTimings }) {
   const steps = [
     { label: 'Init Clients', ms: timings.init_clients_ms || 0, color: 'bg-gray-400' },
     { label: 'Classify', ms: timings.classify_ms || 0, color: 'bg-yellow-400' },
-    { label: 'Targeted Search', ms: timings.vector_search_ms || 0, color: 'bg-blue-400' },
     { label: 'Context Assembly', ms: timings.context_assembly_ms || 0, color: 'bg-green-400' },
     { label: 'LLM Answer', ms: timings.llm_answer_ms || 0, color: 'bg-purple-400' },
     { label: 'Related Queries', ms: timings.related_queries_ms || 0, color: 'bg-orange-400' },

@@ -147,59 +147,14 @@ class ChannelService:
         if not messages:
             return {"synced": 0, "message": "No new messages since last sync."}
 
-        # Build training text
-        text = _messages_to_training_text(messages, conn.channel_name)
-
-        # Ingest via the RAG embedding pipeline
-        try:
-            from app.rag.embedding_index import EmbeddingIndexService
-            from app.rag.clients import OpenAIEmbeddingClient
-            from app.api.settings import get_active_llm_settings
-
-            llm = await get_active_llm_settings(session)
-            emb_key = llm.get("embeddings_api_key") or llm.get("api_key")
-            emb_url = llm.get("embeddings_api_url") or llm.get("api_url") or None
-            emb_model = llm.get("embeddings_model") or "text-embedding-3-small"
-
-            if emb_key:
-                embedding_client = OpenAIEmbeddingClient(
-                    api_key=emb_key, base_url=emb_url, model=emb_model
-                )
-                index = EmbeddingIndexService(embedding_client=embedding_client)
-
-                chunk_size = 1500
-                chunks = [
-                    text[i : i + chunk_size] for i in range(0, len(text), chunk_size)
-                ]
-                namespace = f"channel_{conn.connection_id}"
-                for i, chunk in enumerate(chunks):
-                    await index.upsert(
-                        doc_id=f"{namespace}_{i}",
-                        text=chunk,
-                        metadata={
-                            "product_id": conn.product_id,
-                            "source": "channel",
-                            "channel_name": conn.channel_name,
-                            "platform": conn.platform,
-                            "namespace": namespace,
-                        },
-                        namespace=namespace,
-                    )
-                logger.info(
-                    "channel_history_ingested",
-                    connection_id=conn.connection_id,
-                    chunks=len(chunks),
-                    messages=len(messages),
-                )
-        except Exception as exc:
-            logger.error("channel_ingest_failed", error=str(exc))
-            return {"synced": len(messages), "error": str(exc)}
+        # Build training text (embedding ingest disabled; sync still updates last_synced_at)
+        _messages_to_training_text(messages, conn.channel_name)
 
         # Update last_synced_at
         conn.last_synced_at = datetime.utcnow()
         await session.flush()
 
-        return {"synced": len(messages), "chunks": len(chunks), "message": "Sync complete."}
+        return {"synced": len(messages), "chunks": 0, "message": "Sync complete. Embedding ingest disabled."}
 
     # ── Monitor & respond ─────────────────────────────────────────────
 

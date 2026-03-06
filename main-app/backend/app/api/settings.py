@@ -20,18 +20,17 @@ router = APIRouter()
 
 
 class LLMSettings(BaseModel):
-    """Schema for LLM settings. api_key is optional to allow partial saves (e.g. only embeddings)."""
+    """Schema for LLM settings."""
     api_url: Optional[str] = None
     api_key: Optional[str] = None
     model_name: str = Field(..., min_length=1)
     provider: str = Field(default="openai", pattern="^(openai|anthropic|custom)$")
-    # Embeddings configuration (all optional)
-    embeddings_api_url: Optional[str] = None
-    embeddings_api_key: Optional[str] = None
-    embeddings_model: Optional[str] = None
-    # ScreenOps (Computer Use) — Anthropic API key and model for Claude coordinate finder
+    # ScreenOps (Computer Use) — URL, model, and API key for coordinate finder (OpenAI-compatible)
+    screenops_api_url: Optional[str] = None
     screenops_api_key: Optional[str] = None
     screenops_model: Optional[str] = None
+    # ScreenOps keyboard-only: seconds to wait when mouse click unavoidable (5–120)
+    screenops_mouse_timeout: Optional[int] = None
     # Training: when True, pipeline logs included/excluded folders and files
     debug_logging: Optional[bool] = None
     # Training Phase 3: max files to extract in parallel (1–32, default 1)
@@ -48,11 +47,10 @@ class LLMSettingsResponse(BaseModel):
     model_name: str
     provider: str
     api_key_set: bool
-    embeddings_api_url: Optional[str] = None
-    embeddings_model: Optional[str] = None
-    embeddings_api_key_set: bool
     screenops_api_key_set: bool = False
+    screenops_api_url: Optional[str] = None
     screenops_model: Optional[str] = None
+    screenops_mouse_timeout: int = 30
     debug_logging: bool = False
     max_parallel_files: int = 1
 
@@ -150,21 +148,15 @@ async def update_llm_settings(settings_data: LLMSettings):
                 if settings_data.api_url is not None:
                     db_settings.api_url = settings_data.api_url if settings_data.api_url else None
                 
-                # Update embeddings settings - only if provided
-                if settings_data.embeddings_api_url is not None:
-                    db_settings.embeddings_api_url = settings_data.embeddings_api_url if settings_data.embeddings_api_url else None
-                
-                if settings_data.embeddings_api_key is not None:
-                    db_settings.embeddings_api_key = settings_data.embeddings_api_key if settings_data.embeddings_api_key else None
-                
-                if settings_data.embeddings_model is not None:
-                    db_settings.embeddings_model = settings_data.embeddings_model if settings_data.embeddings_model else None
-                
                 # ScreenOps API key and model — only update if provided
+                if settings_data.screenops_api_url is not None:
+                    db_settings.screenops_api_url = (settings_data.screenops_api_url or "").strip() or None
                 if settings_data.screenops_api_key is not None:
                     db_settings.screenops_api_key = settings_data.screenops_api_key if settings_data.screenops_api_key else None
                 if settings_data.screenops_model is not None:
                     db_settings.screenops_model = (settings_data.screenops_model or "").strip() or None
+                if settings_data.screenops_mouse_timeout is not None:
+                    db_settings.screenops_mouse_timeout = max(5, min(120, int(settings_data.screenops_mouse_timeout)))
                 if settings_data.debug_logging is not None:
                     db_settings.debug_logging = bool(settings_data.debug_logging)
                 if settings_data.max_parallel_files is not None:
@@ -226,11 +218,10 @@ async def update_llm_settings(settings_data: LLMSettings):
                 model_name=db_settings.model_name or app_settings.REASONING_MODEL,
                 provider=db_settings.provider or "openai",
                 api_key_set=bool(db_settings.api_key),
-                embeddings_api_url=db_settings.embeddings_api_url,
-                embeddings_model=db_settings.embeddings_model,
-                embeddings_api_key_set=bool(db_settings.embeddings_api_key),
                 screenops_api_key_set=bool(db_settings.screenops_api_key),
+                screenops_api_url=getattr(db_settings, "screenops_api_url", None),
                 screenops_model=db_settings.screenops_model,
+                screenops_mouse_timeout=int(getattr(db_settings, "screenops_mouse_timeout", 30) or 30),
                 debug_logging=bool(getattr(db_settings, "debug_logging", False)),
                 max_parallel_files=int(getattr(db_settings, "max_parallel_files", 1) or 1),
             )
@@ -254,18 +245,16 @@ async def get_llm_settings(session: AsyncSession = Depends(get_session)):
     db_settings = await get_or_create_settings(session)
     
     print(f"[GET_SETTINGS] Loaded: provider={db_settings.provider}, model={db_settings.model_name}, api_url={db_settings.api_url}", flush=True)
-    print(f"[GET_SETTINGS] Embeddings: url={db_settings.embeddings_api_url}, model={db_settings.embeddings_model}, has_key={bool(db_settings.embeddings_api_key)}", flush=True)
 
     response = LLMSettingsResponse(
         api_url=db_settings.api_url,
         model_name=db_settings.model_name or app_settings.REASONING_MODEL,
         provider=db_settings.provider or "openai",
         api_key_set=bool(db_settings.api_key or app_settings.OPENAI_API_KEY),
-        embeddings_api_url=db_settings.embeddings_api_url,
-        embeddings_model=db_settings.embeddings_model or app_settings.EMBEDDING_MODEL,
-        embeddings_api_key_set=bool(db_settings.embeddings_api_key),
         screenops_api_key_set=bool(db_settings.screenops_api_key),
+        screenops_api_url=getattr(db_settings, "screenops_api_url", None),
         screenops_model=db_settings.screenops_model,
+        screenops_mouse_timeout=int(getattr(db_settings, "screenops_mouse_timeout", 30) or 30),
         debug_logging=bool(getattr(db_settings, "debug_logging", False)),
         max_parallel_files=int(getattr(db_settings, "max_parallel_files", 1) or 1),
     )
@@ -276,7 +265,7 @@ async def get_llm_settings(session: AsyncSession = Depends(get_session)):
 
 @router.post("/llm/test", response_model=TestConnectionResponse)
 async def test_llm_connection(settings_data: LLMSettings, session: AsyncSession = Depends(get_session)):
-    """Test connectivity to both Chat and Embeddings APIs."""
+    """Test connectivity to Chat and ScreenOps APIs."""
     import time
     from openai import AsyncOpenAI
     from anthropic import AsyncAnthropic
@@ -286,8 +275,6 @@ async def test_llm_connection(settings_data: LLMSettings, session: AsyncSession 
     if not settings_data.api_key or settings_data.api_key == 'saved-key-placeholder':
         db_settings = await get_or_create_settings(session)
         settings_data.api_key = db_settings.api_key or app_settings.OPENAI_API_KEY
-        if not settings_data.embeddings_api_key:
-            settings_data.embeddings_api_key = db_settings.embeddings_api_key
         if not settings_data.screenops_api_key or settings_data.screenops_api_key == "saved-key-placeholder":
             settings_data.screenops_api_key = db_settings.screenops_api_key
     # Resolve ScreenOps placeholder when chat key was provided in form
@@ -295,12 +282,13 @@ async def test_llm_connection(settings_data: LLMSettings, session: AsyncSession 
         if db_settings is None:
             db_settings = await get_or_create_settings(session)
         settings_data.screenops_api_key = db_settings.screenops_api_key
-    # Resolve ScreenOps model from request, then DB, then default
+    # Resolve ScreenOps URL and model from request, then DB
     if db_settings is None:
         db_settings = await get_or_create_settings(session)
-    screenops_model = (settings_data.screenops_model or db_settings.screenops_model or "claude-3-haiku-20240307").strip()
+    screenops_api_url = (settings_data.screenops_api_url or getattr(db_settings, "screenops_api_url", None) or "").strip()
+    screenops_model = (settings_data.screenops_model or db_settings.screenops_model or "").strip()
 
-    results = {"chat": {}, "embeddings": {}, "screenops": {}}
+    results = {"chat": {}, "screenops": {}}
     
     # Test Chat API
     try:
@@ -344,63 +332,41 @@ async def test_llm_connection(settings_data: LLMSettings, session: AsyncSession 
             "latency_ms": 0
         }
     
-    # Test Embeddings API
-    # If a dedicated embeddings key is configured, it's a separate provider (e.g. OpenAI for embeddings)
-    # so do NOT fall back to the chat provider's URL — let it use the embeddings provider's default.
-    if settings_data.embeddings_api_key:
-        emb_key = settings_data.embeddings_api_key
-        emb_url = settings_data.embeddings_api_url or None  # Use embeddings provider default
-    else:
-        emb_key = settings_data.api_key if settings_data.provider == "openai" else None
-        emb_url = settings_data.embeddings_api_url or (settings_data.api_url if settings_data.provider == "openai" else None)
-    emb_model = settings_data.embeddings_model or app_settings.EMBEDDING_MODEL
-    
-    if emb_key:
+    # Test ScreenOps coordinate-finder API (OpenAI-compatible: URL + model + key)
+    if settings_data.screenops_api_key and (screenops_api_url or screenops_model):
+        base_url = (screenops_api_url or "https://api.openai.com/v1").rstrip("/")
+        if not base_url.startswith("http"):
+            base_url = "https://" + base_url
+        test_url = f"{base_url}/chat/completions"
         try:
+            import httpx
             start_time = time.time()
-            emb_kwargs = {"api_key": emb_key}
-            if emb_url:
-                emb_kwargs["base_url"] = emb_url
-            emb_client = AsyncOpenAI(**emb_kwargs)
-            emb_response = await emb_client.embeddings.create(
-                model=emb_model,
-                input="test"
-            )
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                r = await client.post(
+                    test_url,
+                    headers={
+                        "Authorization": f"Bearer {settings_data.screenops_api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": screenops_model or "gpt-4o-mini",
+                        "messages": [{"role": "user", "content": "Say OK"}],
+                        "max_tokens": 5,
+                    },
+                )
             latency_ms = int((time.time() - start_time) * 1000)
-            results["embeddings"] = {
-                "success": True,
-                "message": f"✅ Embeddings: {emb_response.model} (dim: {len(emb_response.data[0].embedding)})",
-                "latency_ms": latency_ms
-            }
-        except Exception as e:
-            results["embeddings"] = {
-                "success": False,
-                "message": f"❌ Embeddings: {str(e)[:100]}",
-                "latency_ms": 0
-            }
-    else:
-        results["embeddings"] = {
-            "success": False,
-            "message": "⚠️  Embeddings: Not configured",
-            "latency_ms": 0
-        }
-
-    # Test ScreenOps (Anthropic) API
-    if settings_data.screenops_api_key:
-        try:
-            start_time = time.time()
-            screenops_client = AsyncAnthropic(api_key=settings_data.screenops_api_key)
-            _ = await screenops_client.messages.create(
-                model=screenops_model,
-                max_tokens=5,
-                messages=[{"role": "user", "content": "Say OK"}],
-            )
-            latency_ms = int((time.time() - start_time) * 1000)
-            results["screenops"] = {
-                "success": True,
-                "message": "✅ ScreenOps: Anthropic key valid",
-                "latency_ms": latency_ms,
-            }
+            if r.is_success:
+                results["screenops"] = {
+                    "success": True,
+                    "message": "✅ ScreenOps: Coordinate finder API OK",
+                    "latency_ms": latency_ms,
+                }
+            else:
+                results["screenops"] = {
+                    "success": False,
+                    "message": f"❌ ScreenOps: {r.status_code} {r.text[:80]}",
+                    "latency_ms": latency_ms,
+                }
         except Exception as e:
             results["screenops"] = {
                 "success": False,
@@ -410,18 +376,16 @@ async def test_llm_connection(settings_data: LLMSettings, session: AsyncSession 
     else:
         results["screenops"] = {
             "success": False,
-            "message": "⚠️  ScreenOps: Not configured",
+            "message": "⚠️  ScreenOps: Set URL, model, and API key to test",
             "latency_ms": 0,
         }
 
     messages = [
         results["chat"].get("message", ""),
-        results["embeddings"].get("message", ""),
         results["screenops"].get("message", ""),
     ]
     total_latency = (
         results["chat"].get("latency_ms", 0)
-        + results["embeddings"].get("latency_ms", 0)
         + results["screenops"].get("latency_ms", 0)
     )
 
@@ -478,11 +442,10 @@ async def get_active_llm_settings(session: AsyncSession) -> dict:
         "api_url": db_settings.api_url,
         "model_name": db_settings.model_name or app_settings.REASONING_MODEL,
         "provider": db_settings.provider or "openai",
-        "embeddings_api_url": db_settings.embeddings_api_url,
-        "embeddings_api_key": db_settings.embeddings_api_key,
-        "embeddings_model": db_settings.embeddings_model or app_settings.EMBEDDING_MODEL,
         "screenops_api_key": db_settings.screenops_api_key,
+        "screenops_api_url": getattr(db_settings, "screenops_api_url", None),
         "screenops_model": getattr(db_settings, "screenops_model", None),
+        "screenops_mouse_timeout": max(5, min(120, int(getattr(db_settings, "screenops_mouse_timeout", 30) or 30))),
         "agent_tools_config": agent_tools_config,
         "debug_logging": bool(getattr(db_settings, "debug_logging", False)),
         "max_parallel_files": max(1, min(32, int(getattr(db_settings, "max_parallel_files", 1) or 1))),

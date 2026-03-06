@@ -92,18 +92,21 @@ def get_deep_websearch_tool(llm_client: Any, model: str) -> StructuredTool:
 
 def get_screenops_tool(
     chat_model: Any,
-    screenops_api_key: str,
+    screenops_api_key: str = "",
     screenops_model: Optional[str] = None,
+    screenops_api_url: Optional[str] = None,
+    screenops_mouse_timeout: int = 30,
 ) -> Optional[StructuredTool]:
     """Return the screenops tool if dependencies are available.
 
-    *chat_model* — LangChain ChatModel used for the vision step.
-    *screenops_api_key* — Anthropic API key for the coordinate finder.
-    *screenops_model* — Optional Anthropic model for the coordinate finder.
+    When screenops_api_key is empty the tool runs in keyboard-only mode.
     """
     try:
         from app.tools.screenops.tool import build_screenops_tool
-        return build_screenops_tool(chat_model, screenops_api_key, screenops_model)
+        return build_screenops_tool(
+            chat_model, screenops_api_key, screenops_model,
+            screenops_api_url, screenops_mouse_timeout,
+        )
     except ImportError:
         return None
 
@@ -132,6 +135,8 @@ def get_all_tools(
     chat_model: Any = None,
     screenops_api_key: str = "",
     screenops_model: Optional[str] = None,
+    screenops_api_url: Optional[str] = None,
+    screenops_mouse_timeout: int = 30,
     product_id: Optional[str] = None,
     product_description: Optional[str] = None,
     api_key: str = "",
@@ -143,9 +148,11 @@ def get_all_tools(
     Args:
         llm_client: AsyncOpenAI client for deep_websearch
         model: Model name for deep_websearch
-        chat_model: LangChain ChatModel for screenops
-        screenops_api_key: Anthropic API key for screenops
-        screenops_model: Optional Anthropic model for ScreenOps coordinate finder
+        chat_model: LangChain ChatModel for screenops (required for screenops)
+        screenops_api_key: API key for ScreenOps coordinate finder (empty = keyboard-only)
+        screenops_model: Model name for ScreenOps coordinate finder
+        screenops_api_url: Base URL for ScreenOps coordinate finder API (OpenAI-compatible)
+        screenops_mouse_timeout: Seconds to wait for manual click in keyboard-only mode
         product_id: Product ID for knowledge base tool (required for knowledge base tool)
         product_description: Optional product description to include in knowledge base tool
         api_key: LLM API key (used by knowledge base query expansion)
@@ -166,8 +173,11 @@ def get_all_tools(
     if llm_client and model:
         tools.append(get_deep_websearch_tool(llm_client, model))
 
-    if chat_model and screenops_api_key:
-        so = get_screenops_tool(chat_model, screenops_api_key, screenops_model)
+    if chat_model:
+        so = get_screenops_tool(
+            chat_model, screenops_api_key, screenops_model,
+            screenops_api_url, screenops_mouse_timeout,
+        )
         if so:
             tools.append(so)
 

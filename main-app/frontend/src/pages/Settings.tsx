@@ -12,11 +12,10 @@ interface LLMSettings {
   api_key: string
   model_name: string
   provider: 'openai' | 'anthropic' | 'custom'
-  embeddings_api_url?: string | null
-  embeddings_api_key?: string | null
-  embeddings_model?: string | null
+  screenops_api_url?: string | null
   screenops_api_key?: string | null
   screenops_model?: string | null
+  screenops_mouse_timeout?: number | null
   debug_logging?: boolean | null
   max_parallel_files?: number | null
 }
@@ -26,11 +25,10 @@ interface LLMSettingsResponse {
   model_name: string
   provider: string
   api_key_set: boolean
-  embeddings_api_url: string | null
-  embeddings_model: string | null
-  embeddings_api_key_set: boolean
   screenops_api_key_set: boolean
+  screenops_api_url?: string | null
   screenops_model?: string | null
+  screenops_mouse_timeout?: number
   debug_logging?: boolean
   max_parallel_files?: number
 }
@@ -51,11 +49,10 @@ export default function Settings() {
   const [apiKey, setApiKey] = useState('')
   const [modelName, setModelName] = useState('gpt-4o')
   const [provider, setProvider] = useState<'openai' | 'anthropic' | 'custom'>('openai')
-  const [embeddingsUrl, setEmbeddingsUrl] = useState('')
-  const [embeddingsKey, setEmbeddingsKey] = useState('')
-  const [embeddingsModel, setEmbeddingsModel] = useState('text-embedding-3-small')
+  const [screenopsUrl, setScreenopsUrl] = useState('')
   const [screenopsKey, setScreenopsKey] = useState('')
-  const [screenopsModel, setScreenopsModel] = useState('claude-sonnet-4-5-20250929')
+  const [screenopsModel, setScreenopsModel] = useState('gpt-4o-mini')
+  const [screenopsMouseTimeout, setScreenopsMouseTimeout] = useState(30)
   const [debugLogging, setDebugLogging] = useState(false)
   const [maxParallelFiles, setMaxParallelFiles] = useState(1)
   const [testResult, setTestResult] = useState<{ success: boolean; message: string; latency_ms?: number } | null>(null)
@@ -157,9 +154,9 @@ export default function Settings() {
       setApiUrl(currentSettings.api_url || '')
       setModelName(currentSettings.model_name || 'gpt-4o')
       setProvider((currentSettings.provider || 'openai') as any)
-      setEmbeddingsUrl(currentSettings.embeddings_api_url || '')
-      setEmbeddingsModel(currentSettings.embeddings_model || 'text-embedding-3-small')
-      setScreenopsModel(currentSettings.screenops_model || 'claude-sonnet-4-5-20250929')
+      setScreenopsUrl(currentSettings.screenops_api_url || '')
+      setScreenopsModel(currentSettings.screenops_model || 'gpt-4o-mini')
+      setScreenopsMouseTimeout(Math.max(5, Math.min(120, currentSettings.screenops_mouse_timeout ?? 30)))
       setDebugLogging(currentSettings.debug_logging ?? false)
       setMaxParallelFiles(Math.max(1, Math.min(32, currentSettings.max_parallel_files ?? 1)))
       // Note: API keys are not loaded from server for security
@@ -169,7 +166,7 @@ export default function Settings() {
   // Save settings
   const saveMutation = useMutation({
     mutationFn: async (data: LLMSettings) => {
-      console.log('Sending save request...', { ...data, api_key: '***', embeddings_api_key: data.embeddings_api_key ? '***' : undefined })
+      console.log('Sending save request...', { ...data, api_key: '***' })
       try {
         const response = await api.post('/settings/llm', data, {
           timeout: 10000 // 10 second timeout
@@ -185,7 +182,6 @@ export default function Settings() {
       console.log('Save successful, refetching settings')
       // Clear password fields
       setApiKey('')
-      setEmbeddingsKey('')
       setScreenopsKey('')
       
       // Invalidate and wait for refetch to complete
@@ -204,7 +200,7 @@ export default function Settings() {
   // Test connection
   const testMutation = useMutation({
     mutationFn: async (data: LLMSettings) => {
-      console.log('Testing connection with:', { ...data, api_key: '***', embeddings_api_key: data.embeddings_api_key ? '***' : undefined })
+      console.log('Testing connection with:', { ...data, api_key: '***' })
       const response = await api.post('/settings/llm/test', data)
       console.log('Test response:', response.data)
       return response.data
@@ -412,10 +408,10 @@ export default function Settings() {
       return
     }
     // Allow save when user entered at least one key, or when at least one key is already configured (partial save)
-    const hasKeyInput = apiKey.trim() || embeddingsKey.trim() || screenopsKey.trim()
-    const hasKeyConfigured = currentSettings?.api_key_set || currentSettings?.embeddings_api_key_set || currentSettings?.screenops_api_key_set
+    const hasKeyInput = apiKey.trim() || screenopsKey.trim()
+    const hasKeyConfigured = currentSettings?.api_key_set || currentSettings?.screenops_api_key_set
     if (!hasKeyInput && !hasKeyConfigured) {
-      toast.error('Enter at least one API key (Chat, Embeddings, or ScreenOps) to save')
+      toast.error('Enter at least one API key (Chat or ScreenOps) to save')
       return
     }
 
@@ -432,18 +428,10 @@ export default function Settings() {
     } else {
       payload.api_url = null
     }
-    if (embeddingsUrl.trim()) {
-      payload.embeddings_api_url = embeddingsUrl.trim()
+    if (screenopsUrl.trim()) {
+      payload.screenops_api_url = screenopsUrl.trim()
     } else {
-      payload.embeddings_api_url = null
-    }
-    if (embeddingsModel.trim()) {
-      payload.embeddings_model = embeddingsModel.trim()
-    } else {
-      payload.embeddings_model = null
-    }
-    if (embeddingsKey.trim()) {
-      payload.embeddings_api_key = embeddingsKey.trim()
+      payload.screenops_api_url = null
     }
     if (screenopsKey.trim()) {
       payload.screenops_api_key = screenopsKey.trim()
@@ -453,13 +441,14 @@ export default function Settings() {
     } else {
       payload.screenops_model = null
     }
+    payload.screenops_mouse_timeout = Math.max(5, Math.min(120, screenopsMouseTimeout))
     payload.debug_logging = debugLogging
     payload.max_parallel_files = Math.max(1, Math.min(32, maxParallelFiles))
 
     console.log('Saving settings with payload:', {
       ...payload,
       api_key: payload.api_key ? '***' + payload.api_key.slice(-4) : 'not sent',
-      embeddings_api_key: payload.embeddings_api_key ? '***' + payload.embeddings_api_key.slice(-4) : 'not sent',
+      screenops_api_url: payload.screenops_api_url || '(not set)',
       screenops_api_key: payload.screenops_api_key ? '***' : 'not sent',
     })
     saveMutation.mutate(payload)
@@ -491,7 +480,6 @@ export default function Settings() {
     // Use placeholder if no key in form but key is saved
     // Backend will use the saved key
     const testApiKey = apiKey.trim() || 'saved-key-placeholder'
-    const testEmbeddingsKey = embeddingsKey.trim() || null
     const testScreenopsKey = screenopsKey.trim() || (currentSettings?.screenops_api_key_set ? 'saved-key-placeholder' : null)
 
     if (!apiKey.trim() && currentSettings?.api_key_set) {
@@ -506,11 +494,10 @@ export default function Settings() {
       api_key: testApiKey,
       model_name: modelName,
       provider,
-      embeddings_api_url: embeddingsUrl.trim() || null,
-      embeddings_api_key: testEmbeddingsKey,
-      embeddings_model: embeddingsModel.trim() || null,
+      screenops_api_url: screenopsUrl.trim() || null,
       screenops_api_key: testScreenopsKey,
       screenops_model: screenopsModel.trim() || null,
+      screenops_mouse_timeout: screenopsMouseTimeout,
     })
   }
 
@@ -891,50 +878,6 @@ export default function Settings() {
               </div>
             </div>
 
-            {/* Embeddings Configuration (Optional) */}
-            <div className="border-t border-rt-border pt-4 mt-4">
-              <div className="flex items-center justify-between mb-3">
-                <label className="label mb-0">Embeddings API (Optional)</label>
-                <span className="text-xs text-rt-text-muted">Separate from chat model</span>
-              </div>
-              
-              <div className="space-y-3 bg-rt-surface/30 rounded-lg p-3">
-                <input
-                  type="text"
-                  className="input"
-                  placeholder="https://api.openai.com/v1 (leave empty to use main API)"
-                  value={embeddingsUrl}
-                  onChange={(e) => setEmbeddingsUrl(e.target.value)}
-                />
-                
-                <input
-                  type="text"
-                  className="input"
-                  placeholder="text-embedding-3-small"
-                  value={embeddingsModel}
-                  onChange={(e) => setEmbeddingsModel(e.target.value)}
-                />
-                
-                <input
-                  type="password"
-                  className="input font-mono"
-                  placeholder="API key (leave empty to use main key)"
-                  value={embeddingsKey}
-                  onChange={(e) => setEmbeddingsKey(e.target.value)}
-                />
-                {currentSettings?.embeddings_api_key_set && !embeddingsKey && (
-                  <p className="text-xs text-rt-success flex items-center gap-1">
-                    <CheckCircle className="w-3 h-3" />
-                    Embeddings API key is configured (enter new key to update)
-                  </p>
-                )}
-                <p className="text-xs text-rt-text-muted">
-                  💡 If your chat provider doesn't support embeddings (e.g., X.AI, Anthropic), 
-                  configure OpenAI here for embeddings while using your provider for chat.
-                </p>
-              </div>
-            </div>
-
             {/* ScreenOps Configuration */}
             <div className="border-t border-rt-border pt-4 mt-4">
               <div className="flex items-center gap-2 mb-3">
@@ -944,11 +887,21 @@ export default function Settings() {
               
               <div className="space-y-3 bg-rt-surface/30 rounded-lg p-3">
                 <div>
+                  <label className="label text-xs mb-1 block">API URL</label>
+                  <input
+                    type="text"
+                    className="input font-mono text-sm"
+                    placeholder="https://api.openai.com/v1"
+                    value={screenopsUrl}
+                    onChange={(e) => setScreenopsUrl(e.target.value)}
+                  />
+                </div>
+                <div>
                   <label className="label text-xs mb-1 block">Model name</label>
                   <input
                     type="text"
                     className="input"
-                    placeholder="claude-sonnet-4-5-20250929"
+                    placeholder="gpt-4o-mini"
                     value={screenopsModel}
                     onChange={(e) => setScreenopsModel(e.target.value)}
                   />
@@ -957,8 +910,8 @@ export default function Settings() {
                   <label className="label text-xs mb-1 block">API Key</label>
                   <input
                     type="password"
-                  className="input font-mono"
-                    placeholder="sk-ant-... (Anthropic API key for Claude coordinate finder)"
+                    className="input font-mono"
+                    placeholder="API key for coordinate finder"
                     value={screenopsKey}
                     onChange={(e) => setScreenopsKey(e.target.value)}
                   />
@@ -969,9 +922,28 @@ export default function Settings() {
                     ScreenOps API key is configured (enter new key to update)
                   </p>
                 )}
-                <p className="text-xs text-rt-text-muted">
-                  Required for the Agent's screen automation tool (ScreenOps). Uses Anthropic's Claude
-                  for precise coordinate finding. The chat model handles vision/planning.
+                <div className="border-t border-rt-border/50 pt-3 mt-3">
+                  <div className="flex items-center gap-3">
+                    <label htmlFor="screenops-mouse-timeout" className="label text-xs whitespace-nowrap mb-0">Mouse wait timeout</label>
+                    <input
+                      id="screenops-mouse-timeout"
+                      type="number"
+                      className="input w-20 text-center"
+                      min={5}
+                      max={120}
+                      value={screenopsMouseTimeout}
+                      onChange={(e) => setScreenopsMouseTimeout(Math.max(5, Math.min(120, Number(e.target.value) || 30)))}
+                    />
+                    <span className="text-xs text-rt-text-muted">seconds</span>
+                  </div>
+                  <p className="text-xs text-rt-text-muted mt-1">
+                    When running in keyboard-only mode (no API configured above), if a mouse click
+                    is unavoidable the agent waits this long for you to click manually, then stops.
+                  </p>
+                </div>
+                <p className="text-xs text-rt-text-muted mt-3">
+                  ScreenOps works in keyboard-only mode without the above API. Configure URL + model + key
+                  to enable mouse coordinate finding for fully automated screen operations.
                 </p>
               </div>
             </div>
@@ -988,7 +960,7 @@ export default function Settings() {
                   <li>Answer generation with citations</li>
                   <li>Vision analysis for diagrams (if supported)</li>
                   <li>Agent tool planning and execution</li>
-                  <li>ScreenOps vision analysis (coordinate finding uses Anthropic)</li>
+                  <li>ScreenOps vision analysis (coordinate finder uses your configured URL + model + key)</li>
                 </ul>
               </div>
             </div>

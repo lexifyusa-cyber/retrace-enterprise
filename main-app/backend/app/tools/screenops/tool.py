@@ -2,8 +2,8 @@
 ScreenOps tool builder for the ReTrace agent.
 
 Ported from IQWorksAtlas screenops/tool.py.  Creates the vision invoker
-(using ReTrace's configured chat model via LangChain) and the
-Anthropic coordinate finder invoker (using the screenops_api_key from settings).
+(using ReTrace's configured chat model via LangChain) and a configurable
+coordinate finder invoker (URL + model + API key, OpenAI-compatible API).
 """
 
 import base64
@@ -14,7 +14,7 @@ import os
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional, Tuple
+from typing import Any, Callable, Optional, Tuple
 
 from langchain_core.tools import StructuredTool
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -323,21 +323,18 @@ def _make_xai_vision_invoker(model: Any):
 
 
 # ---------------------------------------------------------------------------
-# Coordinate finder invoker — always uses Anthropic Claude via direct API
+# Coordinate finder invoker — OpenAI-compatible API (URL + model + API key)
 # ---------------------------------------------------------------------------
 
-ANTHROPIC_COORD_MODEL = "claude-sonnet-4-5-20250929"
-
+_DEFAULT_COORD_API_URL = "https://api.openai.com/v1"
 _MAX_IMAGE_LONGEST_SIDE = 1280
 
 
 def _resize_screenshot_for_coord_finder(screenshot_base64: str) -> tuple[str, int, int]:
     """Resize a screenshot so the longest side is <= _MAX_IMAGE_LONGEST_SIDE.
 
-    Anthropic silently resizes images to ~1568px max before Claude sees them,
-    but the model then can't accurately place pixel coords in the original
-    (much larger) coordinate space.  By resizing ourselves we guarantee the
-    model sees exactly the dimensions we state in the prompt.
+    Ensures the model sees exactly the dimensions we state in the prompt
+    for accurate pixel coordinates.
 
     Returns (resized_b64, resized_w, resized_h).
     """
@@ -362,14 +359,19 @@ def _resize_screenshot_for_coord_finder(screenshot_base64: str) -> tuple[str, in
     return resized_b64, new_w, new_h
 
 
-def _make_anthropic_coordinate_finder_invoker(api_key: str, model: Optional[str] = None):
-    """Build coordinate_finder_invoker using Anthropic API with native image format."""
-    coord_model = (model or "").strip() or ANTHROPIC_COORD_MODEL
+def _make_coordinate_finder_invoker(
+    api_url: str, model: str, api_key: str
+) -> Callable[..., Tuple[dict, dict]]:
+    """Build coordinate_finder_invoker using an OpenAI-compatible API (URL + model + key)."""
+    base_url = (api_url or _DEFAULT_COORD_API_URL).strip().rstrip("/")
+    if not base_url.startswith("http"):
+        base_url = "https://" + base_url
+    coord_model = (model or "gpt-4o-mini").strip()
+    endpoint = f"{base_url}/chat/completions"
 
     def invoker(screenshot_base64, target_description, screen_width, screen_height, image_width, image_height, **kwargs):
-        import anthropic
+        import httpx
 
-        # Resize the screenshot so Claude sees the exact dimensions we state
         resized_b64, resized_w, resized_h = _resize_screenshot_for_coord_finder(screenshot_base64)
 
         _debug_log("coord_finder",
@@ -387,42 +389,56 @@ def _make_anthropic_coordinate_finder_invoker(api_key: str, model: Optional[str]
             image_height=resized_h,
             match_agent_prompt=True,
         )
-
-        client = anthropic.Anthropic(api_key=api_key)
-
-        content = [
-            {
-                "type": "image",
-                "source": {"type": "base64", "media_type": "image/png", "data": resized_b64},
-            },
-            {"type": "text", "text": f"Find: {target_description}"},
-        ]
-
         system_text = prompt + COORDINATE_FINDER_CACHE_PADDING
-        system_blocks = [{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}]
 
-        response = client.messages.create(
-            model=coord_model,
-            system=system_blocks,
-            messages=[{"role": "user", "content": content}],
-            max_tokens=150,
-        )
+        payload = {
+            "model": coord_model,
+            "messages": [
+                {"role": "system", "content": system_text},
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{resized_b64}"},
+                        },
+                        {"type": "text", "text": f"Find: {target_description}"},
+                    ],
+                },
+            ],
+            "max_tokens": 150,
+        }
+
+        try:
+            with httpx.Client(timeout=60.0) as client:
+                r = client.post(
+                    endpoint,
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                )
+            r.raise_for_status()
+            data = r.json()
+        except Exception as e:
+            logger.warning("coord_finder_request_failed", endpoint=endpoint, error=str(e))
+            return {}, {}
 
         text = ""
-        if response.content:
-            for block in response.content:
-                if getattr(block, "type", None) == "text":
-                    text = getattr(block, "text", "")
-                    break
-
         usage = {}
-        if hasattr(response, "usage") and response.usage:
-            u = response.usage
-            inp = getattr(u, "input_tokens", 0) or 0
-            out = getattr(u, "output_tokens", 0) or 0
-            usage = {"prompt_tokens": inp, "completion_tokens": out, "total_tokens": inp + out}
+        choice = (data.get("choices") or [None])[0]
+        if choice and isinstance(choice.get("message"), dict):
+            text = (choice["message"].get("content") or "").strip()
+        if data.get("usage"):
+            u = data["usage"]
+            usage = {
+                "prompt_tokens": u.get("input_tokens", u.get("prompt_tokens", 0)),
+                "completion_tokens": u.get("output_tokens", u.get("completion_tokens", 0)),
+                "total_tokens": u.get("total_tokens", 0),
+            }
+            usage["total_tokens"] = usage["total_tokens"] or usage["prompt_tokens"] + usage["completion_tokens"]
 
-        # Parse coordinates (in resized-image space)
         coords = {}
         clean_text = text.strip()
         if clean_text.startswith("```"):
@@ -447,20 +463,14 @@ def _make_anthropic_coordinate_finder_invoker(api_key: str, model: Optional[str]
                    screen=f"{screen_width}x{screen_height}",
                    raw_parsed=coords)
 
-        # Scale coordinates from resized-image space → screen space
         if coords.get("x") is not None and coords.get("y") is not None:
             cx, cy = float(coords["x"]), float(coords["y"])
-
-            # Safeguard: if model returned normalized floats (0.0–1.0), convert
             if 0.0 < cx <= 1.0 and 0.0 < cy <= 1.0:
                 px = int(round(cx * screen_width))
                 py = int(round(cy * screen_height))
-                _debug_log("coord_finder",
-                           target=target_description,
-                           normalized_to_screen=(cx, cy, px, py))
+                _debug_log("coord_finder", target=target_description, normalized_to_screen=(cx, cy, px, py))
                 coords = {"x": px, "y": py}
             else:
-                # Coords are in resized-image pixel space → scale to screen
                 scale_x = screen_width / resized_w
                 scale_y = screen_height / resized_h
                 px = int(round(cx * scale_x))
@@ -469,14 +479,10 @@ def _make_anthropic_coordinate_finder_invoker(api_key: str, model: Optional[str]
                            target=target_description,
                            resized_to_screen=(cx, cy, resized_w, resized_h, scale_x, scale_y, px, py))
                 coords = {"x": px, "y": py}
-
             coords["x"] = max(0, min(coords["x"], screen_width - 1))
             coords["y"] = max(0, min(coords["y"], screen_height - 1))
 
-        _debug_log("coord_finder",
-                   target=target_description,
-                   final_screen_coords=coords)
-
+        _debug_log("coord_finder", target=target_description, final_screen_coords=coords)
         return coords, usage
 
     return invoker
@@ -488,16 +494,20 @@ def _make_anthropic_coordinate_finder_invoker(api_key: str, model: Optional[str]
 
 def build_screenops_tool(
     chat_model: Any,
-    screenops_api_key: str,
+    screenops_api_key: str = "",
     screenops_model: Optional[str] = None,
+    screenops_api_url: Optional[str] = None,
+    screenops_mouse_timeout: int = 30,
 ) -> Optional[StructuredTool]:
     """Build the ScreenOps StructuredTool.
 
-    *chat_model* — LangChain ChatModel for the vision step.
-    *screenops_api_key* — Anthropic API key for the coordinate finder.
-    *screenops_model* — Optional Anthropic model for the coordinate finder (default from ANTHROPIC_COORD_MODEL).
+    *chat_model* — LangChain ChatModel for the vision step (required).
+    *screenops_api_key* — API key for the coordinate finder (empty = keyboard-only mode).
+    *screenops_model* — Model name for the coordinate finder.
+    *screenops_api_url* — Base URL for the coordinate finder API (OpenAI-compatible).
+    *screenops_mouse_timeout* — Seconds to wait for manual click in keyboard-only mode.
     """
-    if not chat_model or not screenops_api_key:
+    if not chat_model:
         return None
 
     if _is_xai_model(chat_model):
@@ -509,13 +519,25 @@ def build_screenops_tool(
     else:
         model_invoker = _make_vision_invoker(chat_model)
 
-    coordinate_finder_invoker = _make_anthropic_coordinate_finder_invoker(screenops_api_key, screenops_model)
+    keyboard_only = not bool(screenops_api_key)
+    coordinate_finder_invoker = None
+    if not keyboard_only:
+        api_url = (screenops_api_url or _DEFAULT_COORD_API_URL).strip()
+        model_name = (screenops_model or "gpt-4o-mini").strip()
+        coordinate_finder_invoker = _make_coordinate_finder_invoker(api_url, model_name, screenops_api_key)
+
+    if keyboard_only:
+        logger.info("ScreenOps: keyboard-only mode (no coordinate finder API configured)")
+
+    mouse_timeout = max(5, min(120, screenops_mouse_timeout))
 
     def run_screenops(task: str) -> str:
         out = run_screen_workflow(
             task=task,
             model_invoker=model_invoker,
             coordinate_finder_invoker=coordinate_finder_invoker,
+            keyboard_only=keyboard_only,
+            mouse_timeout=mouse_timeout,
             max_steps=10,
         )
         return json.dumps({
@@ -523,12 +545,19 @@ def build_screenops_tool(
             "iterations": out.get("iterations"),
         })
 
+    desc = (
+        "Perform screen-based computer operations: open apps, type text, "
+        "use keyboard shortcuts. Pass the user's request verbatim as the "
+        "task argument. Requires a visible desktop."
+    )
+    if keyboard_only:
+        desc += (
+            " Running in keyboard-only mode — prefer keyboard shortcuts "
+            "(Tab, Enter, arrow keys, Cmd/Ctrl+...) over mouse clicks."
+        )
+
     return StructuredTool.from_function(
         name="screenops",
-        description=(
-            "Perform screen-based computer operations: open apps, click UI elements, "
-            "type text, use keyboard shortcuts. Pass the user's request verbatim as "
-            "the task argument. Requires a visible desktop."
-        ),
+        description=desc,
         func=run_screenops,
     )

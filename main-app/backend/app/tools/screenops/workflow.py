@@ -16,8 +16,11 @@ from typing import Any, Callable
 _SCREENOPS_SCREENSHOTS_DIR = Path(__file__).resolve().parent.parent.parent.parent / "screenops_screenshots"
 _DEBUG_LOG_PATH = Path(__file__).resolve().parent.parent.parent.parent / "screenops_debug.log"
 
+from typing import Optional
+
 from app.tools.screenops.prompts import (
     get_system_prompt_default_v2,
+    get_system_prompt_keyboard_only,
     get_user_prompt_first,
     get_user_prompt_next,
 )
@@ -146,10 +149,16 @@ def _extract_fallback(text: str) -> list[dict]:
 def run_screen_workflow(
     task: str,
     model_invoker: Callable[..., tuple[str, dict]],
-    coordinate_finder_invoker: Callable[..., tuple[dict, dict]],
+    coordinate_finder_invoker: Optional[Callable[..., tuple[dict, dict]]] = None,
+    keyboard_only: bool = False,
+    mouse_timeout: int = 30,
     max_steps: int = 10,
 ) -> dict[str, Any]:
     """Run the ScreenOps agentic loop.
+
+    When *keyboard_only* is True (or *coordinate_finder_invoker* is None),
+    keyboard shortcuts are preferred and unavoidable clicks trigger a wait
+    of *mouse_timeout* seconds before ending.
 
     Returns ``{"result": str, "token_usage": {"main": {}, "sub_sonnet": {}}, "iterations": int}``.
     """
@@ -158,9 +167,13 @@ def run_screen_workflow(
     result_text = ""
     observed_description = ""
     step = 0
+    _keyboard_only = keyboard_only or coordinate_finder_invoker is None
 
     try:
-        system_prompt = get_system_prompt_default_v2(task)
+        if _keyboard_only:
+            system_prompt = get_system_prompt_keyboard_only(task)
+        else:
+            system_prompt = get_system_prompt_default_v2(task)
         messages: list[dict] = []
         _debug_log("workflow", event="start", task=task, max_steps=max_steps)
 
@@ -243,41 +256,62 @@ def run_screen_workflow(
                     _debug_log("workflow", event="done", step=step, result_len=len(result_text), had_observe=bool(observed_description))
                     return {"result": result_text, "token_usage": {"main": main_usage, "sub_sonnet": sub_usage}, "iterations": step}
 
-                # Click — resolve coordinates via coordinate finder when we have a target description.
-                # Always use the coordinate finder for target_description; ignore any x,y from the vision model.
-                if action == "click" and op.get("target_description"):
-                    target = op["target_description"]
-                    op.pop("x", None)
-                    op.pop("y", None)
-                    fallback_x = max(1, min(scr_w - 2, scr_w // 2))
-                    fallback_y = max(1, min(scr_h - 2, scr_h // 2))
+                # Click handling
+                if action == "click":
+                    target = op.get("target_description", "")
 
-                    try:
-                        coords, coord_usage = coordinate_finder_invoker(
-                            screenshot_base64=b64,
-                            target_description=target,
-                            screen_width=scr_w,
-                            screen_height=scr_h,
-                            image_width=img_w,
-                            image_height=img_h,
+                    if _keyboard_only:
+                        logger.info(
+                            "Keyboard-only mode: click requested on '%s'. "
+                            "Waiting %ds for manual click...", target, mouse_timeout
                         )
-                        sub_usage = merge_usage(sub_usage, _normalize_usage(coord_usage))
-                        logger.info("Coord finder returned screen-space coords: %s for screen %dx%d", coords, scr_w, scr_h)
+                        _debug_log("workflow", event="keyboard_only_click_wait",
+                                   step=step, target=target, timeout=mouse_timeout)
+                        time.sleep(mouse_timeout)
+                        result_text = (
+                            f"Keyboard-only mode: a mouse click on \"{target}\" was required "
+                            f"but no coordinate finder is configured. Waited {mouse_timeout}s. "
+                            "Please configure the ScreenOps API (URL + model + key) in Settings "
+                            "for mouse operations, or perform the click manually and retry."
+                        )
+                        return {
+                            "result": result_text,
+                            "token_usage": {"main": main_usage, "sub_sonnet": sub_usage},
+                            "iterations": step,
+                        }
 
-                        if isinstance(coords, dict) and coords.get("x") is not None and coords.get("y") is not None:
-                            xi, yi = int(coords["x"]), int(coords["y"])
-                            if xi == 0 and yi == 0:
-                                logger.warning("Coord finder returned (0,0), using fallback center")
-                                op["x"], op["y"] = fallback_x, fallback_y
+                    if target:
+                        op.pop("x", None)
+                        op.pop("y", None)
+                        fallback_x = max(1, min(scr_w - 2, scr_w // 2))
+                        fallback_y = max(1, min(scr_h - 2, scr_h // 2))
+
+                        try:
+                            coords, coord_usage = coordinate_finder_invoker(
+                                screenshot_base64=b64,
+                                target_description=target,
+                                screen_width=scr_w,
+                                screen_height=scr_h,
+                                image_width=img_w,
+                                image_height=img_h,
+                            )
+                            sub_usage = merge_usage(sub_usage, _normalize_usage(coord_usage))
+                            logger.info("Coord finder returned screen-space coords: %s for screen %dx%d", coords, scr_w, scr_h)
+
+                            if isinstance(coords, dict) and coords.get("x") is not None and coords.get("y") is not None:
+                                xi, yi = int(coords["x"]), int(coords["y"])
+                                if xi == 0 and yi == 0:
+                                    logger.warning("Coord finder returned (0,0), using fallback center")
+                                    op["x"], op["y"] = fallback_x, fallback_y
+                                else:
+                                    op["x"] = max(0, min(xi, scr_w - 1))
+                                    op["y"] = max(0, min(yi, scr_h - 1))
                             else:
-                                op["x"] = max(0, min(xi, scr_w - 1))
-                                op["y"] = max(0, min(yi, scr_h - 1))
-                        else:
-                            logger.warning("Coord finder returned no valid coords: %s, using fallback", coords)
+                                logger.warning("Coord finder returned no valid coords: %s, using fallback", coords)
+                                op["x"], op["y"] = fallback_x, fallback_y
+                        except Exception as e:
+                            logger.error("Coord finder exception: %s", e, exc_info=True)
                             op["x"], op["y"] = fallback_x, fallback_y
-                    except Exception as e:
-                        logger.error("Coord finder exception: %s", e, exc_info=True)
-                        op["x"], op["y"] = fallback_x, fallback_y
 
                 exec_summary = {k: v for k, v in op.items() if k != "target_description" or len(str(v)) < 200}
                 _debug_log("workflow", event="execute_op", step=step, op=exec_summary)

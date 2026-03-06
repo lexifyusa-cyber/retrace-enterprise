@@ -97,7 +97,7 @@ or if not visible:
 {{"x": null, "y": null}}
 """
 
-# Padding to reach Anthropic minimum cacheable length (~1024 tokens)
+# Padding to reach minimum prompt length for caching (e.g. ~1024 tokens)
 _CACHE_PAD = "For prompt cache eligibility (min 1024 tokens). "
 COORDINATE_FINDER_CACHE_PADDING = "\n\n" + (_CACHE_PAD * 70)
 VISION_CACHE_PADDING = "\n\n" + (_CACHE_PAD * 70)
@@ -111,9 +111,63 @@ def _os_strings():
     return '[\"win\"]', '"ctrl"', "Linux"
 
 
+SYSTEM_PROMPT_KEYBOARD_ONLY = """
+You are operating a {operating_system} computer using KEYBOARD ONLY. You do NOT have mouse/click capability.
+
+From looking at the screen, the objective, and your previous actions, take the next best series of action.
+
+You have 4 possible operation actions. Your output will be used in a `json.loads` statement.
+
+1. write - Type text with your keyboard
+```
+[{{"thought": "write a thought here", "operation": "write", "content": "text to write here"}}]
+```
+2. press - Use keyboard shortcuts or individual keys. ALWAYS prefer keyboard navigation:
+   - {cmd_string}+Space → open Spotlight / search
+   - Tab / Shift+Tab → move between fields and UI elements
+   - Enter / Return → confirm / open
+   - Arrow keys → navigate menus and lists
+   - {cmd_string}+W → close window, {cmd_string}+Q → quit app
+   - {cmd_string}+Tab → switch apps
+   - Escape → cancel / close dialog
+```
+[{{"thought": "write a thought here", "operation": "press", "keys": ["keys to use"]}}]
+```
+3. observe - Describe what you see on the screen. Use when the objective asks to read, describe, or extract information. Put the FULL detailed description in the "description" field.
+```
+[{{"thought": "write a thought here", "operation": "observe", "description": "Full detailed description..."}}]
+```
+4. done - The objective is completed
+```
+[{{"thought": "write a thought here", "operation": "done", "summary": "summary of what was completed", "chat_response": "A friendly 2-3 sentence message explaining what was accomplished"}}]
+```
+
+CRITICAL RULES:
+- You CANNOT click. Do NOT use the "click" operation. Use keyboard shortcuts and Tab/Enter navigation instead.
+- If a task absolutely requires a mouse click and there is no keyboard alternative, use "done" and explain that the step requires a mouse click which is not available in keyboard-only mode.
+- If the objective asks you to DESCRIBE, READ, or REPORT, use "observe" first, then "done".
+- When using "done", include a "chat_response" field.
+- Only use "done" when the ENTIRE objective is completed or when stuck because a mouse click is required.
+
+Return the actions in array format `[]`. You can take one or multiple actions.
+
+Objective: {objective}
+"""
+
+
 def get_system_prompt_default_v2(objective: str) -> str:
     os_search_str, cmd_string, operating_system = _os_strings()
     return SYSTEM_PROMPT_DEFAULT_V2.format(
+        objective=objective,
+        cmd_string=cmd_string,
+        os_search_str=os_search_str,
+        operating_system=operating_system,
+    )
+
+
+def get_system_prompt_keyboard_only(objective: str) -> str:
+    os_search_str, cmd_string, operating_system = _os_strings()
+    return SYSTEM_PROMPT_KEYBOARD_ONLY.format(
         objective=objective,
         cmd_string=cmd_string,
         os_search_str=os_search_str,

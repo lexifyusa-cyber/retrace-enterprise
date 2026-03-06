@@ -436,6 +436,8 @@ class AgentService:
                 chat_model=chat_model,
                 screenops_api_key=llm_settings.get("screenops_api_key", ""),
                 screenops_model=llm_settings.get("screenops_model"),
+                screenops_api_url=llm_settings.get("screenops_api_url"),
+                screenops_mouse_timeout=int(llm_settings.get("screenops_mouse_timeout", 30) or 30),
                 product_id=product_id,
                 product_description=product_description,
                 api_key=llm_settings.get("api_key", ""),

@@ -190,14 +190,12 @@ async def list_agent_tools(
     from app.api.settings import get_active_llm_settings
 
     llm = await get_active_llm_settings(session)
-    has_screenops_key = bool(llm.get("screenops_api_key"))
-    # ScreenOps also needs pyautogui/Pillow; tool builder returns None if import fails
     try:
         from app.tools.screenops.execution import pyautogui, Image
         has_screenops_deps = pyautogui is not None and Image is not None
     except Exception:
         has_screenops_deps = False
-    screenops_available = has_screenops_key and has_screenops_deps
+    screenops_available = has_screenops_deps
 
     # Load disabled tools from saved config
     disabled_set: set[str] = set()
@@ -412,47 +410,14 @@ async def learn_qa(
     data: LearnThisRequest,
     session: AsyncSession = Depends(get_session),
 ):
-    """Train a Q&A pair as expert-verified knowledge."""
-    from app.rag.models import Chunk, ChunkMetadata, ProcessingType
-    from app.rag.embedding_index import EmbeddingIndexService
-    from app.rag.clients import get_embedding_client
-    from app.api.settings import get_active_llm_settings
+    """Train a Q&A pair as expert-verified knowledge.
 
-    llm_settings = await get_active_llm_settings(session)
-    emb_client = get_embedding_client(llm_settings)
-    index_service = EmbeddingIndexService(emb_client)
-
-    qa_text = f"Question: {data.question}\n\nAnswer: {data.answer}"
-
-    chunk_id = str(uuid4())
-    chunk = Chunk(
-        id=chunk_id,
-        source_path=f"expert_qa/{chunk_id[:8]}.md",
-        processing_type=ProcessingType.EXPERT_QA,
-        text=qa_text,
-        metadata=ChunkMetadata(
-            sub_category="expert_verified",
-            concepts=_extract_key_phrases(data.question),
-            component="agent_conversation",
-            feature="learn_this",
-            file_description=f"Expert Q&A: {data.question[:100]}",
-        ),
+    Embedding-based Learn This is disabled. Use KB-based training instead.
+    """
+    raise HTTPException(
+        status_code=501,
+        detail="Learn This (embedding-based Q&A training) is disabled. Use KB-based training.",
     )
-
-    indexed = await index_service.index_chunks(
-        product_id=data.product_id,
-        chunks=[chunk],
-    )
-
-    logger.info(
-        "learn_this_saved",
-        product_id=data.product_id,
-        chunk_id=chunk_id,
-        question_len=len(data.question),
-        answer_len=len(data.answer),
-    )
-
-    return {"status": "learned", "chunk_id": chunk_id, "indexed": indexed}
 
 
 # ---------------------------------------------------------------------------

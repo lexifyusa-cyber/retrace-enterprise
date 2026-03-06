@@ -11,8 +11,7 @@ from sqlalchemy import select, update
 
 from app.models.product import Product
 from app.api.settings import get_active_llm_settings
-from app.rag.clients import OpenAIEmbeddingClient
-from app.rag.embedding_index import EmbeddingIndexService
+from app.rag.kb_search import search_kb
 from app.core.config import settings
 
 logger = structlog.get_logger()
@@ -49,54 +48,19 @@ async def generate_product_description(
             logger.warning("no_api_key_for_description_generation", product_id=product_id)
             return None
         
-        # Build embedding client to search knowledge base
-        emb_key = llm_settings.get("embeddings_api_key") or api_key
-        if not emb_key:
-            logger.warning("no_embedding_key_for_description", product_id=product_id)
-            return None
-        
-        emb_base = llm_settings.get("embeddings_api_url") or (
-            llm_settings.get("api_url") if not llm_settings.get("embeddings_api_key") else None
-        )
-        
-        embedding_client = OpenAIEmbeddingClient(
-            api_key=emb_key,
-            base_url=emb_base,
-            model=llm_settings.get("embeddings_model") or "text-embedding-3-small",
-        )
-        index = EmbeddingIndexService(embedding_client=embedding_client)
-        
-        # Search for summary chunks and key information
-        summary_chunks = await index.search(
-            product_id=product_id,
+        # Search knowledge base (KB-based, no embeddings)
+        context = await search_kb(
             query=f"What is {product.product_name}? Describe its purpose, features, and architecture.",
-            top_k=10,
-            filters={"processing_types": ["summary"]},
+            product_id=product_id,
+            api_key=api_key,
+            model=llm_settings.get("model_name") or settings.REASONING_MODEL,
+            base_url=llm_settings.get("api_url"),
+            top_k=15,
         )
         
-        # Also get some general chunks if summaries are sparse
-        if len(summary_chunks) < 5:
-            general_chunks = await index.search(
-                product_id=product_id,
-                query=f"Overview of {product.product_name} features and components",
-                top_k=15,
-            )
-            # Combine, prioritizing summaries
-            all_chunks = summary_chunks + [c for c in general_chunks if c not in summary_chunks]
-        else:
-            all_chunks = summary_chunks
-        
-        if not all_chunks:
+        if not context or "No knowledge base" in context or "No relevant" in context:
             logger.warning("no_chunks_found_for_description", product_id=product_id)
             return None
-        
-        # Build context from chunks
-        context_parts = []
-        for chunk in all_chunks[:15]:  # Limit to top 15
-            chunk_text = chunk.text[:800] if hasattr(chunk, "text") else str(chunk)[:800]
-            context_parts.append(chunk_text)
-        
-        context = "\n\n".join(context_parts)
         
         # Generate description using LLM
         from openai import AsyncOpenAI

@@ -357,7 +357,7 @@ function ProductCard({
               <div className="flex items-center gap-3">
                 <AlertTriangle className="w-4 h-4 text-red-400" />
                 <span className="text-sm text-red-400">
-                  {failMeta?.message || 'Training failed. Check your LLM and Embedding API keys in Settings.'}
+                  {failMeta?.message || 'Training failed. Check your LLM API key in Settings.'}
                 </span>
               </div>
               {failLogs && failLogs.length > 0 && (
@@ -411,7 +411,7 @@ function ProductCard({
               {hasIndexingIssue && (
                 <div className="mb-3 p-2 bg-yellow-500/10 border border-yellow-500/20 rounded text-xs text-yellow-400 flex items-center gap-2">
                   <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
-                  <span>{chunksCreated.toLocaleString()} datasets created but 0 indexed — check your Embedding API key in Settings and re-train.</span>
+                  <span>{chunksCreated.toLocaleString()} datasets created but 0 indexed — check Settings and re-train.</span>
                 </div>
               )}
               

@@ -39,96 +39,61 @@ class QueryService:
     # ------------------------------------------------------------------
 
     async def _init_clients(self, session: AsyncSession):
-        """Return (llm_settings, embedding_index, llm_client, model, classifier)."""
+        """Return (llm_settings, llm_client, model, classifier)."""
         from app.api.settings import get_active_llm_settings
-        from app.rag.clients import OpenAIEmbeddingClient
-        from app.rag.embedding_index import EmbeddingIndexService
         from app.rag.query_classifier import QueryClassifier
 
         llm = await get_active_llm_settings(session)
+        api_key = llm.get("api_key")
+        if not api_key:
+            raise RuntimeError("No LLM API key configured. Set one in Settings.")
 
-        emb_key = llm.get("embeddings_api_key") or llm.get("api_key")
-        if not emb_key:
-            raise RuntimeError("No embedding API key configured. Set one in Settings.")
-
-        if llm.get("embeddings_api_key"):
-            emb_base_url = llm.get("embeddings_api_url") or None
-        else:
-            emb_base_url = llm.get("embeddings_api_url") or llm.get("api_url") or None
-
-        embedding_client = OpenAIEmbeddingClient(
-            api_key=emb_key,
-            base_url=emb_base_url,
-            model=llm.get("embeddings_model") or "text-embedding-3-small",
-        )
-        index = EmbeddingIndexService(embedding_client=embedding_client)
         llm_client = self._build_llm_client(llm)
         model = llm.get("model_name") or settings.REASONING_MODEL
 
         classifier = QueryClassifier(client=llm_client, model=model)
 
-        return llm, index, llm_client, model, classifier
+        return llm, llm_client, model, classifier
 
     # ------------------------------------------------------------------
     # Multi-pass search
     # ------------------------------------------------------------------
 
-    async def _routed_search(self, index, product_ids, question, plan):
-        """Execute multi-pass search based on the query plan.
+    async def _kb_search(self, llm, product_ids, question) -> list:
+        """Execute KB search for each product and return chunk-like objects for the pipeline."""
+        from types import SimpleNamespace
+        from app.rag.kb_search import search_kb
 
-        Pass 1 – primary types + sub-categories (high top_k, component-filtered)
-        Pass 2 – primary types without sub-category filter (catch broader matches)
-        Pass 3 – secondary types (lower top_k, broader)
-        Pass 4 – summary chunks (always, for context)
-        De-duplicate by chunk ID.
-        """
-        seen_ids: set[str] = set()
+        api_key = llm.get("api_key")
+        model = llm.get("model_name") or settings.REASONING_MODEL
+        base_url = llm.get("api_url") or None
+
         all_chunks = []
-
-        async def _search(types, top_k, component=None, sub_categories=None, label=""):
-            for pid in product_ids:
-                filters: dict = {}
-                if types:
-                    filters["processing_types"] = types
-                if component:
-                    filters["component"] = component
-                if sub_categories:
-                    filters["sub_categories"] = sub_categories
-
-                for query_text in plan.search_queries:
-                    chunks = await index.search(
-                        product_id=pid,
-                        query=query_text,
-                        top_k=top_k,
-                        filters=filters if filters else None,
+        for pid in product_ids:
+            try:
+                result = await search_kb(
+                    query=question,
+                    product_id=pid,
+                    api_key=api_key,
+                    model=model,
+                    base_url=base_url,
+                    top_k=15,
+                )
+                if result and "No knowledge base" not in result and "No relevant" not in result:
+                    chunk = SimpleNamespace(
+                        id=f"kb_{pid}",
+                        text=result,
+                        source_path="knowledge_base",
+                        processing_type=SimpleNamespace(value="doc"),
+                        metadata=SimpleNamespace(
+                            score=1.0,
+                            component="",
+                            model_dump=lambda exclude_none=True: {},
+                        ),
                     )
-                    for c in chunks:
-                        if c.id not in seen_ids:
-                            seen_ids.add(c.id)
-                            all_chunks.append(c)
-
-        primary = plan.primary_types or ["summary", "code", "doc"]
-        component = plan.component if plan.component else None
-        sub_cats = plan.sub_categories if plan.sub_categories else None
-        primary_k = 8 if plan.strategy == "specific" else 12
-
-        # Pass 1: primary types + sub-categories + component (most targeted)
-        if sub_cats:
-            await _search(primary, primary_k, component=component, sub_categories=sub_cats, label="primary_targeted")
-
-        # Pass 2: primary types + component, no sub-category filter (broader)
-        await _search(primary, primary_k, component=component, sub_categories=None, label="primary_broad")
-
-        # Pass 3: secondary types, no component filter
-        if plan.secondary_types:
-            await _search(plan.secondary_types, 5, component=None, label="secondary")
-
-        # Pass 4: always grab summaries (for context)
-        if "summary" not in primary and "summary" not in (plan.secondary_types or []):
-            await _search(["summary"], 5, component=component, label="summary_fallback")
-
-        # Sort by score descending
-        all_chunks.sort(key=lambda c: c.metadata.score or 0, reverse=True)
+                    all_chunks.append(chunk)
+            except Exception as exc:
+                logger.warning("kb_search_failed", product_id=pid, error=str(exc))
 
         return all_chunks
 
@@ -148,19 +113,19 @@ class QueryService:
 
         # 0. Init
         t0 = time.time()
-        llm, index, llm_client, model, classifier = await self._init_clients(session)
+        llm, llm_client, model, classifier = await self._init_clients(session)
         timings["init_clients_ms"] = _ms_since(t0)
 
-        # 1. Classify
+        # 1. Classify (for logging/plan; KB search uses question directly)
         t0 = time.time()
         components = await classifier.get_available_components(product_ids)
         plan = await classifier.classify(question, available_components=components)
         timings["classify_ms"] = _ms_since(t0)
 
-        # 2. Multi-pass search
+        # 2. KB search
         t0 = time.time()
-        all_chunks = await self._routed_search(index, product_ids, question, plan)
-        timings["vector_search_ms"] = _ms_since(t0)
+        all_chunks = await self._kb_search(llm, product_ids, question)
+        timings["kb_search_ms"] = _ms_since(t0)
 
         logger.info(
             "query_retrieval_done",
@@ -232,7 +197,7 @@ class QueryService:
             # 0. Init
             yield _sse("status", {"step": "init", "message": "Initializing..."})
             t0 = time.time()
-            llm, index, llm_client, model, classifier = await self._init_clients(session)
+            llm, llm_client, model, classifier = await self._init_clients(session)
             timings["init_clients_ms"] = _ms_since(t0)
             yield _sse("timings", {"init_clients_ms": timings["init_clients_ms"]})
 
@@ -250,15 +215,12 @@ class QueryService:
                 "strategy": plan.strategy,
             })
 
-            # 2. Multi-pass search
-            search_msg = f"Searching {', '.join(plan.primary_types)}"
-            if plan.component:
-                search_msg += f" in '{plan.component}'"
-            yield _sse("status", {"step": "search", "message": search_msg + "..."})
+            # 2. KB search
+            yield _sse("status", {"step": "search", "message": "Searching knowledge base..."})
             t0 = time.time()
-            all_chunks = await self._routed_search(index, product_ids, question, plan)
-            timings["vector_search_ms"] = _ms_since(t0)
-            yield _sse("timings", {"vector_search_ms": timings["vector_search_ms"]})
+            all_chunks = await self._kb_search(llm, product_ids, question)
+            timings["kb_search_ms"] = _ms_since(t0)
+            yield _sse("timings", {"kb_search_ms": timings["kb_search_ms"]})
 
             # 3. Assemble context
             yield _sse("status", {"step": "context", "message": f"Assembling context from {len(all_chunks)} chunks..."})

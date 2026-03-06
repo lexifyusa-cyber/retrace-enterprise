@@ -147,29 +147,9 @@ class QueryClassifier:
             )
 
     async def get_available_components(self, product_ids: list[str]) -> list[str]:
-        """Fetch distinct component values from ChromaDB for the given products.
+        """Return distinct component values for the given products.
 
-        Used to provide hints to the classifier.
+        Previously read from ChromaDB; now returns an empty list since
+        embeddings have been removed.
         """
-        from app.rag.embedding_index import _get_collection
-        import asyncio
-
-        components: set[str] = set()
-        collection = _get_collection()
-
-        for pid in product_ids:
-            try:
-                results = await asyncio.to_thread(
-                    collection.get,
-                    where={"product_id": pid},
-                    include=["metadatas"],
-                )
-                if results and results["metadatas"]:
-                    for meta in results["metadatas"]:
-                        comp = meta.get("component", "")
-                        if comp and comp.strip():
-                            components.add(comp.strip().lower())
-            except Exception:
-                pass
-
-        return sorted(components)
+        return []
