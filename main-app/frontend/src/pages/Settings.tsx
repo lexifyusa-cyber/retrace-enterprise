@@ -18,6 +18,7 @@ interface LLMSettings {
   screenops_api_key?: string | null
   screenops_model?: string | null
   debug_logging?: boolean | null
+  max_parallel_files?: number | null
 }
 
 interface LLMSettingsResponse {
@@ -31,6 +32,7 @@ interface LLMSettingsResponse {
   screenops_api_key_set: boolean
   screenops_model?: string | null
   debug_logging?: boolean
+  max_parallel_files?: number
 }
 
 const api = axios.create({ baseURL: '/api/v1' })
@@ -55,6 +57,7 @@ export default function Settings() {
   const [screenopsKey, setScreenopsKey] = useState('')
   const [screenopsModel, setScreenopsModel] = useState('claude-sonnet-4-5-20250929')
   const [debugLogging, setDebugLogging] = useState(false)
+  const [maxParallelFiles, setMaxParallelFiles] = useState(1)
   const [testResult, setTestResult] = useState<{ success: boolean; message: string; latency_ms?: number } | null>(null)
   const [layoutThemeExpanded, setLayoutThemeExpanded] = useState(false)
   const [llmExpanded, setLlmExpanded] = useState(false)
@@ -158,6 +161,7 @@ export default function Settings() {
       setEmbeddingsModel(currentSettings.embeddings_model || 'text-embedding-3-small')
       setScreenopsModel(currentSettings.screenops_model || 'claude-sonnet-4-5-20250929')
       setDebugLogging(currentSettings.debug_logging ?? false)
+      setMaxParallelFiles(Math.max(1, Math.min(32, currentSettings.max_parallel_files ?? 1)))
       // Note: API keys are not loaded from server for security
     }
   }, [currentSettings])
@@ -450,6 +454,7 @@ export default function Settings() {
       payload.screenops_model = null
     }
     payload.debug_logging = debugLogging
+    payload.max_parallel_files = Math.max(1, Math.min(32, maxParallelFiles))
 
     console.log('Saving settings with payload:', {
       ...payload,
@@ -850,10 +855,10 @@ export default function Settings() {
               )}
             </div>
 
-            {/* Training — Debug logging */}
+            {/* Training — Debug logging + Max parallel files */}
             <div className="border-t border-rt-border pt-4 mt-4">
               <h4 className="text-xs font-semibold text-rt-text-muted uppercase tracking-wide mb-3">Training</h4>
-              <div className="flex items-start gap-3">
+              <div className="flex items-start gap-3 mb-4">
                 <input
                   type="checkbox"
                   id="debug-logging"
@@ -867,6 +872,22 @@ export default function Settings() {
                     When enabled, training logs list which folders and files are included or excluded by the LLM.
                   </p>
                 </div>
+              </div>
+              <div className="flex items-center gap-3">
+                <label htmlFor="max-parallel-files" className="label whitespace-nowrap">Max parallel files</label>
+                <select
+                  id="max-parallel-files"
+                  value={maxParallelFiles}
+                  onChange={(e) => setMaxParallelFiles(Number(e.target.value))}
+                  className="input w-24"
+                >
+                  {[1, 2, 4, 8, 16, 32].map((n) => (
+                    <option key={n} value={n}>{n}</option>
+                  ))}
+                </select>
+                <p className="text-xs text-rt-text-muted">
+                  Number of files to extract at once in Phase 3 (higher = faster, more CPU).
+                </p>
               </div>
             </div>
 

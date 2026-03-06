@@ -73,6 +73,7 @@ class TrainingPipeline:
         on_progress: ProgressCallback = None,
         force_full: bool = False,
         debug_logging: bool = False,
+        max_parallel_files: int = 1,
     ) -> dict:
         """Execute the full 4-phase pipeline. Returns a stats dict."""
         _logs: list[str] = []
@@ -289,41 +290,59 @@ class TrainingPipeline:
             "image_files_skipped": len(image_files),
         })
         t0 = time.time()
+        total_files = len(text_files)
+        workers = max(1, min(32, max_parallel_files))
+        sem = asyncio.Semaphore(workers)
+        phase3_done = 0
+        phase3_lock = asyncio.Lock()
 
-        for idx, fnode in enumerate(text_files):
-            _check_cancelled()
+        def _ocr_progress(msg):
+            _log(f"    {msg}")
+
+        async def extract_one(fnode: TreeNode) -> None:
+            nonlocal phase3_done
             short = "/".join(fnode.path.split("/")[-2:])
             size_str = _human_size(fnode.size_bytes)
-            remaining = len(text_files) - idx - 1
+            async with sem:
+                _check_cancelled()
+                t_file = time.time()
+                await asyncio.to_thread(
+                    self.extractor.extract, fnode, _ocr_progress
+                )
+                elapsed_file = time.time() - t_file
+            async with phase3_lock:
+                phase3_done += 1
+                remaining = total_files - phase3_done
+                _log(
+                    f"  [{phase3_done}/{total_files}] {short} — "
+                    f"{fnode.extraction_chars:,} chars in {_fmt(elapsed_file)}"
+                )
+                if fnode.extraction_method == "failed":
+                    _log(f"    ⚠️ Extraction failed for {short}")
+                elif fnode.extraction_method == "ocr":
+                    _log(
+                        f"    ✓ OCR extracted {fnode.extraction_chars:,} chars "
+                        f"in {_fmt(elapsed_file)}"
+                    )
+                await _report({
+                    "phase": "phase3",
+                    "message": (
+                        f"Phase 3: [{phase3_done}/{total_files}] "
+                        f"{short} — {remaining} left"
+                    ),
+                    "current_file": fnode.path,
+                    "files_extracted": phase3_done,
+                    "files_total": total_files,
+                })
 
-            _log(f"  [{idx + 1}/{len(text_files)}] Extracting {short} "
-                 f"({fnode.content_type}, {size_str}) — {remaining} remaining")
+        if total_files > 0:
             await _report({
                 "phase": "phase3",
-                "message": (
-                    f"Phase 3: [{idx + 1}/{len(text_files)}] "
-                    f"Extracting {short} ({size_str}) — {remaining} left"
-                ),
-                "current_file": fnode.path,
-                "files_extracted": idx,
-                "files_total": len(text_files),
+                "message": f"Phase 3: Extracting {total_files} files (up to {workers} in parallel)…",
+                "files_extracted": 0,
+                "files_total": total_files,
             })
-
-            t_file = time.time()
-
-            def _ocr_progress(msg):
-                _log(f"    {msg}")
-
-            self.extractor.extract(fnode, on_progress=_ocr_progress)
-            elapsed_file = time.time() - t_file
-
-            if fnode.extraction_method == "failed":
-                _log(f"    ⚠️ Extraction failed for {short}")
-            elif fnode.extraction_method == "ocr":
-                _log(f"    ✓ OCR extracted {fnode.extraction_chars:,} chars "
-                     f"in {_fmt(elapsed_file)}")
-            elif elapsed_file > 2:
-                _log(f"    ✓ {fnode.extraction_chars:,} chars in {_fmt(elapsed_file)}")
+            await asyncio.gather(*[extract_one(fnode) for fnode in text_files])
 
         timings["phase3"] = time.time() - t0
         stats_e = self.extractor.stats
@@ -595,6 +614,7 @@ async def run_product_training(
 
         pipeline = TrainingPipeline(filter_service=filter_service)
         debug_logging = bool(llm.get("debug_logging", False))
+        max_parallel_files = max(1, min(32, int(llm.get("max_parallel_files", 1) or 1)))
 
         stats = await pipeline.run(
             product_id=product_id,
@@ -604,6 +624,7 @@ async def run_product_training(
             on_progress=_write_progress,
             force_full=force_full,
             debug_logging=debug_logging,
+            max_parallel_files=max_parallel_files,
         )
 
         # Mark groups as completed

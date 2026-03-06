@@ -210,12 +210,32 @@ class TextExtractorService:
             return ""
 
     def _extract_pdf_text(self, path: str) -> str:
+        # Prefer PyMuPDF (faster); fall back to pdfplumber
+        try:
+            import fitz  # pymupdf
+        except ImportError:
+            fitz = None
+        if fitz is not None:
+            try:
+                pages: list[str] = []
+                doc = fitz.open(path)
+                try:
+                    for page in doc:
+                        text = page.get_text() or ""
+                        if text.strip():
+                            pages.append(text)
+                finally:
+                    doc.close()
+                return "\n\n".join(pages)
+            except Exception as exc:
+                logger.warning("pdf_extract_error", path=path, error=str(exc), backend="pymupdf")
+                return ""
         try:
             import pdfplumber
         except ImportError:
             logger.warning("pdfplumber_not_installed")
             return ""
-        pages: list[str] = []
+        pages = []
         try:
             with pdfplumber.open(path) as pdf:
                 for page in pdf.pages:
@@ -334,6 +354,17 @@ class TextExtractorService:
             return ""
 
     def _pdf_page_count(self, path: str) -> int:
+        try:
+            import fitz
+            doc = fitz.open(path)
+            try:
+                return len(doc)
+            finally:
+                doc.close()
+        except ImportError:
+            pass
+        except Exception:
+            pass
         try:
             import pdfplumber
             with pdfplumber.open(path) as pdf:

@@ -142,12 +142,31 @@ class FileCategorizationService:
             return self._probe_unknown(f)
 
     def _probe_pdf(self, f: FileRecord) -> CategorizedFile:
-        """Probe a PDF: try text extraction and image detection."""
+        """Probe a PDF: try text extraction and image detection. Prefer PyMuPDF (faster)."""
         base = f.model_dump()
 
         text_length = 0
         has_images = False
         page_count = 0
+
+        try:
+            import fitz  # pymupdf
+        except ImportError:
+            fitz = None
+        if fitz is not None:
+            try:
+                doc = fitz.open(f.path)
+                try:
+                    page_count = len(doc)
+                    for page in doc:
+                        text_length += len((page.get_text() or ""))
+                        if page.get_images():
+                            has_images = True
+                finally:
+                    doc.close()
+                return self._probe_pdf_result(base, text_length, has_images, page_count, f.path)
+            except Exception as exc:
+                logger.debug("pdf_probe_failed", path=f.path, error=str(exc), backend="pymupdf")
 
         try:
             import pdfplumber
@@ -161,6 +180,12 @@ class FileCategorizationService:
         except Exception as exc:
             logger.debug("pdf_probe_failed", path=f.path, error=str(exc))
             return CategorizedFile(**base, content_category=ContentCategory.EXCLUDE)
+
+        return self._probe_pdf_result(base, text_length, has_images, page_count, f.path)
+
+    def _probe_pdf_result(
+        self, base: dict, text_length: int, has_images: bool, page_count: int, path: str
+    ) -> CategorizedFile:
 
         has_text = text_length > 50
 
@@ -177,7 +202,7 @@ class FileCategorizationService:
                 estimated_text_length=text_length,
             )
         elif has_images:
-            ocr_pass = self._ocr_probe_pdf(f.path, page_count)
+            ocr_pass = self._ocr_probe_pdf(path, page_count)
             if ocr_pass:
                 return CategorizedFile(
                     **base,

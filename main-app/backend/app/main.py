@@ -85,6 +85,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
                 cursor.execute("ALTER TABLE llm_settings ADD COLUMN debug_logging INTEGER")
                 conn.commit()
                 print("[STARTUP] Added debug_logging column to llm_settings", flush=True)
+            if "max_parallel_files" not in cols:
+                cursor.execute("ALTER TABLE llm_settings ADD COLUMN max_parallel_files INTEGER DEFAULT 1")
+                conn.commit()
+                print("[STARTUP] Added max_parallel_files column to llm_settings", flush=True)
             conn.close()
     except Exception as exc:
         print(f"[STARTUP] llm_settings migration skipped: {exc}", flush=True)

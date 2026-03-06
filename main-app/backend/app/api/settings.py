@@ -34,6 +34,8 @@ class LLMSettings(BaseModel):
     screenops_model: Optional[str] = None
     # Training: when True, pipeline logs included/excluded folders and files
     debug_logging: Optional[bool] = None
+    # Training Phase 3: max files to extract in parallel (1–32, default 1)
+    max_parallel_files: Optional[int] = None
 
     class Config:
         # Allow extra fields to be ignored
@@ -52,6 +54,7 @@ class LLMSettingsResponse(BaseModel):
     screenops_api_key_set: bool = False
     screenops_model: Optional[str] = None
     debug_logging: bool = False
+    max_parallel_files: int = 1
 
 
 class TestConnectionResponse(BaseModel):
@@ -164,6 +167,9 @@ async def update_llm_settings(settings_data: LLMSettings):
                     db_settings.screenops_model = (settings_data.screenops_model or "").strip() or None
                 if settings_data.debug_logging is not None:
                     db_settings.debug_logging = bool(settings_data.debug_logging)
+                if settings_data.max_parallel_files is not None:
+                    n = max(1, min(32, int(settings_data.max_parallel_files)))
+                    db_settings.max_parallel_files = n
 
                 print("[SETTINGS] Changes staged, flushing before commit...", flush=True)
                 # Flush to ensure all changes are applied
@@ -226,6 +232,7 @@ async def update_llm_settings(settings_data: LLMSettings):
                 screenops_api_key_set=bool(db_settings.screenops_api_key),
                 screenops_model=db_settings.screenops_model,
                 debug_logging=bool(getattr(db_settings, "debug_logging", False)),
+                max_parallel_files=int(getattr(db_settings, "max_parallel_files", 1) or 1),
             )
             print("[SETTINGS] Returning response", flush=True)
             return response
@@ -260,6 +267,7 @@ async def get_llm_settings(session: AsyncSession = Depends(get_session)):
         screenops_api_key_set=bool(db_settings.screenops_api_key),
         screenops_model=db_settings.screenops_model,
         debug_logging=bool(getattr(db_settings, "debug_logging", False)),
+        max_parallel_files=int(getattr(db_settings, "max_parallel_files", 1) or 1),
     )
     
     print(f"[GET_SETTINGS] Returning: provider={response.provider}, model={response.model_name}, api_url={response.api_url}", flush=True)
@@ -477,4 +485,5 @@ async def get_active_llm_settings(session: AsyncSession) -> dict:
         "screenops_model": getattr(db_settings, "screenops_model", None),
         "agent_tools_config": agent_tools_config,
         "debug_logging": bool(getattr(db_settings, "debug_logging", False)),
+        "max_parallel_files": max(1, min(32, int(getattr(db_settings, "max_parallel_files", 1) or 1))),
     }

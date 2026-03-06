@@ -5,7 +5,7 @@ Settings database model.
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, String, DateTime, Text
+from sqlalchemy import Boolean, Integer, String, DateTime, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.database import Base
@@ -39,6 +39,8 @@ class LLMSettingsModel(Base):
 
     # Training debug logging — when True, pipeline logs included/excluded folders and files
     debug_logging: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True, default=False)
+    # Training Phase 3: max number of files to extract in parallel (1 = sequential)
+    max_parallel_files: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=1)
 
     # Metadata
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -58,4 +60,5 @@ class LLMSettingsModel(Base):
             "screenops_model": self.screenops_model,
             "agent_tools_config": self.agent_tools_config,
             "debug_logging": bool(self.debug_logging) if self.debug_logging is not None else False,
+            "max_parallel_files": self.max_parallel_files if self.max_parallel_files is not None else 1,
         }
