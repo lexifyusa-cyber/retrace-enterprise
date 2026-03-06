@@ -37,9 +37,10 @@ FILTER_BATCH_SIZE = 800
 _FOLDER_SYSTEM_PROMPT = """\
 You are a senior software architect analysing a project for a knowledge base.
 
-You will receive the COMPLETE directory tree — every folder, subfolder, and
-filename with sizes and dates.  Some files are already tagged [PHASE1_EXCLUDED]
-because they are binary/non-text.
+You will receive the COMPLETE list of every FOLDER in the project — one line
+per folder with path, file count, and total size.  No individual filenames are
+listed; this compact list ensures you see every folder (e.g. venv, node_modules,
+logs) even in large codebases.  Use path, file count, and size to decide.
 
 Your TWO jobs:
 
@@ -233,13 +234,14 @@ class FileFilterService:
         When on_debug_prompt is set, it is called before each LLM request with
         (step_name, system_content, user_content, batch_idx=None, total_batches=None).
         """
-        # Step 1 — Folder evaluation
+        # Step 1 — Folder evaluation (folder-only summary so LLM sees every folder, no truncation)
         if on_progress:
-            await on_progress("Serialising tree for LLM folder evaluation…")
+            await on_progress("Building folder list for LLM…")
 
-        tree_text = self._serialize_trees(trees)
+        self._build_path_mappings(trees)
+        folder_summary_text = self._serialize_folder_summary(trees)
         project_analysis = await self._step1_folders(
-            tree_text, product_name, product_description, on_progress,
+            folder_summary_text, product_name, product_description, on_progress,
             on_debug_prompt=on_debug_prompt,
         )
 
@@ -288,9 +290,9 @@ class FileFilterService:
         )
 
         if on_progress:
-            tree_lines = tree_text.count("\n")
+            folder_count = tree_text.count("\n") + (1 if tree_text.strip() else 0)
             await on_progress(
-                f"Phase 2a: Sending tree ({tree_lines} lines) to LLM for folder analysis…"
+                f"Phase 2a: Sending folder list ({folder_count} folders) to LLM for analysis…"
             )
 
         if on_debug_prompt:
@@ -582,17 +584,62 @@ class FileFilterService:
             result.extend(self._collect_surviving_files(child))
         return result
 
-    def _serialize_trees(self, trees: list[TreeNode], max_chars: int = 80_000) -> str:
-        """Serialize trees with relative paths for the LLM.
+    def _build_path_mappings(self, trees: list[TreeNode]) -> None:
+        """Build _rel_to_abs and _abs_to_rel for every node (folders + files).
 
-        Builds bidirectional mappings stored on self:
-          _rel_to_abs  –  relative path → absolute path  (folders + files)
-          _abs_to_rel  –  absolute path → relative path  (folders + files)
-        Single tree root becomes ``/``; multiple trees use ``/<basename>/``.
+        Required for step 2 file evaluation.  Call before _serialize_folder_summary
+        so folder step and file step both have correct path lookups.
+        """
+        self._rel_to_abs = {}
+        self._abs_to_rel = {}
+        multi = len(trees) > 1
+
+        for tree in trees:
+            root_prefix = tree.path
+            root_display = f"/{tree.name}" if multi else ""
+            self._add_node_to_mappings(tree, root_prefix=root_prefix, root_display=root_display)
+
+    def _add_node_to_mappings(self, node: TreeNode, root_prefix: str = "", root_display: str = "") -> None:
+        """Recursively add one node and its children to path mappings."""
+        if node.path == root_prefix:
+            rel = root_display + "/"
+        else:
+            rel = root_display + node.path[len(root_prefix):]
+        if not node.is_file and not rel.endswith("/"):
+            rel = rel + "/"
+        self._rel_to_abs[rel] = node.path
+        self._abs_to_rel[node.path] = rel
+        for child in node.children:
+            self._add_node_to_mappings(child, root_prefix=root_prefix, root_display=root_display)
+
+    def _serialize_folder_summary(self, trees: list[TreeNode]) -> str:
+        """Serialize a folder-only summary: one line per folder with path, file count, size.
+
+        Ensures the LLM sees every folder (venv, node_modules, logs, etc.) without
+        truncation.  Requires _build_path_mappings(trees) to have been called.
         """
         lines: list[str] = []
-        self._rel_to_abs: dict[str, str] = {}
-        self._abs_to_rel: dict[str, str] = {}
+        for tree in trees:
+            for folder in tree.all_folders():
+                rel = self._abs_to_rel.get(folder.path, folder.path)
+                if not rel.endswith("/"):
+                    rel = rel + "/"
+                nfiles = folder.file_count()
+                total_bytes = sum(f.size_bytes for f in folder.all_files())
+                size_str = _human_size(total_bytes)
+                tag = " [PHASE1_EXCLUDED]" if folder.phase1_excluded else ""
+                lines.append(f"[FOLDER] {rel}  ({nfiles} files, {size_str}){tag}")
+        return "\n".join(lines)
+
+    def _serialize_trees(self, trees: list[TreeNode], max_chars: int = 80_000) -> str:
+        """Serialize full trees (folders + files) for the LLM.  May truncate on large trees.
+
+        Prefer _build_path_mappings + _serialize_folder_summary for step 1 so the LLM
+        sees all folders.  This method is kept for compatibility or fallback.
+        """
+        lines: list[str] = []
+        self._rel_to_abs = {}
+        self._abs_to_rel = {}
         multi = len(trees) > 1
 
         for tree in trees:
