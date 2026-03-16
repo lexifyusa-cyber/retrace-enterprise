@@ -1,0 +1,74 @@
+# ReTrace Application Configuration - Development
+# Lumena Technologies — lumenatech.io
+
+app:
+  name: ReTrace
+  version: 0.1.0
+  environment: development
+
+database:
+  # SQLite for development (no external dependencies)
+  type: sqlite
+  path: ./retrace.db
+  
+  # PostgreSQL for production:
+  # type: postgresql
+  # host: localhost
+  # port: 5432
+  # name: retrace
+  # user: retrace
+  # password: ${POSTGRES_PASSWORD}
+
+server:
+  host: 0.0.0.0
+  port: 8000
+  websocket_port: 8001
+  debug: true
+  reload: true
+
+llm:
+  # Primary provider
+  provider: openai
+  
+  # OpenAI settings
+  openai:
+    api_key: ${OPENAI_API_KEY}
+    embedding_model: text-embedding-3-small
+    reasoning_model: gpt-4o
+    vision_model: gpt-4-vision-preview
+    
+  # Anthropic settings (optional)
+  anthropic:
+    api_key: ${ANTHROPIC_API_KEY}
+    model: claude-3-5-sonnet-20241022
+
+auth:
+  jwt_secret: ${JWT_SECRET:dev-secret-change-in-production}
+  jwt_algorithm: HS256
+  access_token_expire_minutes: 60
+
+logging:
+  level: DEBUG
+  format: console  # json or console
+  
+cors:
+  origins:
+    - http://localhost:5173
+    - http://localhost:3000
+  allow_credentials: true
+  allow_methods: ["*"]
+  allow_headers: ["*"]
+
+training:
+  # Default settings for training jobs
+  max_file_size_mb: 50
+  chunk_size: 2000
+  chunk_overlap: 200
+  batch_size: 100
+
+query:
+  # Query pipeline settings
+  vector_top_k: 10
+  graph_traversal_depth: 2
+  max_context_tokens: 4000
+  timeout_seconds: 30

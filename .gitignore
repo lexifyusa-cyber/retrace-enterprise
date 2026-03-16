@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.build-venv/
+.env
+.chunk_key
+*.db
+*.db-wal
+*.db-shm
+*.sqlite3
+chroma_data/
+pod-installers/
+main-app/backend/screenops_screenshots/*.png
+main-app/backend/screenops_debug.log
+main-app/backend/build/
+
+# Node
+node_modules/
+dist/
+dist-electron/
+
+# Go
+pod-agent/dist/
+
+# Desktop / DMG build artifacts
+main-app/frontend/backend-bundle/
+main-app/frontend/desktop-package/
+dist-dmg/
+*.dmg
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Backup files
+*.backup
+
+# Auto-generated file dump artifacts
+main-app/backend/product_files.txt
+main-app/backend/product_files_content.txt
+main-app/backend/product_files_for_desktop.txt
