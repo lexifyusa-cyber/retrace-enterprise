@@ -95,6 +95,115 @@ def extract_python_code(text: str) -> str:
     return ""
 
 
+# ---------------------------------------------------------------------------
+# Fallback: parse native tool-call formats into Python code
+# ---------------------------------------------------------------------------
+
+def extract_tool_call_as_python(text: str, known_tools: set[str] | None = None) -> str:
+    """Parse common LLM tool-call formats and convert to executable Python.
+
+    Handles:
+      1. XML:  <tool_call> <function=name> <parameter=k> v </parameter> ... </function> </tool_call>
+      2. JSON: {"action": "name", "parameters": {...}}  or  {"name": "...", "arguments": {...}}
+      3. Bare function-style without code fence: knowledge_base(action="search", ...)
+
+    Returns a Python snippet (e.g. ``result = name(...); print(result)``)
+    or empty string if no tool call was detected.
+    If a tool call is detected but the tool is not in *known_tools*, returns
+    a snippet that prints an error guiding the model to use available tools.
+    """
+    if not text or not text.strip():
+        return ""
+
+    stripped = text.strip()
+
+    _tools = known_tools or {
+        "knowledge_base", "terminal", "read_file", "write_file", "delete_file",
+        "download_file", "str_replace", "grep", "glob_search",
+        "web_search", "web_research", "web_advanced", "web_fetch", "todo_write", "screenops",
+    }
+
+    def _unavailable_tool_snippet(name: str) -> str:
+        available = ", ".join(sorted(_tools))
+        return f'print("Error: tool \'{name}\' is not available. Available tools: {available}. Please use one of these instead.")'
+
+    # ── 1. XML  <tool_call> ... </tool_call>  ────────────────────────
+    xml_match = re.search(
+        r"<tool_call>\s*<function=(\w+)>(.*?)</function>\s*</tool_call>",
+        stripped,
+        re.DOTALL,
+    )
+    if xml_match:
+        func_name = xml_match.group(1)
+        if func_name not in _tools:
+            return _unavailable_tool_snippet(func_name)
+        params_block = xml_match.group(2)
+        params: dict[str, str] = {}
+        for pm in re.finditer(
+            r"<parameter=(\w+)>\s*(.*?)\s*</parameter>", params_block, re.DOTALL
+        ):
+            params[pm.group(1)] = pm.group(2).strip()
+        return _build_python_call(func_name, params)
+
+    # ── 2. JSON object  ──────────────────────────────────────────────
+    json_match = re.search(r"\{[\s\S]*\}", stripped)
+    if json_match:
+        import json as _json
+        try:
+            obj = _json.loads(json_match.group(0))
+            if isinstance(obj, dict):
+                func_name = obj.get("action") or obj.get("name") or obj.get("function") or ""
+                params = obj.get("parameters") or obj.get("arguments") or obj.get("params") or {}
+                if func_name and isinstance(params, dict):
+                    if func_name not in _tools:
+                        return _unavailable_tool_snippet(func_name)
+                    return _build_python_call(func_name, params)
+        except (_json.JSONDecodeError, TypeError):
+            pass
+
+    # ── 3. Bare function call without code fence  ────────────────────
+    bare_match = re.search(r"^(\w+)\s*\(.*\)\s*$", stripped, re.MULTILINE)
+    if bare_match:
+        func_name = bare_match.group(1)
+        if func_name not in _tools:
+            return _unavailable_tool_snippet(func_name)
+
+    for tool_name in _tools:
+        pattern = rf"^{re.escape(tool_name)}\s*\(.*\)\s*$"
+        m = re.search(pattern, stripped, re.MULTILINE)
+        if m:
+            call = m.group(0).strip()
+            return f"result = {call}\nprint(result)"
+
+    return ""
+
+
+def _build_python_call(func_name: str, params: dict) -> str:
+    """Turn a function name and params dict into ``result = fn(...); print(result)``."""
+    parts: list[str] = []
+    for k, v in params.items():
+        parts.append(f"{k}={_py_repr(v)}")
+    args_str = ", ".join(parts)
+    return f"result = {func_name}({args_str})\nprint(result)"
+
+
+def _py_repr(value) -> str:
+    """Best-effort Python repr for a value extracted from JSON/XML."""
+    if isinstance(value, str):
+        # Value might be a JSON-encoded list/dict string like '["a","b"]'
+        if (value.startswith("[") and value.endswith("]")) or (
+            value.startswith("{") and value.endswith("}")
+        ):
+            import json as _json
+            try:
+                parsed = _json.loads(value)
+                return repr(parsed)
+            except Exception:
+                pass
+        return repr(value)
+    return repr(value)
+
+
 def strip_text_from_code_response(content: str) -> str:
     """Strip explanatory text from a response that contains code blocks.
 

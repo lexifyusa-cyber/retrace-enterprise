@@ -126,6 +126,7 @@ export interface AgentTool {
   requires_key: string | null
   available: boolean
   enabled?: boolean
+  group?: string | null
 }
 
 export interface FileEntry {

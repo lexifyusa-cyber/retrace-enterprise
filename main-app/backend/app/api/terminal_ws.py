@@ -2,15 +2,17 @@
 WebSocket endpoint for interactive terminal sessions.
 
 Protocol (JSON messages):
-  Client → Server:
-    {"type": "input",  "data": "ls -la\\r\\n"}    — keystrokes / pasted text
-    {"type": "resize", "cols": 120, "rows": 40}   — terminal resize
+  Client -> Server:
+    {"type": "input",  "data": "ls -la\\r\\n"}    -- keystrokes / pasted text
+    {"type": "resize", "cols": 120, "rows": 40}   -- terminal resize
 
-  Server → Client:
-    {"type": "scrollback", "data": "..."}          — buffered history on connect
-    {"type": "output",     "data": "..."}          — live shell output
-    {"type": "exited",     "code": <int>}          — shell process ended
+  Server -> Client:
+    {"type": "scrollback", "data": "..."}          -- buffered history on connect
+    {"type": "output",     "data": "..."}          -- live shell output
+    {"type": "exited",     "code": <int>}          -- shell process ended
 """
+
+import asyncio
 
 import structlog
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -25,6 +27,10 @@ router = APIRouter()
 async def terminal_websocket(websocket: WebSocket, conversation_id: str):
     """Bidirectional terminal I/O over WebSocket."""
     await websocket.accept()
+
+    # Capture the running asyncio event loop so background reader threads
+    # can schedule WebSocket sends on it.
+    pty_manager.set_event_loop(asyncio.get_running_loop())
 
     try:
         session = pty_manager.get_or_create(conversation_id)

@@ -33,6 +33,8 @@ class LLMSettings(BaseModel):
     screenops_mouse_timeout: Optional[int] = None
     # ScreenOps image scale 25–100: percentage of screenshot size sent to model (reduces tokens)
     screenops_image_scale: Optional[int] = Field(None, ge=25, le=100)
+    # Web Search — Serper API key for enhanced web search
+    serper_api_key: Optional[str] = None
     # Training: when True, pipeline logs included/excluded folders and files
     debug_logging: Optional[bool] = None
     # Training Phase 3: max files to extract in parallel (1–32, default 1)
@@ -50,6 +52,7 @@ class LLMSettingsResponse(BaseModel):
     provider: str
     api_key_set: bool
     screenops_api_key_set: bool = False
+    serper_api_key_set: bool = False
     screenops_api_url: Optional[str] = None
     screenops_model: Optional[str] = None
     screenops_mouse_timeout: int = 30
@@ -162,6 +165,9 @@ async def update_llm_settings(settings_data: LLMSettings):
                     db_settings.screenops_mouse_timeout = max(5, min(120, int(settings_data.screenops_mouse_timeout)))
                 if settings_data.screenops_image_scale is not None:
                     db_settings.screenops_image_scale = max(25, min(100, int(settings_data.screenops_image_scale)))
+                # Serper API key for web search
+                if settings_data.serper_api_key is not None:
+                    db_settings.serper_api_key = settings_data.serper_api_key if settings_data.serper_api_key else None
                 if settings_data.debug_logging is not None:
                     db_settings.debug_logging = bool(settings_data.debug_logging)
                 if settings_data.max_parallel_files is not None:
@@ -224,6 +230,7 @@ async def update_llm_settings(settings_data: LLMSettings):
                 provider=db_settings.provider or "openai",
                 api_key_set=bool(db_settings.api_key),
                 screenops_api_key_set=bool(db_settings.screenops_api_key),
+                serper_api_key_set=bool(getattr(db_settings, "serper_api_key", None)),
                 screenops_api_url=getattr(db_settings, "screenops_api_url", None),
                 screenops_model=db_settings.screenops_model,
                 screenops_mouse_timeout=int(getattr(db_settings, "screenops_mouse_timeout", 30) or 30),
@@ -258,6 +265,7 @@ async def get_llm_settings(session: AsyncSession = Depends(get_session)):
         provider=db_settings.provider or "openai",
         api_key_set=bool(db_settings.api_key or app_settings.OPENAI_API_KEY),
         screenops_api_key_set=bool(db_settings.screenops_api_key),
+        serper_api_key_set=bool(getattr(db_settings, "serper_api_key", None)),
         screenops_api_url=getattr(db_settings, "screenops_api_url", None),
         screenops_model=db_settings.screenops_model,
         screenops_mouse_timeout=int(getattr(db_settings, "screenops_mouse_timeout", 30) or 30),
@@ -470,6 +478,7 @@ async def get_active_llm_settings(session: AsyncSession) -> dict:
         "screenops_model": getattr(db_settings, "screenops_model", None),
         "screenops_mouse_timeout": max(5, min(120, int(getattr(db_settings, "screenops_mouse_timeout", 30) or 30))),
         "screenops_image_scale": max(25, min(100, int(getattr(db_settings, "screenops_image_scale", 100) or 100))),
+        "serper_api_key": getattr(db_settings, "serper_api_key", None),
         "agent_tools_config": agent_tools_config,
         "debug_logging": bool(getattr(db_settings, "debug_logging", False)),
         "max_parallel_files": max(1, min(32, int(getattr(db_settings, "max_parallel_files", 1) or 1))),

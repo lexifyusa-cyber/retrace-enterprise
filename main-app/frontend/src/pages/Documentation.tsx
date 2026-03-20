@@ -3,12 +3,12 @@ import { useQuery } from '@tanstack/react-query'
 import {
   FileText, Loader2, Trash2,
   Package, ChevronDown, ChevronRight, Send,
-  Edit2, CheckCircle2, Tag,
+  Edit2, CheckCircle2, Tag, Layers,
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import ReactMarkdown from 'react-markdown'
 import toast from 'react-hot-toast'
-import { productApi, agentApi } from '@/utils/api'
+import { productApi, agentApi, AGENT_GENERAL_SCOPE } from '@/utils/api'
 import { Product } from '@/types'
 
 export default function Documentation() {
@@ -31,10 +31,15 @@ export default function Documentation() {
   )
 
   const loadAllDocs = useCallback(async () => {
-    if (trainedProducts.length === 0) return
     setIsLoading(true)
     try {
       const results: Record<string, any[]> = {}
+      try {
+        const general = await agentApi.listDocs(AGENT_GENERAL_SCOPE)
+        results[AGENT_GENERAL_SCOPE] = Array.isArray(general) ? general : []
+      } catch {
+        results[AGENT_GENERAL_SCOPE] = []
+      }
       await Promise.all(
         trainedProducts.map(async (p: Product) => {
           try {
@@ -54,8 +59,8 @@ export default function Documentation() {
   }, [trainedProducts.map(p => p.product_id).join(',')])
 
   useEffect(() => {
-    if (trainedProducts.length > 0) loadAllDocs()
-  }, [trainedProducts.length])
+    loadAllDocs()
+  }, [loadAllDocs])
 
   const handleDelete = useCallback(async (docId: string, productId: string) => {
     try {
@@ -141,8 +146,20 @@ export default function Documentation() {
     }
   }, [editInstructions])
 
-  const productsWithDocs = trainedProducts.filter((p: Product) => (docsByProduct[p.product_id] || []).length > 0)
-  const totalDocs = trainedProducts.reduce((sum, p) => sum + (docsByProduct[p.product_id] || []).length, 0)
+  const generalDocsList = docsByProduct[AGENT_GENERAL_SCOPE] || []
+  const displayDocSections: { sectionId: string; sectionName: string; isGeneral: boolean }[] = []
+  if (generalDocsList.length > 0) {
+    displayDocSections.push({ sectionId: AGENT_GENERAL_SCOPE, sectionName: 'General', isGeneral: true })
+  }
+  for (const p of trainedProducts) {
+    if ((docsByProduct[p.product_id] || []).length > 0) {
+      displayDocSections.push({ sectionId: p.product_id, sectionName: p.product_name, isGeneral: false })
+    }
+  }
+  const totalDocs =
+    generalDocsList.length +
+    trainedProducts.reduce((sum, p) => sum + (docsByProduct[p.product_id] || []).length, 0)
+  const sectionCount = (generalDocsList.length > 0 ? 1 : 0) + trainedProducts.filter((p: Product) => (docsByProduct[p.product_id] || []).length > 0).length
 
   const toggleProduct = (productId: string) => {
     setExpandedProducts(prev => {
@@ -177,7 +194,8 @@ export default function Documentation() {
       {/* Sub-header */}
       <div className="px-8 py-3 border-b border-rt-border bg-rt-bg-light flex items-center gap-4">
         <span className="text-xs text-rt-text-muted">
-          {totalDocs} article{totalDocs !== 1 ? 's' : ''} across {trainedProducts.length} product{trainedProducts.length !== 1 ? 's' : ''}
+          {totalDocs} article{totalDocs !== 1 ? 's' : ''}
+          {sectionCount > 0 ? ` · ${sectionCount} section${sectionCount !== 1 ? 's' : ''}` : ''}
         </span>
       </div>
 
@@ -187,34 +205,33 @@ export default function Documentation() {
           <div className="flex items-center justify-center gap-2 text-rt-text-muted py-16">
             <Loader2 className="w-5 h-5 animate-spin" /> Loading documentation...
           </div>
-        ) : trainedProducts.length === 0 ? (
+        ) : displayDocSections.length === 0 ? (
           <div className="text-center py-16">
             <FileText className="w-12 h-12 mx-auto mb-4 text-rt-text-muted/30" />
-            <p className="text-rt-text-muted">No trained products yet. Train a product first to create documentation.</p>
-          </div>
-        ) : productsWithDocs.length === 0 ? (
-          <div className="text-center py-16">
-            <FileText className="w-12 h-12 mx-auto mb-4 text-rt-text-muted/30" />
-            <p className="text-rt-text-muted">
-              No documentation created yet. Use the Agent to build documentation from conversations.
+            <p className="text-rt-text-muted max-w-md mx-auto">
+              No documentation yet. In the Agent, get an answer then use <strong>Build Documentation</strong> — with a product selected or under <strong>General</strong> when no product is selected.
             </p>
           </div>
         ) : (
           <div className="max-w-6xl mx-auto space-y-6">
-            {productsWithDocs.map((product: Product) => {
-              const productDocs = docsByProduct[product.product_id] || []
-              const isExpanded = expandedProducts.has(product.product_id)
+            {displayDocSections.map((section) => {
+              const productDocs = docsByProduct[section.sectionId] || []
+              const isExpanded = expandedProducts.has(section.sectionId)
               return (
-                <div key={product.product_id}>
+                <div key={section.sectionId}>
                   {/* Product group header */}
                   <button
                     type="button"
-                    onClick={() => toggleProduct(product.product_id)}
+                    onClick={() => toggleProduct(section.sectionId)}
                     className="w-full flex items-center gap-3 px-4 py-2.5 rounded-lg hover:bg-rt-surface/50 transition-colors mb-2"
                   >
                     <ChevronDown className={`w-4 h-4 text-rt-text-muted transition-transform ${isExpanded ? '' : '-rotate-90'}`} />
-                    <Package className="w-4 h-4 text-rt-primary" />
-                    <span className="text-sm font-semibold">{product.product_name}</span>
+                    {section.isGeneral ? (
+                      <Layers className="w-4 h-4 text-amber-400" />
+                    ) : (
+                      <Package className="w-4 h-4 text-rt-primary" />
+                    )}
+                    <span className="text-sm font-semibold">{section.sectionName}</span>
                     <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-rt-surface text-rt-text-muted">
                       {productDocs.length}
                     </span>
@@ -277,7 +294,7 @@ export default function Documentation() {
                                   </span>
                                   {(doc.status || 'draft') !== 'approved' && (
                                     <button
-                                      onClick={(e) => { e.stopPropagation(); handleApproveDoc(doc.doc_id, product.product_id) }}
+                                      onClick={(e) => { e.stopPropagation(); handleApproveDoc(doc.doc_id, section.sectionId) }}
                                       className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 transition-colors"
                                       title="Approve this documentation"
                                     >
@@ -297,7 +314,7 @@ export default function Documentation() {
                                     <Edit2 className="w-4 h-4" />
                                   </button>
                                   <button
-                                    onClick={(e) => { e.stopPropagation(); handleDelete(doc.doc_id, product.product_id) }}
+                                    onClick={(e) => { e.stopPropagation(); handleDelete(doc.doc_id, section.sectionId) }}
                                     className="p-1.5 rounded-lg hover:bg-red-500/15 text-red-400/60 hover:text-red-400 transition-colors"
                                     title="Delete documentation"
                                   >
@@ -322,7 +339,7 @@ export default function Documentation() {
                                     />
                                     <button
                                       type="button"
-                                      onClick={() => handleEditDoc(doc.doc_id, product.product_id)}
+                                      onClick={() => handleEditDoc(doc.doc_id, section.sectionId)}
                                       disabled={isEditing || !editInstructions.trim()}
                                       className="btn-primary text-xs px-3 py-1.5 flex items-center gap-1.5"
                                     >

@@ -806,7 +806,8 @@ async def get_training_tree(
 ):
     """Return the training data as a hierarchical tree for visualization.
 
-    Returns empty tree when embedding index is not used.
+    Reads the real KnowledgeBase blob and builds the tree from file_analysis,
+    folder_structure, and files stored during training.
     """
     result = await session.execute(
         select(Product).where(Product.product_id == product_id)
@@ -819,12 +820,117 @@ async def get_training_tree(
             detail=f"Product {product_id} not found"
         )
 
+    # Load the actual KB data
+    from app.rag.kb_store import KnowledgeBaseStore
+    kb_store = KnowledgeBaseStore()
+    kb_data = await kb_store.load(product_id)
+
+    if not kb_data:
+        return {
+            "product_id": product_id,
+            "product_name": product.product_name,
+            "total_chunks": 0,
+            "total_files": 0,
+            "tree": [],
+        }
+
+    files = kb_data.get("files", {})
+    file_analysis = kb_data.get("file_analysis", {})
+    chunk_map = kb_data.get("chunk_map", {})
+
+    # Classify each file into a type using file_analysis or extension
+    type_buckets: dict[str, dict[str, list]] = {}  # {type: {sub_category: [file_info]}}
+
+    for file_path, file_data in files.items():
+        # Determine processing type from file_analysis or extension
+        fa = file_analysis.get(file_path, {})
+        ext = file_path.rsplit(".", 1)[-1].lower() if "." in file_path else ""
+
+        # Guess type from component/role or extension
+        if ext in ("py", "js", "ts", "tsx", "jsx", "java", "go", "rs", "c", "cpp", "h", "cs", "rb", "php", "swift", "kt"):
+            ptype = "code"
+        elif ext in ("md", "txt", "rst", "adoc", "docx", "pdf", "html"):
+            ptype = "doc"
+        elif ext in ("png", "jpg", "jpeg", "gif", "svg", "webp", "bmp"):
+            ptype = "diagram_image"
+        elif ext in ("csv", "json", "xml", "yaml", "yml", "toml", "ini", "cfg", "conf"):
+            ptype = "doc"
+        else:
+            ptype = "other"
+
+        # Derive sub-category from folder path
+        parts = file_path.replace("\\", "/").split("/")
+        if len(parts) > 1:
+            sub_cat = parts[-2] if len(parts) >= 2 else "root"
+        else:
+            sub_cat = "root"
+
+        # Count chunks for this file
+        file_chunk_count = sum(
+            1 for cm in chunk_map.values()
+            if isinstance(cm, dict) and cm.get("file") == file_path
+        )
+
+        file_info = {
+            "path": file_path,
+            "name": parts[-1] if parts else file_path,
+            "chunks": file_chunk_count,
+        }
+
+        if ptype not in type_buckets:
+            type_buckets[ptype] = {}
+        if sub_cat not in type_buckets[ptype]:
+            type_buckets[ptype][sub_cat] = []
+        type_buckets[ptype][sub_cat].append(file_info)
+
+    # Also count non-file chunks (folder_analysis, project_analysis)
+    analysis_chunks = sum(
+        1 for cm in chunk_map.values()
+        if isinstance(cm, dict) and cm.get("type") in ("folder_analysis", "project_analysis", "file_analysis")
+    )
+    if analysis_chunks > 0:
+        if "summary" not in type_buckets:
+            type_buckets["summary"] = {}
+        type_buckets["summary"]["auto-generated"] = [{
+            "path": "(analysis)",
+            "name": f"{analysis_chunks} analysis entries",
+            "chunks": analysis_chunks,
+        }]
+
+    # Build tree response
+    tree = []
+    total_chunks = len(chunk_map)
+    total_files = len(files)
+
+    for ptype, sub_cats in type_buckets.items():
+        type_chunks = sum(f["chunks"] for fs in sub_cats.values() for f in fs)
+        type_file_count = sum(len(fs) for fs in sub_cats.values())
+        sub_categories = []
+        for sub_name, file_list in sorted(sub_cats.items()):
+            sub_chunks = sum(f["chunks"] for f in file_list)
+            sub_categories.append({
+                "name": sub_name,
+                "chunks": sub_chunks,
+                "file_count": len(file_list),
+                "files": sorted(file_list, key=lambda x: x["name"]),
+            })
+        tree.append({
+            "type": ptype,
+            "chunks": type_chunks,
+            "file_count": type_file_count,
+            "sub_categories": sub_categories,
+        })
+
+    # Sort: code first, then doc, then others
+    type_order = {"code": 0, "doc": 1, "summary": 2, "diagram_image": 3, "other": 4}
+    tree.sort(key=lambda t: type_order.get(t["type"], 99))
+
     return {
         "product_id": product_id,
         "product_name": product.product_name,
-        "total_chunks": 0,
-        "total_files": 0,
-        "tree": [],
+        "total_chunks": total_chunks,
+        "total_files": total_files,
+        "tree": tree,
     }
 
 

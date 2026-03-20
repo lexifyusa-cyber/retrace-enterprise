@@ -37,7 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from typing_extensions import TypedDict, Annotated
 
 from app.core.config import settings as app_settings
-from app.tools.utils import extract_python_code, strip_text_from_code_response
+from app.tools.utils import extract_python_code, extract_tool_call_as_python, strip_text_from_code_response
 
 logger = structlog.get_logger()
 
@@ -63,11 +63,15 @@ class AgentState(TypedDict):
 _AGENT_SYSTEM_TEMPLATE = """\
 You are the ReTrace AI agent by Lumena Technologies for the product **{product_name}**.
 
+{user_platform_section}
+
 {product_description_section}
 
 You can execute Python code to interact with the system using the tools listed below.
 
 ## HOW TO USE TOOLS
+
+**CRITICAL:** To call tools, output only a ```python code block with real Python that calls the tools (e.g. terminal(...), web_search(...)) and print() the result. Only ```python blocks are run; no other format is executed. When you have the answer for the user, respond with plain text only (no code block).
 
 Generate a Python code block to call tools.  **Always `print()` results** so you
 can see the output.
@@ -84,6 +88,31 @@ That text becomes the final answer shown to the user.
 - Generate Python code in ```python blocks to call tools.
 - Always print() results so you can see output.
 - When done, respond with plain text (no code block) — that is your final answer.
+- Only use the tools listed under AVAILABLE TOOLS below. Do NOT call tools that are not listed.
+{kb_rules_section}- You can call tools multiple times with different queries to gather comprehensive information.
+- If the evidence is insufficient, say so.
+- Do NOT generate code after your final text answer.
+- Maximum {max_iterations} tool-use iterations allowed.
+- Do NOT use `import os`, `import subprocess`, `import shutil`, `import pathlib`, or other Python standard library modules for system operations. Always use the provided tools instead (e.g. `terminal("ls -la")`, `read_file("path")`, `write_file("path", "content")`).
+- Do NOT use `open()`, `os.listdir()`, `Path()`, or any direct Python file I/O. Use the provided `read_file`, `write_file`, `delete_file`, and `terminal` tools for all file and system operations.
+- Only use `import` for data processing libraries (e.g. `json`, `re`, `math`) when needed to parse or format tool output.
+- When using the `screenops` tool: it returns a JSON object with a "result" field (and optionally "iterations"). Before writing to a file or using the content, parse the return value: if it is a string, use `json.loads(screenops_result)` to get a dict, then use the "result" field only (e.g. `description_text = data["result"]` or `data.get("result", "")`). Pass that string to `write_file`, not the raw return value.
+
+## TOOL SELECTION GUIDE
+- **Finding files by name/pattern**: use `glob_search("*.py")` — NOT `terminal("find ...")`
+- **Searching file contents**: use `grep("pattern", "path")` — NOT `terminal("grep ...")`
+- **Editing files (targeted changes)**: use `str_replace(file, old, new)` — NOT rewriting the whole file
+- **Deleting files**: use `delete_file("path")` — NOT `terminal("rm ...")`
+- **Reading web pages**: use `web_fetch("url")` — returns clean text
+- **Web search**: use `web_search("query")` for quick lookups, `web_research("query")` for comprehensive research, `web_advanced(...)` for advanced searches with operators
+- **Multi-step tasks**: use `todo_write(...)` to plan and track progress
+
+- **SSH**: ALWAYS pass the remote command inline: `terminal('ssh user@host "cmd"')`. NEVER open an interactive session (`ssh user@host` alone) — it will timeout.
+
+{tool_descriptions}
+"""
+
+_KB_RULES = """\
 - You have one **knowledge_base** tool with four actions (pass the `action` parameter):
   * `knowledge_base(action="search", query="...", keywords=[...], top_k=10)` — **Use this FIRST for any product question.** Fast hybrid search. Always provide a `keywords` list of 5-15 synonyms, related terms, and alternative phrasings alongside your query to maximize recall.
   * `knowledge_base(action="read_file", file_path="...")` — Read the full content of a specific file. Use after search to get complete details. Supports fuzzy path matching.
@@ -91,17 +120,21 @@ That text becomes the final answer shown to the user.
   * `knowledge_base(action="browse", path="/some/path")` — Browse the folder tree at a path. Like `ls` for the KB.
 - **Strategy**: For most questions, a single `search` call with good keywords is enough. Only use `list` for broad discovery, `read_file` to drill into a specific file from search results, and `browse` to explore a directory.
 - When calling search, always include a `keywords` list with synonyms and related terms. Example: query="authentication" → keywords=["auth", "login", "password", "credentials", "oauth", "token", "session", "security"].
-- You can call tools multiple times with different queries to gather comprehensive information.
-- If the evidence is insufficient, say so.
-- Do NOT generate code after your final text answer.
-- Maximum {max_iterations} tool-use iterations allowed.
-- Do NOT use `import os`, `import subprocess`, `import shutil`, `import pathlib`, or other Python standard library modules for system operations. Always use the provided tools instead (e.g. `terminal("ls -la")`, `read_file("path")`, `write_file("path", "content")`).
-- Do NOT use `open()`, `os.listdir()`, `Path()`, or any direct Python file I/O. Use the provided `read_file`, `write_file`, and `terminal` tools for all file and system operations.
-- Only use `import` for data processing libraries (e.g. `json`, `re`, `math`) when needed to parse or format tool output.
-- When using the `screenops` tool: it returns a JSON object with a "result" field (and optionally "iterations"). Before writing to a file or using the content, parse the return value: if it is a string, use `json.loads(screenops_result)` to get a dict, then use the "result" field only (e.g. `description_text = data["result"]` or `data.get("result", "")`). Pass that string to `write_file`, not the raw return value.
-
-{tool_descriptions}
 """
+
+
+def _platform_label(platform: Optional[str]) -> str:
+    """Return a human-readable OS label for the system prompt."""
+    if not platform or not str(platform).strip():
+        return ""
+    p = str(platform).strip().lower()
+    if p in ("darwin", "mac", "macos", "os x"):
+        return "User platform: **macOS (darwin)**. Use Unix paths (e.g. ~/Desktop), .dmg/.zip for downloads, and commands appropriate for macOS."
+    if p in ("win32", "windows", "win"):
+        return "User platform: **Windows**. Use Windows paths (e.g. %USERPROFILE%\\Desktop), .exe/.msi for downloads, and commands appropriate for Windows."
+    if p in ("linux", "linux2"):
+        return "User platform: **Linux**. Use Unix paths (e.g. ~/Desktop) and commands appropriate for Linux."
+    return f"User platform: **{platform}**. Use paths and commands appropriate for this OS."
 
 
 def _build_system_prompt(
@@ -110,8 +143,15 @@ def _build_system_prompt(
     product_description: Optional[str] = None,
     kb_summary: Optional[str] = None,
     max_iterations: int = 10,
+    available_tool_names: Optional[list[str]] = None,
+    user_platform: Optional[str] = None,
 ) -> str:
     sections: list[str] = []
+    has_kb = available_tool_names is None or "knowledge_base" in (available_tool_names or [])
+
+    user_platform_section = _platform_label(user_platform)
+    if user_platform_section:
+        user_platform_section = user_platform_section + "\n\n"
 
     if product_description:
         sections.append(f"## PRODUCT DESCRIPTION\n\n{product_description}")
@@ -119,19 +159,25 @@ def _build_system_prompt(
     if kb_summary:
         sections.append(f"## PRODUCT KNOWLEDGE SUMMARY (from trained KB)\n\n{kb_summary}")
 
-    if sections:
-        sections.append(
-            "This product has a trained knowledge base. Use `knowledge_base(action=\"search\", query=\"...\", keywords=[...])` "
-            "to query it. For simple overview questions, the summary above may already contain the answer — respond directly without a tool call if so."
-        )
-    elif product_name and product_name != "General Assistant":
-        sections.append(
-            "This product has a trained knowledge base. Use `knowledge_base(action=\"search\", query=\"...\", keywords=[...])` "
-            "to query it when you need specific information about the product."
-        )
+    if has_kb:
+        if sections:
+            sections.append(
+                "This product has a trained knowledge base. Use `knowledge_base(action=\"search\", query=\"...\", keywords=[...])` "
+                "to query it. For simple overview questions, the summary above may already contain the answer — respond directly without a tool call if so."
+            )
+        elif product_name and product_name != "General Assistant":
+            sections.append(
+                "This product has a trained knowledge base. Use `knowledge_base(action=\"search\", query=\"...\", keywords=[...])` "
+                "to query it when you need specific information about the product."
+            )
+        else:
+            sections.append(
+                "No product is selected. You are operating as a general-purpose assistant. "
+                "Use the available tools (terminal, file operations, web search, etc.) to help the user."
+            )
     else:
         sections.append(
-            "No product is selected. You are operating as a general-purpose assistant. "
+            "No knowledge base tool is available. "
             "Use the available tools (terminal, file operations, web search, etc.) to help the user."
         )
 
@@ -141,6 +187,8 @@ def _build_system_prompt(
         product_name=product_name,
         tool_descriptions=tool_descriptions,
         product_description_section=product_desc_section,
+        user_platform_section=user_platform_section,
+        kb_rules_section=_KB_RULES if has_kb else "",
         max_iterations=max_iterations,
     )
 
@@ -269,7 +317,13 @@ def _build_codeact_graph(
                 response.content = stripped
 
         # Extract Python code
-        code = extract_python_code(response.content if hasattr(response, "content") else str(response))
+        raw_content = response.content if hasattr(response, "content") else str(response)
+        code = extract_python_code(raw_content)
+
+        # Fallback: model may use its native tool-call format (XML, JSON, bare call)
+        if not code:
+            tool_names = set(tools_context.keys())
+            code = extract_tool_call_as_python(raw_content, known_tools=tool_names)
 
         if code:
             # Add synthetic tool_call for OpenAI message format compatibility.
@@ -395,6 +449,8 @@ class AgentService:
         session: AsyncSession,
         max_iterations: int = 10,
         thread_id: Optional[str] = None,
+        user_platform: Optional[str] = None,
+        use_reasoning: bool = False,
     ) -> AsyncIterator[str]:
         """Execute an agent task and yield SSE events.
 
@@ -451,7 +507,7 @@ class AgentService:
             yield _sse("agent_status", {"step": "init", "message": "Initializing model..."})
             chat_model = _build_langchain_model(llm_settings)
 
-            # Also build an AsyncOpenAI client for deep_websearch (needs async)
+            # Also build an AsyncOpenAI client for web_research (needs async)
             client_kwargs: dict[str, Any] = {"api_key": llm_settings["api_key"]}
             if llm_settings.get("api_url"):
                 client_kwargs["base_url"] = llm_settings["api_url"]
@@ -461,6 +517,10 @@ class AgentService:
             # ── 3. Build tools (including knowledge base tool) ──────────
             yield _sse("agent_status", {"step": "init", "message": "Loading tools..."})
             from app.tools import get_all_tools, get_tool_descriptions
+
+            # Configure web search (Serper API)
+            from app.tools.web_search import configure_web_search
+            configure_web_search(serper_api_key=llm_settings.get("serper_api_key", ""))
 
             tools = get_all_tools(
                 llm_client=async_llm_client,
@@ -488,13 +548,15 @@ class AgentService:
             yield _sse("agent_tools", {"tools": tool_names, "count": len(tools)})
             timings["init_ms"] = int((time.time() - t0) * 1000)
 
-            # ── 5. Build system prompt (includes KB summary for fast answers) ─
+            # ── 5. Build system prompt (includes KB summary and user platform) ─
             system_prompt = _build_system_prompt(
                 product_name=product_name,
                 tool_descriptions=tool_desc,
                 product_description=product_description,
                 kb_summary=kb_summary,
                 max_iterations=max_iterations,
+                available_tool_names=tool_names,
+                user_platform=user_platform,
             )
 
             # ── 6. Build LangGraph agent (shared checkpointer for conversation memory) ─
@@ -510,8 +572,12 @@ class AgentService:
             yield _sse("agent_status", {"step": "executing", "message": "Agent is working..."})
             t_exec = time.time()
 
+            task_content = task
+            if use_reasoning:
+                task_content = "Think through this carefully step by step before giving your answer.\n\n" + task
+
             initial_state: AgentState = {
-                "messages": [HumanMessage(content=task)],
+                "messages": [HumanMessage(content=task_content)],
                 "script": None,
                 "context": {},
                 "current_iteration": 0,
@@ -565,6 +631,8 @@ class AgentService:
                         if msg_type == "ai":
                             # Complete AI response from call_model
                             code = extract_python_code(content)
+                            if not code:
+                                code = extract_tool_call_as_python(content, known_tools=set(tool_names))
                             if code:
                                 yield _sse("agent_code", {
                                     "iteration": iteration,

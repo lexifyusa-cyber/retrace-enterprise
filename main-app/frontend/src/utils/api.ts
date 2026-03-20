@@ -16,6 +16,9 @@ api.interceptors.request.use((config) => {
   return config
 })
 
+/** Backend `product_id` query value for agent docs/SOPs not tied to a product. */
+export const AGENT_GENERAL_SCOPE = '__none__'
+
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
@@ -289,6 +292,11 @@ export const agentApi = {
 
   deleteConversation: async (conversationId: string) => {
     const response = await api.delete(`/agent/conversations/${conversationId}`)
+    return response.data
+  },
+
+  deleteAllConversations: async (productId: string) => {
+    const response = await api.delete(`/agent/conversations`, { params: { product_id: productId } })
     return response.data
   },
 
