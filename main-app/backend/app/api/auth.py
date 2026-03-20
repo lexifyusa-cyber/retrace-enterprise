@@ -2658,3 +2658,98 @@ async def google_authorize_url(
         raise HTTPException(400, "Google auth not configured for this domain")
     from app.services.auth.google_auth import get_authorize_url
     return {"authorize_url": get_authorize_url(tenant.google_config)}
+
+
+# ── Remote Login (Supabase JWT) ──────────────────────────────────────
+
+
+class RemoteLoginRequest(BaseModel):
+    """Accept a Supabase JWT and provision / authenticate a local user."""
+    supabase_token: str = Field(..., min_length=10)
+
+
+@router.post("/remote-login")
+async def remote_login(
+    data: RemoteLoginRequest,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Validate a Supabase access token, create or update the local user,
+    and return local JWT tokens for the desktop app to use.
+    """
+    import jwt as pyjwt
+
+    jwt_secret = settings.SUPABASE_JWT_SECRET
+    if not jwt_secret:
+        raise HTTPException(500, "SUPABASE_JWT_SECRET not configured on this instance")
+
+    try:
+        payload = pyjwt.decode(
+            data.supabase_token,
+            jwt_secret,
+            algorithms=["HS256"],
+            audience="authenticated",
+        )
+    except pyjwt.ExpiredSignatureError:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Supabase token expired — sign in again on the website")
+    except pyjwt.InvalidTokenError as exc:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, f"Invalid Supabase token: {exc}")
+
+    sub = payload.get("sub")
+    email = payload.get("email")
+    if not sub or not email:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Token missing sub or email")
+
+    user_meta = payload.get("user_metadata") or {}
+    full_name = user_meta.get("full_name", "")
+
+    # Find or create local user keyed by email
+    result = await session.execute(select(User).where(func.lower(User.email) == email.lower()))
+    user = result.scalar_one_or_none()
+
+    if not user:
+        # Ensure a default tenant exists
+        tenant_result = await session.execute(select(Tenant).limit(1))
+        tenant = tenant_result.scalar_one_or_none()
+        if not tenant:
+            from uuid import uuid4
+            tenant = Tenant(
+                tenant_id=str(uuid4()),
+                name="Default",
+                status="active",
+                auth_method="email",
+            )
+            session.add(tenant)
+            await session.flush()
+
+        from uuid import uuid4
+        user = User(
+            user_id=str(uuid4()),
+            tenant_id=tenant.tenant_id,
+            email=email,
+            display_name=full_name or email.split("@")[0],
+            auth_provider="supabase",
+            role="user",
+            hashed_password=None,
+            is_active=True,
+        )
+        session.add(user)
+        await session.flush()
+        logger.info("supabase_user_provisioned", user_id=user.user_id, email=email)
+    else:
+        if full_name and not user.display_name:
+            user.display_name = full_name
+        user.last_login_at = datetime.utcnow()
+
+    if not user.is_active:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Account is deactivated")
+
+    await _log_audit(
+        session, "login", request,
+        actor_id=user.user_id, actor_email=email,
+        tenant_id=user.tenant_id,
+        details={"provider": "supabase"},
+    )
+
+    return await _create_session_and_tokens(user, request, session)

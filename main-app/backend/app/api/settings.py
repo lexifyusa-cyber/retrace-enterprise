@@ -459,8 +459,13 @@ async def get_model_name(session: AsyncSession = Depends(get_session)):
     }
 
 
-async def get_active_llm_settings(session: AsyncSession) -> dict:
-    """Get active LLM settings for internal use (requires session)."""
+async def get_active_llm_settings(session: AsyncSession, consumer_key: str | None = None) -> dict:
+    """
+    Get active LLM settings for internal use.
+
+    When GATEWAY_PROVIDER is not "direct", api_key and api_url are overridden
+    with the gateway's credentials so all LLM traffic flows through the proxy.
+    """
     db_settings = await get_or_create_settings(session)
     agent_tools_config = None
     if getattr(db_settings, "agent_tools_config", None):
@@ -468,9 +473,20 @@ async def get_active_llm_settings(session: AsyncSession) -> dict:
             agent_tools_config = json.loads(db_settings.agent_tools_config)
         except (json.JSONDecodeError, TypeError):
             pass
+
+    api_key = db_settings.api_key or app_settings.OPENAI_API_KEY
+    api_url = db_settings.api_url
+
+    # Override with gateway credentials when a gateway provider is configured
+    gateway_provider_name = (app_settings.GATEWAY_PROVIDER or "direct").lower().strip()
+    if gateway_provider_name != "direct" and app_settings.GATEWAY_BASE_URL:
+        api_url = app_settings.GATEWAY_BASE_URL
+        if consumer_key:
+            api_key = consumer_key
+
     return {
-        "api_key": db_settings.api_key or app_settings.OPENAI_API_KEY,
-        "api_url": db_settings.api_url,
+        "api_key": api_key,
+        "api_url": api_url,
         "model_name": db_settings.model_name or app_settings.REASONING_MODEL,
         "provider": db_settings.provider or "openai",
         "screenops_api_key": db_settings.screenops_api_key,

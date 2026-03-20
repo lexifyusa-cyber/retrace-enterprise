@@ -53,6 +53,15 @@ class Settings(BaseSettings):
     REASONING_MODEL: str = "gpt-4o"
     VISION_MODEL: str = "gpt-4-vision-preview"
     
+    # Supabase (remote auth — desktop app validates JWT against Supabase)
+    SUPABASE_URL: str = ""
+    SUPABASE_JWT_SECRET: str = ""
+    
+    # Gateway (vendor-agnostic LLM proxy)
+    GATEWAY_PROVIDER: str = "direct"  # direct | zuplo | kong | aws
+    GATEWAY_BASE_URL: str = ""        # e.g. https://llm.lumenatech.ai
+    GATEWAY_ADMIN_KEY: str = ""       # admin key for creating consumers
+    
     # Logging
     LOG_LEVEL: str = "DEBUG"
     LOG_FORMAT: Literal["json", "console"] = "json"
