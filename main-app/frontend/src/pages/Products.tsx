@@ -390,9 +390,9 @@ function ProductCard({
 
         if (stats && isAnyCompleted) {
           const breakdown = (stats.classification_breakdown || {}) as Record<string, number>
-          const chunksIndexed = (stats.chunks_indexed || 0) as number
-          const chunksCreated = (stats.chunks_created || 0) as number
-          const hasIndexingIssue = chunksCreated > 0 && chunksIndexed === 0
+          // Pipeline stores chunk_map_entries (total chunks), files_kept, files_extracted
+          const knowledgeTrained = (stats.chunk_map_entries || stats.chunks_created || stats.chunks_indexed || 0) as number
+          const filesKept = (stats.files_kept || stats.files_extracted || stats.files_discovered || 0) as number
           
           return (
             <div className="mb-3 p-3 bg-rt-surface rounded-lg border border-rt-border">
@@ -408,20 +408,14 @@ function ProductCard({
                 )}
               </div>
               
-              {hasIndexingIssue && (
-                <div className="mb-3 p-2 bg-yellow-500/10 border border-yellow-500/20 rounded text-xs text-yellow-400 flex items-center gap-2">
-                  <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
-                  <span>{chunksCreated.toLocaleString()} datasets created but 0 indexed — check Settings and re-train.</span>
+              {/* Single training metric */}
+              <div className="flex items-center gap-2">
+                <div className="flex-1 bg-gradient-to-r from-rt-primary/10 to-purple-500/10 rounded-lg p-2 border border-rt-primary/20">
+                  <div className="text-[10px] text-rt-text-muted mb-0.5">KB Items Trained</div>
+                  <div className="text-lg font-bold text-rt-primary">
+                    {knowledgeTrained.toLocaleString()}
+                  </div>
                 </div>
-              )}
-              
-              <div className="flex items-center gap-4 mb-2 text-xs">
-                <span><strong>{((stats.files_kept ?? stats.files_discovered ?? 0) as number).toLocaleString()}</strong> files</span>
-                <span><strong>{chunksCreated.toLocaleString()}</strong> datasets</span>
-                <span className={hasIndexingIssue ? 'text-yellow-400' : ''}><strong>{chunksIndexed.toLocaleString()}</strong> indexed</span>
-                {Number(stats.processing_errors || 0) > 0 && (
-                  <span className="text-red-400"><strong>{((stats.processing_errors || 0) as number).toLocaleString()}</strong> errors</span>
-                )}
               </div>
               
               {Object.keys(breakdown).length > 0 && (
@@ -1675,7 +1669,23 @@ function TrainingTreeView({ productId }: { productId: string }) {
     )
   }
 
-  if (error || !data || data.tree.length === 0) {
+  if (error) {
+    return (
+      <div className="p-4 bg-rt-surface rounded-lg border border-rt-border text-center text-sm text-rt-text-muted">
+        Error loading training map: {error instanceof Error ? error.message : 'Unknown error'}
+      </div>
+    )
+  }
+
+  if (!data) {
+    return (
+      <div className="p-4 bg-rt-surface rounded-lg border border-rt-border text-center text-sm text-rt-text-muted">
+        Loading training map…
+      </div>
+    )
+  }
+
+  if (data.tree.length === 0) {
     return (
       <div className="p-4 bg-rt-surface rounded-lg border border-rt-border text-center text-sm text-rt-text-muted">
         No training data found. Train this product first.
@@ -1683,80 +1693,125 @@ function TrainingTreeView({ productId }: { productId: string }) {
     )
   }
 
+  // Calculate total knowledge coverage
+  const totalKnowledgeItems = data.total_chunks
+  const totalDocuments = data.total_files
+  const knowledgeCoverage = totalKnowledgeItems > 0 ? Math.round((totalKnowledgeItems / Math.max(totalDocuments * 10, 1)) * 100) : 0
+
   return (
-    <div className="bg-rt-surface rounded-lg border border-rt-border p-3 max-h-[400px] overflow-y-auto text-rt-text">
-      {/* Root */}
-      <div className="flex items-center gap-2 mb-3 pb-2 border-b border-rt-border">
-        <Package className="w-4 h-4 text-rt-primary" />
-        <span className="text-sm font-medium">{data.product_name}</span>
-        <span className="text-xs text-rt-text-muted ml-auto">
-          {data.total_files.toLocaleString()} files · {data.total_chunks.toLocaleString()} datasets
-        </span>
+    <div className="bg-rt-surface rounded-lg border border-rt-border p-4 text-rt-text">
+      {/* Header with brain visualization */}
+      <div className="mb-4 pb-4 border-b border-rt-border">
+        <div className="flex items-start justify-between mb-3">
+          <div className="flex items-center gap-2">
+            <div className="relative">
+              <Brain className="w-6 h-6 text-rt-primary" />
+              <div className="absolute -top-1 -right-1 w-3 h-3 bg-rt-primary/20 rounded-full animate-pulse" />
+            </div>
+            <div>
+              <h3 className="text-sm font-semibold">{data.product_name}</h3>
+              <p className="text-xs text-rt-text-muted">Knowledge Base Overview</p>
+            </div>
+          </div>
+        </div>
+        
+        {/* Single training metric */}
+        <div className="mt-3">
+          <div className="bg-gradient-to-r from-rt-primary/10 to-purple-500/10 rounded-lg p-2 border border-rt-primary/20">
+            <div className="text-[10px] text-rt-text-muted mb-0.5">KB Items Trained</div>
+            <div className="text-xl font-bold text-rt-primary">{totalKnowledgeItems.toLocaleString()}</div>
+          </div>
+        </div>
       </div>
 
-      {/* Type nodes */}
-      <div className="space-y-0.5">
+      {/* Knowledge categories - brain structure */}
+      <div className="space-y-2 max-h-[450px] overflow-y-auto">
         {data.tree.map((typeNode) => {
           const config = TYPE_CONFIG[typeNode.type] || TYPE_CONFIG.other
           const TypeIcon = config.icon
           const isExpanded = expandedTypes.has(typeNode.type)
+          const knowledgePercentage = totalKnowledgeItems > 0 ? Math.round((typeNode.chunks / totalKnowledgeItems) * 100) : 0
 
           return (
-            <div key={typeNode.type}>
-              {/* Type row */}
+            <div key={typeNode.type} className="bg-rt-bg/30 rounded-lg border border-rt-border/50 overflow-hidden">
+              {/* Category header */}
               <button
                 onClick={() => toggleType(typeNode.type)}
-                className="w-full flex items-center gap-2 py-1.5 px-2 rounded hover:bg-rt-bg-lighter/80 transition-colors text-left"
+                className="w-full flex items-center gap-3 py-2.5 px-3 hover:bg-rt-bg/50 transition-colors text-left"
               >
-                <span className="text-rt-text-muted w-4 flex-shrink-0">
-                  {isExpanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
-                </span>
-                <TypeIcon className={`w-4 h-4 ${config.color} flex-shrink-0`} />
-                <span className="text-sm flex-1">{config.label}</span>
-                <span className="text-xs text-rt-text-muted">
-                  {typeNode.file_count} {typeNode.file_count === 1 ? 'file' : 'files'} · {typeNode.chunks.toLocaleString()} datasets
-                </span>
+                <div className={`p-1.5 rounded-lg ${
+                  config.color === 'text-blue-400' ? 'bg-blue-400/10' :
+                  config.color === 'text-green-400' ? 'bg-green-400/10' :
+                  config.color === 'text-orange-400' ? 'bg-orange-400/10' :
+                  config.color === 'text-purple-400' ? 'bg-purple-400/10' :
+                  config.color === 'text-indigo-400' ? 'bg-indigo-400/10' :
+                  config.color === 'text-yellow-400' ? 'bg-yellow-400/10' :
+                  'bg-rt-text-muted/10'
+                }`}>
+                  <TypeIcon className={`w-4 h-4 ${config.color} flex-shrink-0`} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium text-rt-text">{config.label}</div>
+                  <div className="text-xs text-rt-text-muted mt-0.5">
+                    {typeNode.file_count} {typeNode.file_count === 1 ? 'document' : 'documents'} · {typeNode.chunks.toLocaleString()} knowledge items
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <div className="w-16 h-1.5 bg-rt-border rounded-full overflow-hidden">
+                    <div 
+                      className={`h-full transition-all ${
+                        config.color === 'text-blue-400' ? 'bg-blue-400' :
+                        config.color === 'text-green-400' ? 'bg-green-400' :
+                        config.color === 'text-orange-400' ? 'bg-orange-400' :
+                        config.color === 'text-purple-400' ? 'bg-purple-400' :
+                        config.color === 'text-indigo-400' ? 'bg-indigo-400' :
+                        config.color === 'text-yellow-400' ? 'bg-yellow-400' :
+                        'bg-rt-text-muted'
+                      }`}
+                      style={{ width: `${knowledgePercentage}%` }}
+                    />
+                  </div>
+                  <span className="text-xs text-rt-text-muted w-10 text-right">{knowledgePercentage}%</span>
+                  {isExpanded ? <ChevronDown className="w-4 h-4 text-rt-text-muted" /> : <ChevronRight className="w-4 h-4 text-rt-text-muted" />}
+                </div>
               </button>
 
-              {/* Sub-category nodes */}
-              {isExpanded && (
-                <div className="ml-6 border-l border-rt-border pl-2">
+              {/* Sub-categories - expanded view */}
+              {isExpanded && typeNode.sub_categories.length > 0 && (
+                <div className="border-t border-rt-border/50 bg-rt-bg/20">
                   {typeNode.sub_categories.map((subCat) => {
                     const subKey = `${typeNode.type}:${subCat.name}`
                     const isSubExpanded = expandedSubCats.has(subKey)
 
                     return (
-                      <div key={subKey}>
-                        {/* Sub-category row */}
+                      <div key={subKey} className="border-b border-rt-border/30 last:border-b-0">
                         <button
                           onClick={() => toggleSubCat(subKey)}
-                          className="w-full flex items-center gap-2 py-1 px-2 rounded hover:bg-rt-bg-lighter/80 transition-colors text-left"
+                          className="w-full flex items-center gap-2 py-2 px-4 hover:bg-rt-bg/30 transition-colors text-left"
                         >
-                          <span className="text-rt-text-muted w-4 flex-shrink-0">
-                            {isSubExpanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
-                          </span>
-                          <Layers className="w-3.5 h-3.5 text-rt-text-muted flex-shrink-0" />
-                          <span className="text-xs text-rt-text-muted flex-1">{subCat.name}</span>
+                          <Layers className="w-3.5 h-3.5 text-rt-text-muted/60 flex-shrink-0" />
+                          <span className="text-xs text-rt-text flex-1">{subCat.name}</span>
                           <span className="text-xs text-rt-text-muted">
-                            {subCat.file_count} · {subCat.chunks.toLocaleString()} datasets
+                            {subCat.file_count} docs · {subCat.chunks.toLocaleString()} items
                           </span>
+                          {isSubExpanded ? <ChevronDown className="w-3 h-3 text-rt-text-muted ml-2" /> : <ChevronRight className="w-3 h-3 text-rt-text-muted ml-2" />}
                         </button>
 
-                        {/* File nodes */}
-                        {isSubExpanded && (
-                          <div className="ml-6 border-l border-rt-border pl-2">
+                        {/* Individual documents */}
+                        {isSubExpanded && subCat.files.length > 0 && (
+                          <div className="bg-rt-bg/10 pl-4 pr-2 py-1.5 space-y-1">
                             {subCat.files.map((file) => (
                               <div
                                 key={file.path}
-                                className="flex items-center gap-2 py-0.5 px-2 text-left group"
+                                className="flex items-center gap-2 py-1 px-2 rounded hover:bg-rt-bg/20 transition-colors group"
                                 title={file.path}
                               >
-                                <File className="w-3 h-3 text-rt-text-muted flex-shrink-0" />
-                                <span className="text-xs text-rt-text-muted flex-1 truncate font-mono">
+                                <File className="w-3 h-3 text-rt-text-muted/60 flex-shrink-0" />
+                                <span className="text-xs text-rt-text-muted flex-1 truncate">
                                   {file.name}
                                 </span>
-                                <span className="text-xs text-rt-text-muted">
-                                  {file.chunks}
+                                <span className="text-xs text-rt-text-muted/80 font-medium">
+                                  {file.chunks} items
                                 </span>
                               </div>
                             ))}

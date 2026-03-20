@@ -13,6 +13,7 @@ Every step is timed so the caller can see where latency comes from.
 Supports both blocking and SSE-streaming responses.
 """
 
+import asyncio
 import json
 import time
 from typing import Any, AsyncIterator, Optional
@@ -60,7 +61,7 @@ class QueryService:
     # ------------------------------------------------------------------
 
     async def _kb_search(self, llm, product_ids, question) -> list:
-        """Execute KB search for each product and return chunk-like objects for the pipeline."""
+        """Execute KB search for all products in parallel and return chunk-like objects."""
         from types import SimpleNamespace
         from app.rag.kb_search import search_kb
 
@@ -68,8 +69,7 @@ class QueryService:
         model = llm.get("model_name") or settings.REASONING_MODEL
         base_url = llm.get("api_url") or None
 
-        all_chunks = []
-        for pid in product_ids:
+        async def _search_one(pid: str):
             try:
                 result = await search_kb(
                     query=question,
@@ -80,7 +80,7 @@ class QueryService:
                     top_k=15,
                 )
                 if result and "No knowledge base" not in result and "No relevant" not in result:
-                    chunk = SimpleNamespace(
+                    return SimpleNamespace(
                         id=f"kb_{pid}",
                         text=result,
                         source_path="knowledge_base",
@@ -91,11 +91,12 @@ class QueryService:
                             model_dump=lambda exclude_none=True: {},
                         ),
                     )
-                    all_chunks.append(chunk)
             except Exception as exc:
                 logger.warning("kb_search_failed", product_id=pid, error=str(exc))
+            return None
 
-        return all_chunks
+        results = await asyncio.gather(*[_search_one(pid) for pid in product_ids])
+        return [c for c in results if c is not None]
 
     # ------------------------------------------------------------------
     # Public: blocking query

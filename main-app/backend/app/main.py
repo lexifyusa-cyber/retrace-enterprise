@@ -50,7 +50,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     # Startup
     setup_logging()
     logger.info("Starting ReTrace", version=settings.APP_VERSION)
-    
+
+    # Capture the asyncio event loop for PTY manager's background threads
+    import asyncio as _asyncio
+    from app.services.pty_manager import pty_manager as _pty_mgr
+    _pty_mgr.set_event_loop(_asyncio.get_running_loop())
+
     await init_db()
     logger.info("Database initialized", db_url=settings.DATABASE_URL)
     print(f"[STARTUP] Database URL: {settings.DATABASE_URL}", flush=True)
@@ -97,6 +102,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
                 cursor.execute("ALTER TABLE llm_settings ADD COLUMN screenops_mouse_timeout INTEGER DEFAULT 30")
                 conn.commit()
                 print("[STARTUP] Added screenops_mouse_timeout column to llm_settings", flush=True)
+            if "screenops_image_scale" not in cols:
+                cursor.execute("ALTER TABLE llm_settings ADD COLUMN screenops_image_scale INTEGER DEFAULT 100")
+                conn.commit()
+                print("[STARTUP] Added screenops_image_scale column to llm_settings", flush=True)
+            if "agent_max_iterations" not in cols:
+                cursor.execute("ALTER TABLE llm_settings ADD COLUMN agent_max_iterations INTEGER DEFAULT 10")
+                conn.commit()
+                print("[STARTUP] Added agent_max_iterations column to llm_settings", flush=True)
+            if "serper_api_key" not in cols:
+                cursor.execute("ALTER TABLE llm_settings ADD COLUMN serper_api_key TEXT")
+                conn.commit()
+                print("[STARTUP] Added serper_api_key column to llm_settings", flush=True)
             conn.close()
     except Exception as exc:
         print(f"[STARTUP] llm_settings migration skipped: {exc}", flush=True)

@@ -55,6 +55,7 @@ class AgentToolInfo(BaseModel):
     requires_key: Optional[str] = None
     available: bool = True
     enabled: bool = True
+    group: Optional[str] = None
 
 
 # ── Conversation schemas ─────────────────────────────────────────────────
@@ -202,15 +203,29 @@ async def list_agent_tools(
     config = llm.get("agent_tools_config")
     if config and isinstance(config, dict):
         disabled_set = set(config.get("disabled", []))
+    # Backward compat: old KB tool names → treat knowledge_base as disabled
+    _legacy_kb_names = {"search_knowledge_base", "list_kb_entries", "read_kb_file", "browse_kb_structure"}
+    if disabled_set & _legacy_kb_names:
+        disabled_set = set(disabled_set) | {"knowledge_base"}
 
+    FILE_OPS = "File Operations"
+    SEARCH = "Search"
     tools = [
-        AgentToolInfo(name="terminal", description="Execute shell/terminal commands", available=True),
-        AgentToolInfo(name="read_file", description="Read file contents from disk", available=True),
-        AgentToolInfo(name="write_file", description="Write text content to a file", available=True),
-        AgentToolInfo(name="basic_search", description="Search the web for quick information", available=True),
-        AgentToolInfo(name="deep_websearch", description="Comprehensive multi-source web research", available=bool(llm.get("api_key"))),
+        AgentToolInfo(name="terminal", description="Execute shell/terminal commands with real-time output", available=True),
+        AgentToolInfo(name="read_file", description="Read file contents from disk", available=True, group=FILE_OPS),
+        AgentToolInfo(name="write_file", description="Write text content to a file", available=True, group=FILE_OPS),
+        AgentToolInfo(name="delete_file", description="Delete a file from disk", available=True, group=FILE_OPS),
+        AgentToolInfo(name="str_replace", description="Precise text replacement in files", available=True, group=FILE_OPS),
+        AgentToolInfo(name="download_file", description="Download a file from a URL", available=True, group=FILE_OPS),
+        AgentToolInfo(name="grep", description="Search file contents using regex (powered by ripgrep)", available=True, group=SEARCH),
+        AgentToolInfo(name="glob_search", description="Find files matching a glob pattern", available=True, group=SEARCH),
+        AgentToolInfo(name="web_search", description="Search the web for quick information (Serper API / DuckDuckGo)", available=True, group=SEARCH),
+        AgentToolInfo(name="web_fetch", description="Fetch URL content as clean readable text", available=True, group=SEARCH),
+        AgentToolInfo(name="web_research", description="Comprehensive multi-source web research with LLM selection", available=bool(llm.get("api_key")), group=SEARCH),
+        AgentToolInfo(name="web_advanced", description="Advanced web search with operators (Serper API)", available=True, group=SEARCH),
+        AgentToolInfo(name="todo_write", description="Plan and track multi-step tasks", available=True),
         AgentToolInfo(name="screenops", description="Screen-based computer automation (click, type, press)", requires_key="screenops_api_key", available=screenops_available),
-        AgentToolInfo(name="search_knowledge_base", description="Search the product's trained knowledge base for information", available=True),
+        AgentToolInfo(name="knowledge_base", description="Product knowledge base: search, list, read, browse", available=True),
     ]
 
     for t in tools:
@@ -326,6 +341,31 @@ async def delete_conversation(
     return {"status": "deleted", "conversation_id": conversation_id}
 
 
+@router.delete("/conversations")
+async def delete_all_conversations(
+    product_id: Optional[str] = Query(None),
+    session: AsyncSession = Depends(get_session),
+):
+    """Delete all conversations for a product (or product-less ones if product_id=__none__)."""
+    from app.services.pty_manager import pty_manager
+
+    q = select(Conversation)
+    if product_id == "__none__":
+        q = q.where(Conversation.product_id.is_(None))
+    elif product_id:
+        q = q.where(Conversation.product_id == product_id)
+
+    result = await session.execute(q)
+    convos = result.scalars().all()
+    count = len(convos)
+
+    for convo in convos:
+        pty_manager.destroy(convo.conversation_id)
+        await session.delete(convo)
+
+    return {"status": "deleted", "count": count}
+
+
 @router.get("/conversations/{conversation_id}/terminal")
 async def get_terminal_status(conversation_id: str):
     """Check whether a PTY session is active for a conversation."""
@@ -431,7 +471,7 @@ You will receive a goal and the previous conversation context (user questions, a
 Create a detailed, step-by-step SOP that an automated agent can follow to accomplish the goal.
 
 IMPORTANT RULES:
-- Each step must specify which TOOL to use. Available tools: terminal, read_file, write_file, basic_search, deep_websearch, screenops, search_knowledge_base.
+- Each step must specify which TOOL to use. Available tools: terminal, read_file, write_file, web_search, web_research, web_advanced, screenops, search_knowledge_base.
 - Each step must have an exact command, path, or input (not vague instructions).
 - Steps must be in the correct execution order.
 - Include prerequisites (what must be true before starting).
@@ -616,15 +656,18 @@ async def create_sop(
 
 @router.get("/sops")
 async def list_sops(
-    product_id: str = Query(...),
+    product_id: Optional[str] = Query(None),
     session: AsyncSession = Depends(get_session),
 ):
-    """List all SOPs for a product, newest first."""
-    result = await session.execute(
-        select(SOP)
-        .where(SOP.product_id == product_id)
-        .order_by(SOP.created_at.desc())
-    )
+    """List all SOPs for a product, newest first. product_id=__none__ lists product-less (general) automations."""
+    q = select(SOP)
+    if product_id == "__none__":
+        q = q.where(SOP.product_id.is_(None))
+    elif product_id:
+        q = q.where(SOP.product_id == product_id)
+    else:
+        raise HTTPException(status_code=422, detail="product_id is required (use a product UUID or __none__ for general)")
+    result = await session.execute(q.order_by(SOP.created_at.desc()))
     sops = result.scalars().all()
     return [s.to_dict() for s in sops]
 
@@ -845,7 +888,7 @@ Apply the requested changes to the SOP while preserving the existing structure a
 IMPORTANT RULES:
 - Maintain the same JSON format as the original SOP.
 - Renumber steps if steps are added or removed so they are sequential starting from 1.
-- Each step must specify which TOOL to use. Available tools: terminal, read_file, write_file, basic_search, deep_websearch, screenops, search_knowledge_base.
+- Each step must specify which TOOL to use. Available tools: terminal, read_file, write_file, web_search, web_research, web_advanced, screenops, search_knowledge_base.
 - Each step must have an exact command, path, or input (not vague instructions).
 - Keep prerequisites and expected_outcome up to date with the changes.
 
@@ -1250,16 +1293,19 @@ async def create_doc(
 
 @router.get("/docs")
 async def list_docs(
-    product_id: str = Query(...),
+    product_id: Optional[str] = Query(None),
     session: AsyncSession = Depends(get_session),
 ):
-    """List all documentation articles for a product, newest first."""
+    """List documentation for a product, newest first. product_id=__none__ lists general (no product) articles."""
     from app.models.documentation import Documentation
-    result = await session.execute(
-        select(Documentation)
-        .where(Documentation.product_id == product_id)
-        .order_by(Documentation.created_at.desc())
-    )
+    q = select(Documentation)
+    if product_id == "__none__":
+        q = q.where(Documentation.product_id.is_(None))
+    elif product_id:
+        q = q.where(Documentation.product_id == product_id)
+    else:
+        raise HTTPException(status_code=422, detail="product_id is required (use a product UUID or __none__ for general)")
+    result = await session.execute(q.order_by(Documentation.created_at.desc()))
     docs = result.scalars().all()
     return [d.to_dict() for d in docs]
 

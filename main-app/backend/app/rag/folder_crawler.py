@@ -6,9 +6,13 @@ every file is checked against EXCLUDE_EXTENSIONS; matching files are tagged
 ``phase1_excluded=True``.  Folders whose **entire** subtree is excluded
 bubble up to ``phase1_excluded`` as well.
 
+Does not follow directory symlinks (avoids cycles and "file name too long").
+Skips entries that raise ENAMETOOLONG or ELOOP.
+
 Returns one TreeNode per root path (so multiple folder groups → multiple trees).
 """
 
+import errno
 from datetime import datetime
 from pathlib import Path
 
@@ -86,6 +90,11 @@ class FolderCrawlerService:
         except PermissionError:
             logger.warning("crawl_permission_denied", path=str(directory))
             return None
+        except OSError as exc:
+            if exc.errno in (errno.ENAMETOOLONG, errno.ELOOP):
+                logger.warning("crawl_path_too_long_or_loop", path=str(directory), error=str(exc))
+                return None
+            raise
 
         node = TreeNode(
             name=directory.name,
@@ -99,13 +108,24 @@ class FolderCrawlerService:
             if entry.name in IGNORE_DIRS or entry.name.startswith("."):
                 continue
 
+            # Do not follow directory symlinks (avoids cycles and ENAMETOOLONG)
+            if entry.is_symlink():
+                continue
+
             if entry.is_dir():
                 child = self._walk_dir(entry, seen)
                 if child and (child.children or child.is_file):
                     node.children.append(child)
 
             elif entry.is_file():
-                resolved = str(entry.resolve())
+                try:
+                    resolved = str(entry.resolve())
+                except OSError as exc:
+                    if exc.errno in (errno.ENAMETOOLONG, errno.ELOOP):
+                        logger.warning("crawl_skip_path_too_long_or_loop", path=str(entry), error=str(exc))
+                    else:
+                        logger.warning("crawl_resolve_error", path=str(entry), error=str(exc))
+                    continue
                 if resolved in seen:
                     continue
                 seen.add(resolved)
@@ -113,7 +133,10 @@ class FolderCrawlerService:
                 try:
                     stat = entry.stat()
                 except OSError as exc:
-                    logger.warning("crawl_stat_error", path=str(entry), error=str(exc))
+                    if exc.errno in (errno.ENAMETOOLONG, errno.ELOOP):
+                        logger.warning("crawl_skip_path_too_long_or_loop", path=str(entry), error=str(exc))
+                    else:
+                        logger.warning("crawl_stat_error", path=str(entry), error=str(exc))
                     continue
 
                 ext = entry.suffix.lower()

@@ -1,31 +1,24 @@
 """
-KB Search — Enterprise retrieval engine (Cursor-style, zero embeddings).
+KB Search — Fast retrieval engine (zero embeddings, zero internal LLM calls).
 
-Five retrieval strategies fused with Reciprocal Rank Fusion (RRF):
-  0. Structural Registry — exact match on skill/component names extracted
-     from the KB (like checking a table of contents / `glob skills/*/SKILL.md`).
-  1. Direct Path Lookup — files whose paths contain query terms get
-     guaranteed inclusion (like `grep -l` finding the obvious file).
-  2. Multi-Query Keyword Search — LLM generates 3 query reformulations;
-     keyword search runs for each against file analysis, folder analysis,
-     and full text (like a human trying different grep patterns).
+Retrieval strategies fused with Reciprocal Rank Fusion (RRF):
+  0. Structural Registry — match on component/key-file names from the KB.
+  1. Direct Path Lookup — files whose paths contain query terms.
+  2. Multi-keyword search — deterministic keyword expansion + agent-provided
+     keywords; search runs against file analysis, folder analysis, and full
+     text (like a human trying different grep patterns).
   3. RRF Fusion — merge all rankings into a single ordered list.
-  4. LLM Re-Ranking — an LLM pass re-scores the top candidates for
-     the actual user question, filtering noise (like a human reading
-     grep output and picking the right file).
 
-No embeddings, no vector DB. All data comes from the in-memory KB blob.
+No embeddings, no vector DB, no internal LLM calls.
+All data comes from the in-memory KB blob.  Speed target: <500ms per search.
 """
 
 import asyncio
-import json
 import re
-import yaml
 from pathlib import PurePosixPath
 from typing import Optional
 
 import structlog
-from openai import AsyncOpenAI
 
 from app.rag.kb_store import KnowledgeBaseStore
 
@@ -61,79 +54,7 @@ _EXPANSION_FALLBACK_KEYWORDS_COUNT = 5
 _registry_cache: dict[str, tuple[dict, float]] = {}
 _REGISTRY_CACHE_TTL = 300
 
-# ---------------------------------------------------------------------------
-# Multi-query expansion prompt
-# ---------------------------------------------------------------------------
-
-_EXPANSION_SYSTEM = """\
-You are a search query expander for a software knowledge base.
-
-The knowledge base contains structured information about a software product:
-- Project summary and architecture
-- Per-folder purpose descriptions
-- Per-file descriptions with component, role, technologies, relationships
-- Full extracted text of source files
-
-Your job: given a user question, produce a JSON search plan that maximizes
-recall by expanding the question into terms that would match the KB content.
-
-COMPONENTS in this product: {components}
-TECHNOLOGIES in this product: {technologies}
-FILE NAMES in this product (sample): {file_types}
-
-Return ONLY a JSON object with these fields:
-{{
-  "keywords": ["5-15 terms: original terms + synonyms + related concepts that might appear in code, docs, file descriptions, or folder purposes"],
-  "components": ["1-5 component names from the list above most likely to contain the answer, or empty if unclear"],
-  "file_patterns": ["3-8 lowercase glob-like substrings for file/folder names, e.g. auth, pass, login, credential"],
-  "intent": "broad or specific",
-  "alternative_queries": ["2-3 reformulations of the question using different vocabulary and angles, to catch files that use different terminology"]
-}}
-
-Rules:
-- keywords MUST include the original question terms AND semantic relatives.
-  Example: "credentials" → ["credentials", "password", "auth", "authentication",
-  "login", "secret", "token", "api key", "oauth", "session"]
-- components should only include names from the COMPONENTS list above.
-- file_patterns are simple lowercase substrings, not full globs.
-  IMPORTANT: include substrings that would match the canonical file for the topic.
-  For example, if the user asks about a "skill" named "goplaces", include both
-  "goplaces" and "skill" so that files like skills/goplaces/SKILL.md are found.
-  Look at the FILE NAMES list for common definition files (e.g. SKILL.md,
-  README.md, config.yaml, etc.) and include relevant ones.
-- alternative_queries should rephrase the question using synonyms, related
-  concepts, or different angles. For example: "skills for reviewing blogs" →
-  ["blog monitoring tool", "RSS feed watcher skill", "blog tracking plugin"].
-  Think about what DIFFERENT words the actual files might use.
-- intent is "broad" for overview/architecture questions, "specific" for targeted lookups.
-- Return ONLY valid JSON. No markdown fences, no explanation.
-"""
-
-# ---------------------------------------------------------------------------
-# LLM Re-ranking prompt
-# ---------------------------------------------------------------------------
-
-_RERANK_SYSTEM = """\
-You are a search result re-ranker. Given a user question and a list of
-candidate files from a knowledge base, select the most relevant files
-and rank them by relevance.
-
-For each candidate you receive: file path, description, and a short
-content preview. Judge relevance based on:
-1. Does this file DIRECTLY answer the question?
-2. Is this the CANONICAL/PRIMARY source for the topic (e.g. a SKILL.md
-   file for a skill question, a config file for a config question)?
-3. Is the content actually about the topic, or does it just mention
-   related words in passing?
-
-Return ONLY a JSON array of file paths, ordered from most relevant to
-least relevant. Include ONLY files that are actually relevant to the
-question. Exclude files that are tangentially related or noise.
-
-Example: ["path/to/most_relevant.md", "path/to/second.md", "path/to/third.md"]
-
-Return ONLY the JSON array. No markdown fences, no explanation.
-"""
+_BROAD_QUERY_HINTS = {"what", "how", "overview", "architecture", "explain", "describe", "summary", "structure"}
 
 
 # ===================================================================
@@ -143,12 +64,18 @@ Return ONLY the JSON array. No markdown fences, no explanation.
 async def search_kb(
     query: str,
     product_id: str,
-    api_key: str,
-    model: str,
+    api_key: str = "",
+    model: str = "",
     base_url: Optional[str] = None,
     top_k: int = 10,
+    agent_keywords: Optional[list[str]] = None,
 ) -> str:
-    """Enterprise hybrid search: multi-query + structural + vector + RRF + re-rank."""
+    """Fast hybrid search — deterministic expansion + RRF, no internal LLM calls.
+
+    *agent_keywords*: optional keywords provided by the calling agent at tool-call
+    time (the agent LLM already understands the query, so its keywords are high
+    quality and come at zero extra latency).
+    """
     kb_store = KnowledgeBaseStore()
     kb_data = await kb_store.load(product_id)
     if not kb_data:
@@ -162,35 +89,23 @@ async def search_kb(
     if not file_analysis and not files:
         return "Knowledge base is empty — no files were indexed during training."
 
-    # ── Stage 1: LLM multi-query expansion ────────────────────────
+    # ── Deterministic expansion (no LLM call) ─────────────────────
     components = _extract_component_names(project_analysis, file_analysis)
-    technologies = project_analysis.get("technologies", [])
-    file_types = _extract_file_types(file_analysis, files)
+    expansion = _deterministic_expand(query, components, agent_keywords)
 
-    expansion = await _expand_query(
-        query=query,
-        components=components,
-        technologies=technologies,
-        file_types=file_types,
-        api_key=api_key,
-        model=model,
-        base_url=base_url,
-    )
-
-    keywords = expansion.get("keywords", [query])
-    target_components = expansion.get("components", [])
-    file_patterns = expansion.get("file_patterns", [])
-    intent = expansion.get("intent", "broad")
-    alt_queries = expansion.get("alternative_queries", [])
+    keywords = expansion["keywords"]
+    target_components = expansion["components"]
+    file_patterns = expansion["file_patterns"]
+    intent = expansion["intent"]
 
     logger.info(
-        "kb_search_expansion",
+        "kb_search_fast",
         query=query[:80],
         keywords=keywords[:10],
         components=target_components,
         file_patterns=file_patterns,
         intent=intent,
-        alt_queries=alt_queries[:3],
+        agent_kw_count=len(agent_keywords) if agent_keywords else 0,
     )
 
     # ── Stage 0: Structural registry search ───────────────────────
@@ -199,91 +114,60 @@ async def search_kb(
         registry, query, keywords, file_patterns,
     )
 
-    # ── Stage 1b: Direct path lookup ──────────────────────────────
+    # ── Stage 1: Direct path lookup ───────────────────────────────
     direct_hits = _direct_path_matches(file_analysis, files, keywords, file_patterns)
 
-    # ── Stage 2: Multi-query keyword search ───────────────────────
-    all_queries = [query] + alt_queries[:2]
-    keyword_rankings: list[list[tuple[str, float]]] = []
+    # ── Stage 2: Keyword search (parallel across analysis layers) ─
+    scores_a, scores_b, scores_c = await asyncio.gather(
+        _search_file_analysis(file_analysis, keywords, target_components, file_patterns),
+        _search_folder_analysis(folder_analysis, file_analysis, keywords, file_patterns),
+        _search_file_text(files, keywords),
+    )
 
-    for q_variant in all_queries:
-        if q_variant == query:
-            kw_set = keywords
-        else:
-            kw_set = _basic_keywords(q_variant) + keywords[:5]
+    all_paths = set(scores_a) | set(scores_b) | set(scores_c) | direct_hits
+    keyword_ranking: list[tuple[str, float]] = []
+    all_terms = list({k.lower() for k in keywords} | {p.lower() for p in file_patterns})
 
-        scores_a, scores_b, scores_c = await asyncio.gather(
-            _search_file_analysis(file_analysis, kw_set, target_components, file_patterns),
-            _search_folder_analysis(folder_analysis, file_analysis, kw_set, file_patterns),
-            _search_file_text(files, kw_set),
+    for path in all_paths:
+        score = (
+            scores_a.get(path, 0.0) * _W_FILE_ANALYSIS
+            + scores_b.get(path, 0.0) * _W_FOLDER_MATCH
+            + scores_c.get(path, 0.0) * _W_TEXT_MATCH
         )
+        if path in direct_hits and score < 1.0:
+            score = max(score, 1.0)
+        fa = file_analysis.get(path, {})
+        score *= _IMPORTANCE_BOOST.get(fa.get("importance", "medium"), 1.0)
+        file_comp = (fa.get("component") or "").lower()
+        if file_comp and file_comp in [c.lower() for c in target_components]:
+            score *= _COMPONENT_BOOST
+        path_lower = path.lower()
+        path_hits = sum(1 for t in all_terms if t in path_lower)
+        if path_hits > 0 and all_terms:
+            score *= 1.0 + (path_hits / len(all_terms)) * (_PATH_BOOST_MAX - 1.0)
+        fn_lower = PurePosixPath(path).name.lower()
+        stem_lower = PurePosixPath(path).stem.lower()
+        if any(p in fn_lower or p in stem_lower for p in _NOISY_FILE_PATTERNS):
+            score *= _NOISY_FILE_PENALTY
+        keyword_ranking.append((path, score))
 
-        all_paths = set(scores_a) | set(scores_b) | set(scores_c) | direct_hits
-        ranked: list[tuple[str, float]] = []
-        for path in all_paths:
-            score = (
-                scores_a.get(path, 0.0) * _W_FILE_ANALYSIS
-                + scores_b.get(path, 0.0) * _W_FOLDER_MATCH
-                + scores_c.get(path, 0.0) * _W_TEXT_MATCH
-            )
-            if path in direct_hits and score < 1.0:
-                score = max(score, 1.0)
+    keyword_ranking.sort(key=lambda x: x[1], reverse=True)
 
-            fa = file_analysis.get(path, {})
-            score *= _IMPORTANCE_BOOST.get(fa.get("importance", "medium"), 1.0)
-
-            file_comp = (fa.get("component") or "").lower()
-            if file_comp and file_comp in [c.lower() for c in target_components]:
-                score *= _COMPONENT_BOOST
-
-            path_lower = path.lower()
-            all_terms = list({k.lower() for k in kw_set} | {p.lower() for p in file_patterns})
-            path_hits = sum(1 for t in all_terms if t in path_lower)
-            if path_hits > 0 and all_terms:
-                score *= 1.0 + (path_hits / len(all_terms)) * (_PATH_BOOST_MAX - 1.0)
-
-            fn_lower = PurePosixPath(path).name.lower()
-            stem_lower = PurePosixPath(path).stem.lower()
-            if any(p in fn_lower or p in stem_lower for p in _NOISY_FILE_PATTERNS):
-                score *= _NOISY_FILE_PENALTY
-
-            ranked.append((path, score))
-
-        ranked.sort(key=lambda x: x[1], reverse=True)
-        keyword_rankings.append(ranked)
-
-    # ── Stage 3: RRF fusion ─────────────────────────────────────
-    all_rankings_for_rrf: list[list[tuple[str, float]]] = []
-
+    # ── Stage 3: RRF fusion ───────────────────────────────────────
+    rankings: list[list[tuple[str, float]]] = []
     if structural_ranking:
-        all_rankings_for_rrf.append(structural_ranking)
+        rankings.append(structural_ranking)
+    if keyword_ranking:
+        rankings.append(keyword_ranking)
 
-    all_rankings_for_rrf.extend(keyword_rankings)
-
-    fused = _reciprocal_rank_fusion(*all_rankings_for_rrf)
+    fused = _reciprocal_rank_fusion(*rankings)
 
     if not fused:
         return f"No relevant information found in knowledge base for: {query}"
 
-    # ── Stage 4: LLM re-ranking ──────────────────────────────────
-    candidates_for_rerank = fused[:top_k * 3]
-    reranked = await _llm_rerank(
-        query=query,
-        candidates=candidates_for_rerank,
-        file_analysis=file_analysis,
-        files=files,
-        api_key=api_key,
-        model=model,
-        base_url=base_url,
-        top_k=top_k,
-    )
+    top_paths = fused[:top_k]
 
-    if reranked:
-        top_paths = reranked[:top_k]
-    else:
-        top_paths = [(p, s) for p, s in fused[:top_k]]
-
-    # ── Stage 5: Format response ──────────────────────────────────
+    # ── Format response ───────────────────────────────────────────
     return _format_results(
         query=query,
         top_paths=top_paths,
@@ -299,11 +183,50 @@ async def search_kb(
 # Additional public helpers for granular KB tools
 # ===================================================================
 
+async def get_product_summary(product_id: str) -> Optional[str]:
+    """Return a short product summary from the KB for embedding in the system prompt.
+
+    Returns None if no KB exists.  The summary is cheap to produce (just reads
+    the cached blob's project_analysis) and lets the agent answer overview
+    questions without any tool call at all.
+    """
+    kb_store = KnowledgeBaseStore()
+    kb_data = await kb_store.load(product_id)
+    if not kb_data:
+        return None
+
+    pa = kb_data.get("project_analysis", {})
+    if not pa:
+        return None
+
+    parts: list[str] = []
+    if pa.get("summary"):
+        parts.append(pa["summary"])
+    if pa.get("technologies"):
+        parts.append(f"Technologies: {', '.join(pa['technologies'][:15])}")
+    if pa.get("architecture_style"):
+        parts.append(f"Architecture: {pa['architecture_style']}")
+    comps = pa.get("key_components", [])
+    if comps:
+        comp_lines = [f"  - {c['name']}: {c.get('description', '')}" for c in comps[:10] if isinstance(c, dict)]
+        if comp_lines:
+            parts.append("Key components:\n" + "\n".join(comp_lines))
+
+    folder_analysis = kb_data.get("folder_analysis", {})
+    if folder_analysis:
+        top_dirs = sorted(folder_analysis.items(), key=lambda x: x[1].get("importance", ""), reverse=True)[:8]
+        dir_lines = [f"  - {d}: {info.get('purpose', '')[:80]}" for d, info in top_dirs]
+        if dir_lines:
+            parts.append("Top-level structure:\n" + "\n".join(dir_lines))
+
+    return "\n".join(parts) if parts else None
+
+
 async def list_kb_entries(
     product_id: str,
     category: str = "all",
 ) -> str:
-    """List entries in the KB: skills, configs, docs, source, or all."""
+    """List entries in the KB: key_files, directories, files, or all."""
     kb_store = KnowledgeBaseStore()
     kb_data = await kb_store.load(product_id)
     if not kb_data:
@@ -312,11 +235,11 @@ async def list_kb_entries(
     registry = _build_structural_registry(kb_data, product_id)
     parts: list[str] = []
 
-    if category in ("all", "skills") and registry.get("skills"):
-        parts.append(f"=== SKILLS ({len(registry['skills'])}) ===")
-        for s in registry["skills"]:
-            parts.append(f"  {s['name']}: {s['description']}")
-            parts.append(f"    Path: {s['path']}")
+    if category in ("all", "key_files") and registry.get("key_files"):
+        kf = registry["key_files"]
+        parts.append(f"=== KEY FILES ({len(kf)}) ===")
+        for f in kf:
+            parts.append(f"  {f['path']}: {f['description']}")
 
     if category in ("all", "directories") and registry.get("directories"):
         dirs = registry["directories"]
@@ -387,7 +310,12 @@ async def read_kb_file(product_id: str, file_path: str) -> str:
 
 
 async def browse_kb_structure(product_id: str, path: str = "/") -> str:
-    """Browse the KB folder structure at a given path."""
+    """Browse the KB folder structure at a given path.
+
+    Handles paths stored with or without leading slashes and supports
+    substring/suffix matching so ``browse("/docs/experiments")`` works even
+    when the KB stores paths as ``/full/repo/docs/experiments/...``.
+    """
     kb_store = KnowledgeBaseStore()
     kb_data = await kb_store.load(product_id)
     if not kb_data:
@@ -398,42 +326,15 @@ async def browse_kb_structure(product_id: str, path: str = "/") -> str:
     files_data = kb_data.get("files", {})
     all_paths = sorted(set(file_analysis.keys()) | set(files_data.keys()))
 
-    path_normalized = path.rstrip("/")
-    if path_normalized and not path_normalized.startswith("/"):
-        path_normalized = "/" + path_normalized
-
-    # Find entries under this path
-    children: dict[str, list[str]] = {}  # immediate child dir → files
-    direct_files: list[str] = []
-
-    for fp in all_paths:
-        if path_normalized and not fp.startswith(path_normalized):
-            # Try without leading slash
-            if not fp.startswith(path_normalized.lstrip("/")):
-                continue
-
-        # Get the relative part after path
-        if path_normalized:
-            relative = fp[len(path_normalized):].lstrip("/")
-        else:
-            relative = fp.lstrip("/")
-
-        parts_list = relative.split("/")
-        if len(parts_list) == 1:
-            direct_files.append(fp)
-        elif len(parts_list) > 1:
-            child_dir = parts_list[0]
-            if child_dir not in children:
-                children[child_dir] = []
-            children[child_dir].append(fp)
+    children, direct_files, matched_prefix = _browse_match(all_paths, path)
 
     result_parts = [f"=== KB Structure: {path or '/'} ===\n"]
 
     if children:
         result_parts.append("Directories:")
         for dir_name, dir_files in sorted(children.items()):
-            full_dir = f"{path_normalized}/{dir_name}" if path_normalized else dir_name
-            fa_info = folder_analysis.get(full_dir, {})
+            full_dir = f"{matched_prefix}/{dir_name}" if matched_prefix else dir_name
+            fa_info = folder_analysis.get(full_dir, {}) or folder_analysis.get(full_dir.lstrip("/"), {})
             purpose = fa_info.get("purpose", "")
             result_parts.append(f"  [{dir_name}/] ({len(dir_files)} files) {purpose}")
 
@@ -447,10 +348,9 @@ async def browse_kb_structure(product_id: str, path: str = "/") -> str:
 
     if not children and not direct_files:
         result_parts.append(f"No entries found at path '{path}'.")
-        result_parts.append(f"Try browsing from root: '/'")
-        # Show top-level dirs
+        result_parts.append("Try browsing from root: '/'")
         top_dirs: set[str] = set()
-        for fp in all_paths[:100]:
+        for fp in all_paths[:200]:
             first = fp.lstrip("/").split("/")[0]
             if first:
                 top_dirs.add(first)
@@ -460,12 +360,98 @@ async def browse_kb_structure(product_id: str, path: str = "/") -> str:
     return "\n".join(result_parts)
 
 
+def _browse_match(
+    all_paths: list[str], path: str,
+) -> tuple[dict[str, list[str]], list[str], str]:
+    """Match *path* against KB paths using prefix, then suffix/substring fallback.
+
+    Returns ``(children_dict, direct_files_list, matched_prefix_str)``.
+    """
+    needle = path.strip("/")
+
+    if not needle:
+        return _browse_split(all_paths, "")
+
+    with_slash = "/" + needle
+    without_slash = needle
+
+    # 1. Try exact prefix match (with and without leading /)
+    for prefix in (with_slash, without_slash):
+        children, direct = _browse_split(
+            [fp for fp in all_paths if fp == prefix or fp.startswith(prefix + "/") or fp.startswith(prefix.lstrip("/") + "/")],
+            prefix,
+        )
+        if children or direct:
+            return children, direct, prefix
+
+    # 2. Suffix / substring fallback — find paths that contain the needle
+    suffix_hit = "/" + needle + "/"
+    matched = [fp for fp in all_paths if suffix_hit in ("/" + fp.lstrip("/") + "/")]
+    if not matched:
+        matched = [fp for fp in all_paths if needle in fp]
+    if matched:
+        common = _common_prefix_up_to(matched, needle)
+        return _browse_split(matched, common)
+
+    return {}, [], ""
+
+
+def _browse_split(
+    paths: list[str], prefix: str,
+) -> tuple[dict[str, list[str]], list[str]]:
+    """Split paths into immediate child dirs and direct files relative to prefix."""
+    children: dict[str, list[str]] = {}
+    direct_files: list[str] = []
+    prefix_stripped = prefix.rstrip("/")
+    plen = len(prefix_stripped)
+
+    for fp in paths:
+        if prefix_stripped:
+            rel = fp[plen:] if fp.startswith(prefix_stripped) else fp
+            rel = rel.lstrip("/")
+        else:
+            rel = fp.lstrip("/")
+        if not rel:
+            continue
+        seg = rel.split("/")
+        if len(seg) == 1:
+            direct_files.append(fp)
+        elif len(seg) > 1:
+            children.setdefault(seg[0], []).append(fp)
+    return children, direct_files
+
+
+def _common_prefix_up_to(paths: list[str], needle: str) -> str:
+    """Find the longest common prefix of *paths* that ends right before *needle*."""
+    if not paths:
+        return ""
+    first = paths[0]
+    idx = first.find(needle)
+    if idx >= 0:
+        return first[:idx + len(needle)]
+    return ""
+
+
 # ===================================================================
 # STRUCTURAL REGISTRY
 # ===================================================================
 
+_KEY_FILE_NAMES = {
+    "readme.md", "readme", "readme.txt", "readme.rst",
+    "skill.md", "config.yaml", "config.yml", "config.json",
+    "package.json", "pyproject.toml", "cargo.toml",
+    "index.ts", "index.js", "index.py", "main.py", "main.ts", "main.go",
+    "agents.md", "changelog.md",
+}
+
+
 def _build_structural_registry(kb_data: dict, product_id: str) -> dict:
-    """Extract a structural registry from the KB blob (cached)."""
+    """Extract a structural registry from the KB blob (cached).
+
+    Identifies *key files* generically (READMEs, configs, entry points, and
+    any file marked critical/high importance) instead of only looking for
+    SKILL.md.
+    """
     from datetime import datetime
     cached = _registry_cache.get(product_id)
     if cached:
@@ -478,16 +464,16 @@ def _build_structural_registry(kb_data: dict, product_id: str) -> dict:
     files = kb_data.get("files", {})
     all_paths = set(file_analysis.keys()) | set(files.keys())
 
-    # Extract skills (files matching */SKILL.md or similar patterns)
-    skills: list[dict] = []
-    for path in all_paths:
+    key_files: list[dict] = []
+    for path in sorted(all_paths):
         name_lower = PurePosixPath(path).name.lower()
-        if name_lower == "skill.md":
-            skill_info = _extract_skill_info(path, files.get(path, {}), file_analysis.get(path, {}))
-            if skill_info:
-                skills.append(skill_info)
+        fa = file_analysis.get(path, {})
+        importance = fa.get("importance", "").lower()
+        is_key = name_lower in _KEY_FILE_NAMES or importance in ("critical", "high")
+        if is_key:
+            desc = fa.get("description", "")[:120]
+            key_files.append({"path": path, "description": desc})
 
-    # Extract directory info
     directories: dict[str, dict] = {}
     for dir_path, fa in folder_analysis.items():
         file_count = sum(1 for p in all_paths if p.startswith(dir_path))
@@ -499,48 +485,13 @@ def _build_structural_registry(kb_data: dict, product_id: str) -> dict:
         }
 
     registry = {
-        "skills": skills,
+        "key_files": key_files,
         "directories": directories,
         "all_paths": sorted(all_paths),
     }
 
-    from datetime import datetime
     _registry_cache[product_id] = (registry, datetime.utcnow().timestamp())
     return registry
-
-
-def _extract_skill_info(path: str, file_data: dict, fa: dict) -> Optional[dict]:
-    """Extract skill name and description from a SKILL.md file."""
-    text = file_data.get("text", "")
-
-    # Try YAML frontmatter
-    name = ""
-    description = ""
-    if text.startswith("---"):
-        end = text.find("---", 3)
-        if end > 0:
-            frontmatter = text[3:end].strip()
-            try:
-                parsed = yaml.safe_load(frontmatter)
-                if isinstance(parsed, dict):
-                    name = parsed.get("name", "")
-                    description = parsed.get("description", "")
-            except Exception:
-                pass
-
-    # Fallback: derive name from path
-    if not name:
-        parts = PurePosixPath(path).parts
-        if len(parts) >= 2:
-            name = parts[-2]
-
-    # Fallback: use file analysis description
-    if not description and fa.get("description"):
-        description = fa["description"]
-
-    if name:
-        return {"name": name, "path": path, "description": description}
-    return None
 
 
 def _search_structural_registry(
@@ -556,33 +507,21 @@ def _search_structural_registry(
     pat_lower = [p.lower() for p in file_patterns]
     all_terms = list(set(kw_lower) | set(pat_lower))
 
-    # Search skills
-    for skill in registry.get("skills", []):
-        skill_name = skill.get("name", "").lower()
-        skill_desc = skill.get("description", "").lower()
-        path = skill["path"]
+    for kf in registry.get("key_files", []):
+        kf_desc = kf.get("description", "").lower()
+        path = kf["path"]
+        path_lower = path.lower()
 
         score = 0.0
-        # Exact name match
-        if skill_name and skill_name in query_lower:
-            score += 10.0
-        # Name appears in keywords/patterns
-        if skill_name and any(skill_name in t or t in skill_name for t in all_terms):
-            score += 8.0
-        # Keywords appear in skill description
-        desc_hits = sum(1 for t in all_terms if t in skill_desc)
+        desc_hits = sum(1 for t in all_terms if t in kf_desc)
         if desc_hits > 0:
             score += desc_hits * 2.0
-        # Keywords appear in path
-        path_lower = path.lower()
         path_hits = sum(1 for t in all_terms if t in path_lower)
         if path_hits > 0:
-            score += path_hits * 1.5
-
+            score += path_hits * 2.5
         if score > 0:
             results.append((path, score))
 
-    # Search directories
     for dir_path, dir_info in registry.get("directories", {}).items():
         purpose = dir_info.get("purpose", "").lower()
         dir_lower = dir_path.lower()
@@ -596,7 +535,6 @@ def _search_structural_registry(
             score += dir_hits * 1.0
 
         if score > 0:
-            # Propagate directory score to files within it
             for file_path in registry.get("all_paths", []):
                 if file_path.startswith(dir_path):
                     results.append((file_path, score * 0.5))
@@ -631,68 +569,41 @@ def _direct_path_matches(
 
 
 # ===================================================================
-# MULTI-QUERY EXPANSION
+# DETERMINISTIC QUERY EXPANSION (replaces LLM expansion — zero latency)
 # ===================================================================
 
-async def _expand_query(
+def _deterministic_expand(
     query: str,
     components: list[str],
-    technologies: list[str],
-    file_types: list[str],
-    api_key: str,
-    model: str,
-    base_url: Optional[str] = None,
+    agent_keywords: Optional[list[str]] = None,
 ) -> dict:
-    """LLM query expansion with alternative query generation."""
-    client_kwargs: dict = {"api_key": api_key}
-    if base_url:
-        client_kwargs["base_url"] = base_url
-    client = AsyncOpenAI(**client_kwargs)
+    """Expand query into keywords, components, file_patterns, and intent
+    without any LLM call.  Merges agent-provided keywords when available.
+    """
+    base_kw = _basic_keywords(query)
 
-    system_prompt = _EXPANSION_SYSTEM.format(
-        components=", ".join(components[:30]) if components else "(none identified)",
-        technologies=", ".join(technologies[:20]) if technologies else "(none identified)",
-        file_types=", ".join(file_types[:60]) if file_types else "(none)",
-    )
+    if agent_keywords:
+        merged = list(dict.fromkeys(agent_keywords + base_kw))
+    else:
+        merged = base_kw
 
-    try:
-        response = await client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"User question: {query}"},
-            ],
-            temperature=0,
-            max_tokens=600,
-        )
-        raw = response.choices[0].message.content or "{}"
-        raw = raw.strip()
-        if raw.startswith("```"):
-            raw = re.sub(r"^```(?:json)?\s*", "", raw)
-            raw = re.sub(r"\s*```$", "", raw)
-        data = json.loads(raw)
+    query_lower = query.lower()
+    target_components = [
+        c for c in components
+        if c.lower() in query_lower or any(k in c.lower() for k in base_kw)
+    ]
 
-        if not isinstance(data.get("keywords"), list) or not data["keywords"]:
-            data["keywords"] = _basic_keywords(query)
-        if not isinstance(data.get("components"), list):
-            data["components"] = []
-        if not isinstance(data.get("file_patterns"), list):
-            data["file_patterns"] = []
-        if not isinstance(data.get("alternative_queries"), list):
-            data["alternative_queries"] = []
-        data["intent"] = data.get("intent", "broad")
+    file_patterns = list(base_kw)
 
-        return data
+    words_lower = set(query_lower.split())
+    intent = "broad" if words_lower & _BROAD_QUERY_HINTS else "specific"
 
-    except Exception as exc:
-        logger.warning("kb_query_expansion_failed", error=str(exc), query=query[:80])
-        return {
-            "keywords": _basic_keywords(query),
-            "components": [],
-            "file_patterns": [],
-            "alternative_queries": [],
-            "intent": "broad",
-        }
+    return {
+        "keywords": merged[:20],
+        "components": target_components[:8],
+        "file_patterns": file_patterns[:10],
+        "intent": intent,
+    }
 
 
 # ===================================================================
@@ -716,91 +627,7 @@ def _reciprocal_rank_fusion(
 
 
 # ===================================================================
-# LLM RE-RANKING
-# ===================================================================
-
-async def _llm_rerank(
-    query: str,
-    candidates: list[tuple[str, float]],
-    file_analysis: dict,
-    files: dict,
-    api_key: str,
-    model: str,
-    base_url: Optional[str] = None,
-    top_k: int = 10,
-) -> Optional[list[tuple[str, float]]]:
-    """LLM re-ranks candidates for the actual user question."""
-    if not candidates:
-        return None
-
-    # Build candidate descriptions for the LLM
-    candidate_parts: list[str] = []
-    for i, (path, score) in enumerate(candidates[:20], 1):
-        fa = file_analysis.get(path, {})
-        fdata = files.get(path, {})
-        text = fdata.get("text", "")
-        preview = text[:300].replace("\n", " ") if text else "(no content)"
-        desc = fa.get("description", "")
-
-        candidate_parts.append(
-            f"[{i}] {path}\n"
-            f"  Description: {desc}\n"
-            f"  Preview: {preview}\n"
-        )
-
-    user_msg = (
-        f"User question: {query}\n\n"
-        f"Candidate files:\n{''.join(candidate_parts)}"
-    )
-
-    client_kwargs: dict = {"api_key": api_key}
-    if base_url:
-        client_kwargs["base_url"] = base_url
-    client = AsyncOpenAI(**client_kwargs)
-
-    try:
-        response = await client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": _RERANK_SYSTEM},
-                {"role": "user", "content": user_msg},
-            ],
-            temperature=0,
-            max_tokens=500,
-        )
-        raw = response.choices[0].message.content or "[]"
-        raw = raw.strip()
-        if raw.startswith("```"):
-            raw = re.sub(r"^```(?:json)?\s*", "", raw)
-            raw = re.sub(r"\s*```$", "", raw)
-        reranked_paths = json.loads(raw)
-
-        if not isinstance(reranked_paths, list):
-            return None
-
-        # Build result with descending scores
-        score_map = {path: score for path, score in candidates}
-        result: list[tuple[str, float]] = []
-        for i, path in enumerate(reranked_paths[:top_k]):
-            if isinstance(path, str) and path in score_map:
-                result.append((path, top_k - i))
-
-        # Append any candidates from RRF that the LLM didn't include
-        seen = {p for p, _ in result}
-        for path, score in candidates:
-            if path not in seen and len(result) < top_k:
-                result.append((path, 0.0))
-                seen.add(path)
-
-        return result if result else None
-
-    except Exception as exc:
-        logger.warning("llm_rerank_failed", error=str(exc))
-        return None
-
-
-# ===================================================================
-# KEYWORD SEARCH HELPERS (preserved from original)
+# KEYWORD SEARCH HELPERS
 # ===================================================================
 
 def _kw_score(text: str, keywords: list[str]) -> float:

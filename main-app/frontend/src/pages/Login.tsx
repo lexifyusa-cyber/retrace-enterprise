@@ -32,7 +32,7 @@ export default function Login() {
     if (!ident) return
     setLoading(true)
     try {
-      const { data } = await api.get('/auth/options', { params: { identifier: ident } })
+      const { data } = await api.get('/options', { params: { identifier: ident } })
       const authMethod: string = data.auth_method || 'email'
       const domain: string = data.domain || ''
 
@@ -48,8 +48,20 @@ export default function Login() {
       sessionStorage.setItem('login_auth_method', authMethod)
       navigate('/login/password')
     } catch (err: any) {
+      const status = err.response?.status
+      const isServerUnreachable =
+        !err.response ||
+        err.code === 'ECONNREFUSED' ||
+        err.message?.includes('Network Error') ||
+        (status >= 502 && status <= 504)
       const detail = err.response?.data?.detail
-      toast.error(detail || 'Unable to determine sign-in method. Please try again.')
+      if (isServerUnreachable) {
+        toast.error(
+          'Cannot reach server. Start the backend (e.g. run uvicorn in main-app/backend on port 8000) and try again.'
+        )
+      } else {
+        toast.error(detail || 'Unable to determine sign-in method. Please try again.')
+      }
     } finally {
       setLoading(false)
     }

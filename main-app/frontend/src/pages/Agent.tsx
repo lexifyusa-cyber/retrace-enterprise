@@ -4,7 +4,8 @@ import {
   Bot, Send, Loader2, Terminal, FileText, Search, Globe, Monitor,
   Package, Check, ChevronDown, ChevronRight, AlertTriangle, Code, Play, X, Database,
   FileEdit, Plus, MessageSquare, Trash2, Edit2, GraduationCap, CheckCircle2,
-  ClipboardList, CalendarClock, Repeat, Timer,
+  ClipboardList, CalendarClock, Repeat, Timer, Sparkles,
+  Download, ScanSearch, FolderSearch, Link2, ListTodo, Replace,
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import ReactMarkdown from 'react-markdown'
@@ -39,6 +40,7 @@ export default function Agent() {
   const [streamingAnswer, setStreamingAnswer] = useState<string | null>(null)
   const [streamingSOP, setStreamingSOP] = useState<string | null>(null)
   const [streamingDoc, setStreamingDoc] = useState<string | null>(null)
+  const [useReasoning, setUseReasoning] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const idCounter = useRef(0)
@@ -189,6 +191,21 @@ export default function Agent() {
     }
   }, [activeConversationId, refetchConversations])
 
+  // Delete all conversations
+  const handleDeleteAllConversations = useCallback(async () => {
+    if (!confirm('Delete all conversations? This cannot be undone.')) return
+    try {
+      await agentApi.deleteAllConversations(selectedProductId || '__none__')
+      setActiveConversationId(null)
+      setMessages([])
+      idCounter.current = 0
+      refetchConversations()
+      toast.success('All conversations deleted')
+    } catch {
+      toast.error('Failed to delete conversations')
+    }
+  }, [selectedProductId, refetchConversations])
+
   // Rename conversation
   const handleRenameConversation = useCallback(async (conversationId: string) => {
     if (!editTitleValue.trim()) return
@@ -245,11 +262,25 @@ export default function Agent() {
     setTask('')
     const newMessages: AgentMessage[] = [userMsg]
 
+    const platform = (() => {
+      const p = typeof navigator !== 'undefined' ? (navigator as any).userAgentData?.platform ?? navigator.platform ?? '' : ''
+      if (/mac|darwin|iphone|ipad/i.test(p)) return 'darwin'
+      if (/win/i.test(p)) return 'win32'
+      if (/linux/i.test(p)) return 'linux'
+      return undefined
+    })()
+
     try {
       const response = await fetch('/api/v1/agent/execute', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ product_id: selectedProductId || null, task: currentTask, max_iterations: 10, conversation_id: conversationId }),
+        body: JSON.stringify({
+          product_id: selectedProductId || null,
+          task: currentTask,
+          conversation_id: conversationId,
+          ...(platform && { platform }),
+          use_reasoning: useReasoning,
+        }),
         signal: controller.signal,
       })
 
@@ -297,7 +328,7 @@ export default function Agent() {
       setIsRunning(false)
       if (conversationId) await saveMessagesToConversation(conversationId, newMessages)
     }
-  }, [task, selectedProductId, isRunning, activeConversationId, addMessage, refetchConversations, saveMessagesToConversation])
+  }, [task, selectedProductId, isRunning, activeConversationId, useReasoning, addMessage, refetchConversations, saveMessagesToConversation])
 
   const handleSSEEvent = useCallback((event: string, data: any): Omit<AgentMessage, 'id'> | null => {
     let msg: Omit<AgentMessage, 'id'> | null = null
@@ -597,7 +628,12 @@ export default function Agent() {
   }, [])
 
   const selectedProduct = trainedProducts.find((p: Product) => p.product_id === selectedProductId)
-  const enabledToolsCount = tools.filter(t => t.available && (t.enabled !== false)).length
+  const kbToolNames = new Set(['knowledge_base', 'search_knowledge_base'])
+  const isToolEffectivelyOn = (name: string, available: boolean, enabledFlag: boolean | undefined) => {
+    const kbNoProduct = kbToolNames.has(name) && !selectedProductId
+    return !kbNoProduct && available && (enabledFlag !== false)
+  }
+  const enabledToolsCount = tools.filter(t => isToolEffectivelyOn(t.name, t.available, t.enabled)).length
 
   // Collapsible tool blocks
   const [expandedToolBlocks, setExpandedToolBlocks] = useState<Set<string>>(new Set())
@@ -631,15 +667,67 @@ export default function Agent() {
     return nodes
   }, [messages])
 
-  // Tool icon/name maps
+  // Tool icon/name maps — one distinct icon per tool (knowledge_base = search/list/read_file/browse)
   const toolIcons: Record<string, typeof Terminal> = {
-    terminal: Terminal, read_file: FileText, write_file: FileEdit,
-    basic_search: Search, deep_websearch: Globe, screenops: Monitor, search_knowledge_base: Database,
+    terminal: Terminal,
+    read_file: FileText,
+    write_file: FileEdit,
+    delete_file: Trash2,
+    download_file: Download,
+    str_replace: Replace,
+    grep: ScanSearch,
+    glob_search: FolderSearch,
+    web_search: Search,
+    web_fetch: Link2,
+    todo_write: ListTodo,
+    web_research: Globe,
+    web_advanced: Sparkles,
+    screenops: Monitor,
+    knowledge_base: Database,
+    search_knowledge_base: Database, // legacy
   }
   const toolNames: Record<string, string> = {
-    terminal: 'Terminal', read_file: 'Read File', write_file: 'Write File',
-    basic_search: 'Basic Search', deep_websearch: 'Deep Web Search', screenops: 'ScreenOps', search_knowledge_base: 'Knowledge Base',
+    terminal: 'Terminal',
+    read_file: 'Read File',
+    write_file: 'Write File',
+    delete_file: 'Delete File',
+    download_file: 'Download',
+    str_replace: 'Str Replace',
+    grep: 'Grep',
+    glob_search: 'Glob',
+    web_search: 'Web Search',
+    web_fetch: 'Web Fetch',
+    todo_write: 'Todos',
+    web_research: 'Web Research',
+    web_advanced: 'Web Advanced',
+    screenops: 'ScreenOps',
+    knowledge_base: 'Knowledge Base',
+    search_knowledge_base: 'Knowledge Base', // legacy
   }
+  /** Short hover text (native title + compact popover) — avoids long API descriptions */
+  const toolShortHints: Record<string, string> = {
+    terminal: 'Run shell commands',
+    read_file: 'Read file contents',
+    write_file: 'Write or create files',
+    delete_file: 'Delete a file',
+    download_file: 'Download from URL',
+    str_replace: 'Exact text replace in files',
+    grep: 'Search files by regex',
+    glob_search: 'Find files by pattern',
+    web_search: 'Quick web search',
+    web_fetch: 'Fetch URL as text',
+    todo_write: 'Session task list',
+    web_research: 'Search web, read top hits',
+    web_advanced: 'Advanced web search',
+    screenops: 'UI / screen automation',
+    knowledge_base: 'Search product knowledge',
+    search_knowledge_base: 'Search product knowledge',
+  }
+
+  const FILE_OPS_GROUP = 'file_operations'
+  const fileOpsTools = tools.filter((t) => t.group === FILE_OPS_GROUP)
+  const standaloneTools = tools.filter((t) => t.group !== FILE_OPS_GROUP)
+  const [fileOpsOpen, setFileOpsOpen] = useState(false)
 
   // ── Render ───────────────────────────────────────────────────────
   return (
@@ -709,25 +797,68 @@ export default function Agent() {
             <Terminal className="w-3.5 h-3.5" />
             <span>Terminal</span>
           </button>
-          <div className="flex gap-1">
-            {tools.map(t => {
+          <div className="flex gap-1 items-center">
+            {fileOpsTools.length > 0 && (
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setFileOpsOpen((o) => !o)}
+                  onBlur={() => setTimeout(() => setFileOpsOpen(false), 150)}
+                  className={`flex items-center gap-1 p-1.5 rounded-lg transition-all text-xs font-medium ${
+                    fileOpsTools.some((t) => t.available && t.enabled !== false)
+                      ? 'text-rt-primary hover:bg-rt-primary/10'
+                      : 'text-rt-text-muted hover:bg-rt-surface'
+                  }`}
+                  title="Files: read, write, delete, download"
+                >
+                  <FileText className="w-4 h-4" />
+                  <span>File Operations</span>
+                  <ChevronDown className={`w-3.5 h-3.5 transition-transform ${fileOpsOpen ? 'rotate-180' : ''}`} />
+                </button>
+                {fileOpsOpen && (
+                  <div className="absolute top-full left-0 mt-1 py-2 px-2 min-w-[180px] bg-rt-bg-light border border-rt-border rounded-lg shadow-xl z-50">
+                    <div className="text-[10px] font-semibold text-rt-text-muted uppercase tracking-wide mb-2 px-1.5">File Operations</div>
+                    {fileOpsTools.map((t) => {
+                      const displayName = toolNames[t.name] || t.name
+                      const isEnabled = t.available && (t.enabled !== false)
+                      const canToggle = t.available
+                      return (
+                        <div key={t.name} className="flex items-center justify-between gap-2 py-1.5 px-1.5 rounded hover:bg-rt-surface/50">
+                          <span className="text-xs text-rt-text">{displayName}</span>
+                          <button
+                            type="button"
+                            onClick={() => canToggle && handleToolToggle(t.name, isEnabled)}
+                            disabled={!canToggle || updateToolsMutation.isPending}
+                            className={`text-xs px-2 py-0.5 rounded ${isEnabled ? 'bg-rt-primary/20 text-rt-primary' : 'bg-rt-surface text-rt-text-muted'}`}
+                          >
+                            {isEnabled ? 'On' : 'Off'}
+                          </button>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+            {standaloneTools.map((t) => {
               const Icon = toolIcons[t.name] || Bot
               const displayName = toolNames[t.name] || t.name
-              const kbNoProduct = t.name === 'search_knowledge_base' && !selectedProductId
+              const shortHint = toolShortHints[t.name] || (t.description ? `${t.description.slice(0, 42)}${t.description.length > 42 ? '…' : ''}` : '')
+              const kbNoProduct = (t.name === 'knowledge_base' || t.name === 'search_knowledge_base') && !selectedProductId
               const isEnabled = !kbNoProduct && t.available && (t.enabled !== false)
               const canToggle = t.available && !kbNoProduct
               return (
                 <button key={t.name} type="button"
                   onClick={() => canToggle && handleToolToggle(t.name, isEnabled)}
                   disabled={!canToggle || updateToolsMutation.isPending}
-                  title={`${displayName}: ${isEnabled ? 'enabled (click to disable)' : 'disabled (click to enable)'}`}
+                  title={`${displayName} (${isEnabled ? 'on' : 'off'})`}
                   className={`relative group p-1.5 rounded-lg transition-all ${canToggle ? isEnabled ? 'text-rt-primary hover:bg-rt-primary/10' : 'text-rt-text-muted/30 hover:text-rt-text-muted/50 hover:bg-rt-surface' : 'text-rt-text-muted/20 cursor-not-allowed'}`}>
                   <Icon className="w-4 h-4" />
-                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 bg-rt-bg-light border border-rt-border rounded-lg text-xs text-rt-text whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 shadow-xl">
-                    <div className="font-semibold text-rt-text mb-0.5">{displayName}</div>
-                    {t.description && <div className="text-rt-text-muted text-[11px] max-w-xs mt-0.5 whitespace-normal">{t.description.length > 60 ? `${t.description.substring(0, 60)}...` : t.description}</div>}
-                    {canToggle && <div className="text-rt-text-muted text-[11px] mt-1">{isEnabled ? 'Click to disable' : 'Click to enable'}</div>}
-                    <div className="absolute top-full left-1/2 -translate-x-1/2 -mt-px"><div className="w-2 h-2 bg-rt-bg-light border-r border-b border-rt-border rotate-45" /></div>
+                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2.5 py-1.5 bg-rt-bg-light border border-rt-border rounded-md text-[11px] leading-snug text-rt-text w-max max-w-[min(280px,calc(100vw-2rem))] opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 shadow-lg whitespace-normal text-left">
+                    <div className="font-medium text-rt-text">{displayName}</div>
+                    {shortHint && <div className="text-rt-text-muted mt-1 break-words">{shortHint}</div>}
+                    {canToggle && <div className="text-rt-text-muted/80 mt-0.5">{isEnabled ? 'Click: off' : 'Click: on'}</div>}
+                    <div className="absolute top-full left-1/2 -translate-x-1/2 -mt-px"><div className="w-1.5 h-1.5 bg-rt-bg-light border-r border-b border-rt-border rotate-45" /></div>
                   </div>
                 </button>
               )
@@ -742,6 +873,13 @@ export default function Agent() {
             className="flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rt-primary/10 hover:bg-rt-primary/20 text-rt-primary text-xs font-medium transition-colors">
             <Plus className="w-3.5 h-3.5" /> New
           </button>
+          {conversations.length > 0 && (
+            <button onClick={handleDeleteAllConversations}
+              className="flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs font-medium transition-colors"
+              title="Delete all conversations">
+              <Trash2 className="w-3.5 h-3.5" /> Clear All
+            </button>
+          )}
           {conversations.map((convo) => (
             <div key={convo.conversation_id}
               className={`group flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg cursor-pointer transition-colors text-xs ${
@@ -806,7 +944,7 @@ export default function Agent() {
                     message={msg}
                     messages={messages}
                     messageIndex={node.index}
-                    showProductActions={!!selectedProductId}
+                    allowLearnThis={!!selectedProductId}
                     onLearnThis={handleLearnThis}
                     onCreateSOP={handleCreateSOP}
                     isCreatingSOP={isCreatingSOP}
@@ -848,7 +986,7 @@ export default function Agent() {
                             message={m}
                             messages={messages}
                             messageIndex={idx}
-                            showProductActions={!!selectedProductId}
+                            allowLearnThis={!!selectedProductId}
                             onLearnThis={handleLearnThis}
                             onCreateSOP={handleCreateSOP}
                             hasAnswer={messages.some(mm => mm.type === 'answer') || streamingAnswer !== null}
@@ -907,7 +1045,20 @@ export default function Agent() {
 
       {/* Input area */}
       <div className="p-8 pt-4 border-t border-rt-border bg-rt-bg-light">
-        <form onSubmit={handleSubmit} className="flex gap-4">
+        <form onSubmit={handleSubmit} className="flex gap-2 items-center">
+          <button
+            type="button"
+            onClick={() => setUseReasoning(r => !r)}
+            disabled={isRunning}
+            title={useReasoning ? 'Reasoning ON — click to disable' : 'Enable reasoning (think step by step)'}
+            className={`flex-shrink-0 p-2 rounded-lg border transition-all ${
+              useReasoning
+                ? 'bg-purple-500/20 border-purple-500/40 text-purple-400'
+                : 'border-rt-border text-rt-text-muted hover:border-rt-text-muted hover:text-rt-text'
+            }`}
+          >
+            <Sparkles className="w-4 h-4" />
+          </button>
           <input type="text" value={task} onChange={e => setTask(e.target.value)}
             placeholder={isRunning ? 'Agent is working...' : 'Describe a task to perform...'}
             className="input flex-1" disabled={isRunning} />
@@ -921,6 +1072,9 @@ export default function Agent() {
             </button>
           )}
         </form>
+        {useReasoning && (
+          <p className="text-[11px] text-purple-400/70 mt-1.5 pl-1">Reasoning on — agent will think step by step</p>
+        )}
       </div>
     </div>
   )
@@ -930,9 +1084,10 @@ export default function Agent() {
 // Message bubble with "Learn This" button on answers
 // ---------------------------------------------------------------------------
 
-function MessageBubble({ message: msg, messages, messageIndex, showProductActions, onLearnThis, onCreateSOP, isCreatingSOP, onApproveSOP, onEditSOP, onCreateDoc, isCreatingDoc, onEditDoc, onApproveDoc, hasAnswer }: {
+function MessageBubble({ message: msg, messages, messageIndex, allowLearnThis, onLearnThis, onCreateSOP, isCreatingSOP, onApproveSOP, onEditSOP, onCreateDoc, isCreatingDoc, onEditDoc, onApproveDoc, hasAnswer }: {
   message: AgentMessage; messages: AgentMessage[]; messageIndex: number
-  showProductActions?: boolean
+  /** Requires a selected product (knowledge base training). Doc & automation work without a product. */
+  allowLearnThis?: boolean
   onLearnThis: (question: string, answer: string) => void
   onCreateSOP?: (goal: string) => void
   isCreatingSOP?: boolean
@@ -1068,24 +1223,29 @@ function MessageBubble({ message: msg, messages, messageIndex, showProductAction
         <div className="card">
           <div className="flex items-center gap-2 mb-3 text-xs text-rt-text-muted"><Bot className="w-3.5 h-3.5 text-purple-400" /><span>Agent Answer</span></div>
           <div className="prose"><ReactMarkdown>{msg.content}</ReactMarkdown></div>
-          {showProductActions !== false && (
-            <div className="mt-3 pt-2 border-t border-rt-border/50 flex flex-wrap items-center gap-2">
-              {learned ? (
-                <span className="inline-flex items-center gap-1.5 text-xs text-rt-success"><CheckCircle2 className="w-3.5 h-3.5" />Added to knowledge base</span>
+          <div className="mt-3 pt-2 border-t border-rt-border/50 flex flex-wrap items-center gap-2">
+              {allowLearnThis !== false ? (
+                learned ? (
+                  <span className="inline-flex items-center gap-1.5 text-xs text-rt-success"><CheckCircle2 className="w-3.5 h-3.5" />Added to knowledge base</span>
+                ) : (
+                  <button
+                    onClick={() => { setActivePrompt(activePrompt === 'learn' ? null : 'learn'); setPromptInput('') }}
+                    disabled={isLearning || !getQuestionForAnswer()}
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                      activePrompt === 'learn'
+                        ? 'bg-amber-500/25 text-amber-300 ring-1 ring-amber-500/40'
+                        : 'bg-amber-500/10 text-amber-400 hover:bg-amber-500/20'
+                    }`}
+                    title="Train this Q&A as expert knowledge — it will be prioritized in future searches"
+                  >
+                    {isLearning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <GraduationCap className="w-3.5 h-3.5" />}
+                    Learn This
+                  </button>
+                )
               ) : (
-                <button
-                  onClick={() => { setActivePrompt(activePrompt === 'learn' ? null : 'learn'); setPromptInput('') }}
-                  disabled={isLearning || !getQuestionForAnswer()}
-                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
-                    activePrompt === 'learn'
-                      ? 'bg-amber-500/25 text-amber-300 ring-1 ring-amber-500/40'
-                      : 'bg-amber-500/10 text-amber-400 hover:bg-amber-500/20'
-                  }`}
-                  title="Train this Q&A as expert knowledge — it will be prioritized in future searches"
-                >
-                  {isLearning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <GraduationCap className="w-3.5 h-3.5" />}
-                  Learn This
-                </button>
+                <span className="text-[11px] text-rt-text-muted/80 italic" title="Select a product to save this answer to its knowledge base">
+                  KB: select a product to use Learn This
+                </span>
               )}
               <button
                 onClick={() => { setActivePrompt(activePrompt === 'automation' ? null : 'automation'); setPromptInput('') }}
@@ -1114,8 +1274,7 @@ function MessageBubble({ message: msg, messages, messageIndex, showProductAction
                 Build Documentation
               </button>
             </div>
-          )}
-          {showProductActions !== false && activePrompt && (
+          {activePrompt && (activePrompt !== 'learn' || allowLearnThis !== false) && (
             <div className="mt-2 pt-2 border-t border-rt-border/30">
               <p className="text-xs text-rt-text-muted mb-1.5">
                 {activePrompt === 'learn' && 'Optionally refine the question before saving to knowledge base:'}

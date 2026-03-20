@@ -3,12 +3,12 @@ import { useQuery } from '@tanstack/react-query'
 import {
   ClipboardList, Loader2, Trash2, CheckCircle2, Clock,
   Package, ChevronDown, ChevronRight, Play, Send,
-  CalendarClock, Edit2, History, XCircle, Timer,
+  CalendarClock, Edit2, History, XCircle, Timer, Layers,
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import ReactMarkdown from 'react-markdown'
 import toast from 'react-hot-toast'
-import { productApi, agentApi } from '@/utils/api'
+import { productApi, agentApi, AGENT_GENERAL_SCOPE } from '@/utils/api'
 import { Product } from '@/types'
 
 export default function SOPs() {
@@ -43,10 +43,15 @@ export default function SOPs() {
   )
 
   const loadAllSOPs = useCallback(async () => {
-    if (trainedProducts.length === 0) return
     setIsLoading(true)
     try {
       const results: Record<string, any[]> = {}
+      try {
+        const general = await agentApi.listSOPs(AGENT_GENERAL_SCOPE)
+        results[AGENT_GENERAL_SCOPE] = Array.isArray(general) ? general : []
+      } catch {
+        results[AGENT_GENERAL_SCOPE] = []
+      }
       await Promise.all(
         trainedProducts.map(async (p: Product) => {
           try {
@@ -66,8 +71,8 @@ export default function SOPs() {
   }, [trainedProducts.map(p => p.product_id).join(',')])
 
   useEffect(() => {
-    if (trainedProducts.length > 0) loadAllSOPs()
-  }, [trainedProducts.length])
+    loadAllSOPs()
+  }, [loadAllSOPs])
 
   const handleDelete = useCallback(async (sopId: string, productId: string) => {
     try {
@@ -194,8 +199,22 @@ export default function SOPs() {
     }
   }, [editInstructions])
 
-  const productsWithSOPs = trainedProducts.filter((p: Product) => (sopsByProduct[p.product_id] || []).length > 0)
-  const totalSOPs = trainedProducts.reduce((sum, p) => sum + (sopsByProduct[p.product_id] || []).length, 0)
+  const generalSopsList = sopsByProduct[AGENT_GENERAL_SCOPE] || []
+  const displaySopSections: { sectionId: string; sectionName: string; isGeneral: boolean }[] = []
+  if (generalSopsList.length > 0) {
+    displaySopSections.push({ sectionId: AGENT_GENERAL_SCOPE, sectionName: 'General', isGeneral: true })
+  }
+  for (const p of trainedProducts) {
+    if ((sopsByProduct[p.product_id] || []).length > 0) {
+      displaySopSections.push({ sectionId: p.product_id, sectionName: p.product_name, isGeneral: false })
+    }
+  }
+  const totalSOPs =
+    generalSopsList.length +
+    trainedProducts.reduce((sum, p) => sum + (sopsByProduct[p.product_id] || []).length, 0)
+  const sopSectionCount =
+    (generalSopsList.length > 0 ? 1 : 0) +
+    trainedProducts.filter((p: Product) => (sopsByProduct[p.product_id] || []).length > 0).length
 
   const toggleProduct = (productId: string) => {
     setExpandedProducts(prev => {
@@ -235,7 +254,8 @@ export default function SOPs() {
       {/* Sub-header — match Documentation */}
       <div className="px-8 py-3 border-b border-rt-border bg-rt-bg-light flex items-center gap-4">
         <span className="text-xs text-rt-text-muted">
-          {totalSOPs} automation{totalSOPs !== 1 ? 's' : ''} across {trainedProducts.length} product{trainedProducts.length !== 1 ? 's' : ''}
+          {totalSOPs} automation{totalSOPs !== 1 ? 's' : ''}
+          {sopSectionCount > 0 ? ` · ${sopSectionCount} section${sopSectionCount !== 1 ? 's' : ''}` : ''}
         </span>
       </div>
 
@@ -245,34 +265,33 @@ export default function SOPs() {
           <div className="flex items-center justify-center gap-2 text-rt-text-muted py-16">
             <Loader2 className="w-5 h-5 animate-spin" /> Loading automations...
           </div>
-        ) : trainedProducts.length === 0 ? (
+        ) : displaySopSections.length === 0 ? (
           <div className="text-center py-16">
             <ClipboardList className="w-12 h-12 mx-auto mb-4 text-rt-text-muted/30" />
-            <p className="text-rt-text-muted">No trained products yet. Train a product first to create automations.</p>
-          </div>
-        ) : productsWithSOPs.length === 0 ? (
-          <div className="text-center py-16">
-            <ClipboardList className="w-12 h-12 mx-auto mb-4 text-rt-text-muted/30" />
-            <p className="text-rt-text-muted">
-              No automations created yet. Use the Agent to build automations from conversations.
+            <p className="text-rt-text-muted max-w-md mx-auto">
+              No automations yet. In the Agent, get an answer then use <strong>Build Automation</strong> — with a product or under <strong>General</strong> when no product is selected.
             </p>
           </div>
         ) : (
           <div className="max-w-6xl mx-auto space-y-6">
-            {productsWithSOPs.map((product: Product) => {
-              const productSOPs = sopsByProduct[product.product_id] || []
-              const isExpanded = expandedProducts.has(product.product_id)
+            {displaySopSections.map((section) => {
+              const productSOPs = sopsByProduct[section.sectionId] || []
+              const isExpanded = expandedProducts.has(section.sectionId)
               return (
-                <div key={product.product_id}>
+                <div key={section.sectionId}>
                   {/* Product group header */}
                   <button
                     type="button"
-                    onClick={() => toggleProduct(product.product_id)}
+                    onClick={() => toggleProduct(section.sectionId)}
                     className="w-full flex items-center gap-3 px-4 py-2.5 rounded-lg hover:bg-rt-surface/50 transition-colors mb-2"
                   >
                     <ChevronDown className={`w-4 h-4 text-rt-text-muted transition-transform ${isExpanded ? '' : '-rotate-90'}`} />
-                    <Package className="w-4 h-4 text-rt-primary" />
-                    <span className="text-sm font-semibold">{product.product_name}</span>
+                    {section.isGeneral ? (
+                      <Layers className="w-4 h-4 text-amber-400" />
+                    ) : (
+                      <Package className="w-4 h-4 text-rt-primary" />
+                    )}
+                    <span className="text-sm font-semibold">{section.sectionName}</span>
                     <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-rt-surface text-rt-text-muted">
                       {productSOPs.length}
                     </span>
@@ -331,7 +350,7 @@ export default function SOPs() {
                                   </span>
                                   {(sop.status || 'draft') !== 'approved' && (
                                     <button
-                                      onClick={(e) => { e.stopPropagation(); handleApprove(sop.sop_id, product.product_id) }}
+                                      onClick={(e) => { e.stopPropagation(); handleApprove(sop.sop_id, section.sectionId) }}
                                       className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 transition-colors"
                                       title="Approve this automation"
                                     >
@@ -393,7 +412,7 @@ export default function SOPs() {
                                     </button>
                                   )}
                                   <button
-                                    onClick={(e) => { e.stopPropagation(); handleDelete(sop.sop_id, product.product_id) }}
+                                    onClick={(e) => { e.stopPropagation(); handleDelete(sop.sop_id, section.sectionId) }}
                                     className="p-1.5 rounded-lg hover:bg-red-500/15 text-red-400/60 hover:text-red-400 transition-colors"
                                     title="Delete automation"
                                   >
@@ -424,7 +443,7 @@ export default function SOPs() {
                                     />
                                     <button
                                       type="button"
-                                      onClick={() => handleEditSop(sop.sop_id, product.product_id)}
+                                      onClick={() => handleEditSop(sop.sop_id, section.sectionId)}
                                       disabled={isEditingSop || !editInstructions.trim()}
                                       className="btn-primary text-xs px-3 py-1.5 flex items-center gap-1.5"
                                     >
@@ -540,7 +559,7 @@ export default function SOPs() {
                                             scheduleConfig={scheduleConfig}
                                             onChangeType={setScheduleType}
                                             onChangeConfig={setScheduleConfig}
-                                            onSave={() => handleSaveSchedule(sop.sop_id, product.product_id)}
+                                            onSave={() => handleSaveSchedule(sop.sop_id, section.sectionId)}
                                             onCancel={() => { setEditingScheduleId(null); setExpandedSection('steps') }}
                                           />
                                         </div>

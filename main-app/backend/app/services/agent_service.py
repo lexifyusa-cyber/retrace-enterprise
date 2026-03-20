@@ -37,7 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from typing_extensions import TypedDict, Annotated
 
 from app.core.config import settings as app_settings
-from app.tools.utils import extract_python_code, strip_text_from_code_response
+from app.tools.utils import extract_python_code, extract_tool_call_as_python, strip_text_from_code_response
 
 logger = structlog.get_logger()
 
@@ -63,11 +63,15 @@ class AgentState(TypedDict):
 _AGENT_SYSTEM_TEMPLATE = """\
 You are the ReTrace AI agent by Lumena Technologies for the product **{product_name}**.
 
+{user_platform_section}
+
 {product_description_section}
 
 You can execute Python code to interact with the system using the tools listed below.
 
 ## HOW TO USE TOOLS
+
+**CRITICAL:** To call tools, output only a ```python code block with real Python that calls the tools (e.g. terminal(...), web_search(...)) and print() the result. Only ```python blocks are run; no other format is executed. When you have the answer for the user, respond with plain text only (no code block).
 
 Generate a Python code block to call tools.  **Always `print()` results** so you
 can see the output.
@@ -84,46 +88,107 @@ That text becomes the final answer shown to the user.
 - Generate Python code in ```python blocks to call tools.
 - Always print() results so you can see output.
 - When done, respond with plain text (no code block) — that is your final answer.
-- You have 4 knowledge base tools. Use them strategically:
-  * `list_kb_entries` — Use FIRST to discover what the product contains (skills, files, directories). Like checking a table of contents.
-  * `search_knowledge_base` — Hybrid search for specific topics. Uses multi-query expansion, structural matching, vector similarity, and LLM re-ranking.
-  * `read_kb_file` — Read the full content of a specific file by path. Use after search or list to get complete details.
-  * `browse_kb_structure` — Browse the folder tree. Start from "/" and drill down. Like `ls` for the knowledge base.
-- When answering questions about specific features, skills, or components: start with `list_kb_entries` to see what exists, then `search_knowledge_base` for details, then `read_kb_file` for full content.
-- You can call tools multiple times with different queries to gather comprehensive information.
+- Only use the tools listed under AVAILABLE TOOLS below. Do NOT call tools that are not listed.
+{kb_rules_section}- You can call tools multiple times with different queries to gather comprehensive information.
 - If the evidence is insufficient, say so.
 - Do NOT generate code after your final text answer.
 - Maximum {max_iterations} tool-use iterations allowed.
 - Do NOT use `import os`, `import subprocess`, `import shutil`, `import pathlib`, or other Python standard library modules for system operations. Always use the provided tools instead (e.g. `terminal("ls -la")`, `read_file("path")`, `write_file("path", "content")`).
-- Do NOT use `open()`, `os.listdir()`, `Path()`, or any direct Python file I/O. Use the provided `read_file`, `write_file`, and `terminal` tools for all file and system operations.
+- Do NOT use `open()`, `os.listdir()`, `Path()`, or any direct Python file I/O. Use the provided `read_file`, `write_file`, `delete_file`, and `terminal` tools for all file and system operations.
 - Only use `import` for data processing libraries (e.g. `json`, `re`, `math`) when needed to parse or format tool output.
 - When using the `screenops` tool: it returns a JSON object with a "result" field (and optionally "iterations"). Before writing to a file or using the content, parse the return value: if it is a string, use `json.loads(screenops_result)` to get a dict, then use the "result" field only (e.g. `description_text = data["result"]` or `data.get("result", "")`). Pass that string to `write_file`, not the raw return value.
 
+## TOOL SELECTION GUIDE
+- **Finding files by name/pattern**: use `glob_search("*.py")` — NOT `terminal("find ...")`
+- **Searching file contents**: use `grep("pattern", "path")` — NOT `terminal("grep ...")`
+- **Editing files (targeted changes)**: use `str_replace(file, old, new)` — NOT rewriting the whole file
+- **Deleting files**: use `delete_file("path")` — NOT `terminal("rm ...")`
+- **Reading web pages**: use `web_fetch("url")` — returns clean text
+- **Web search**: use `web_search("query")` for quick lookups, `web_research("query")` for comprehensive research, `web_advanced(...)` for advanced searches with operators
+- **Multi-step tasks**: use `todo_write(...)` to plan and track progress
+
+- **SSH**: ALWAYS pass the remote command inline: `terminal('ssh user@host "cmd"')`. NEVER open an interactive session (`ssh user@host` alone) — it will timeout.
+
 {tool_descriptions}
 """
+
+_KB_RULES = """\
+- You have one **knowledge_base** tool with four actions (pass the `action` parameter):
+  * `knowledge_base(action="search", query="...", keywords=[...], top_k=10)` — **Use this FIRST for any product question.** Fast hybrid search. Always provide a `keywords` list of 5-15 synonyms, related terms, and alternative phrasings alongside your query to maximize recall.
+  * `knowledge_base(action="read_file", file_path="...")` — Read the full content of a specific file. Use after search to get complete details. Supports fuzzy path matching.
+  * `knowledge_base(action="list", category="all")` — List what's in the KB. Categories: 'all', 'key_files', 'directories', 'files'. Only use when the user asks "what's in this product" or you need a broad overview.
+  * `knowledge_base(action="browse", path="/some/path")` — Browse the folder tree at a path. Like `ls` for the KB.
+- **Strategy**: For most questions, a single `search` call with good keywords is enough. Only use `list` for broad discovery, `read_file` to drill into a specific file from search results, and `browse` to explore a directory.
+- When calling search, always include a `keywords` list with synonyms and related terms. Example: query="authentication" → keywords=["auth", "login", "password", "credentials", "oauth", "token", "session", "security"].
+"""
+
+
+def _platform_label(platform: Optional[str]) -> str:
+    """Return a human-readable OS label for the system prompt."""
+    if not platform or not str(platform).strip():
+        return ""
+    p = str(platform).strip().lower()
+    if p in ("darwin", "mac", "macos", "os x"):
+        return "User platform: **macOS (darwin)**. Use Unix paths (e.g. ~/Desktop), .dmg/.zip for downloads, and commands appropriate for macOS."
+    if p in ("win32", "windows", "win"):
+        return "User platform: **Windows**. Use Windows paths (e.g. %USERPROFILE%\\Desktop), .exe/.msi for downloads, and commands appropriate for Windows."
+    if p in ("linux", "linux2"):
+        return "User platform: **Linux**. Use Unix paths (e.g. ~/Desktop) and commands appropriate for Linux."
+    return f"User platform: **{platform}**. Use paths and commands appropriate for this OS."
 
 
 def _build_system_prompt(
     product_name: str,
     tool_descriptions: str,
     product_description: Optional[str] = None,
+    kb_summary: Optional[str] = None,
     max_iterations: int = 10,
+    available_tool_names: Optional[list[str]] = None,
+    user_platform: Optional[str] = None,
 ) -> str:
+    sections: list[str] = []
+    has_kb = available_tool_names is None or "knowledge_base" in (available_tool_names or [])
+
+    user_platform_section = _platform_label(user_platform)
+    if user_platform_section:
+        user_platform_section = user_platform_section + "\n\n"
+
     if product_description:
-        product_desc_section = f"""## PRODUCT DESCRIPTION
+        sections.append(f"## PRODUCT DESCRIPTION\n\n{product_description}")
 
-{product_description}
+    if kb_summary:
+        sections.append(f"## PRODUCT KNOWLEDGE SUMMARY (from trained KB)\n\n{kb_summary}")
 
-This product has a trained knowledge base. Use the `search_knowledge_base` tool to query it when you need specific information about the product."""
-    elif product_name and product_name != "General Assistant":
-        product_desc_section = """This product has a trained knowledge base. Use the `search_knowledge_base` tool to query it when you need specific information about the product."""
+    if has_kb:
+        if sections:
+            sections.append(
+                "This product has a trained knowledge base. Use `knowledge_base(action=\"search\", query=\"...\", keywords=[...])` "
+                "to query it. For simple overview questions, the summary above may already contain the answer — respond directly without a tool call if so."
+            )
+        elif product_name and product_name != "General Assistant":
+            sections.append(
+                "This product has a trained knowledge base. Use `knowledge_base(action=\"search\", query=\"...\", keywords=[...])` "
+                "to query it when you need specific information about the product."
+            )
+        else:
+            sections.append(
+                "No product is selected. You are operating as a general-purpose assistant. "
+                "Use the available tools (terminal, file operations, web search, etc.) to help the user."
+            )
     else:
-        product_desc_section = """No product is selected. You are operating as a general-purpose assistant. Use the available tools (terminal, file operations, web search, etc.) to help the user."""
-    
+        sections.append(
+            "No knowledge base tool is available. "
+            "Use the available tools (terminal, file operations, web search, etc.) to help the user."
+        )
+
+    product_desc_section = "\n\n".join(sections)
+
     return _AGENT_SYSTEM_TEMPLATE.format(
         product_name=product_name,
         tool_descriptions=tool_descriptions,
         product_description_section=product_desc_section,
+        user_platform_section=user_platform_section,
+        kb_rules_section=_KB_RULES if has_kb else "",
         max_iterations=max_iterations,
     )
 
@@ -252,7 +317,13 @@ def _build_codeact_graph(
                 response.content = stripped
 
         # Extract Python code
-        code = extract_python_code(response.content if hasattr(response, "content") else str(response))
+        raw_content = response.content if hasattr(response, "content") else str(response)
+        code = extract_python_code(raw_content)
+
+        # Fallback: model may use its native tool-call format (XML, JSON, bare call)
+        if not code:
+            tool_names = set(tools_context.keys())
+            code = extract_tool_call_as_python(raw_content, known_tools=tool_names)
 
         if code:
             # Add synthetic tool_call for OpenAI message format compatibility.
@@ -378,6 +449,8 @@ class AgentService:
         session: AsyncSession,
         max_iterations: int = 10,
         thread_id: Optional[str] = None,
+        user_platform: Optional[str] = None,
+        use_reasoning: bool = False,
     ) -> AsyncIterator[str]:
         """Execute an agent task and yield SSE events.
 
@@ -394,10 +467,37 @@ class AgentService:
         t0 = time.time()
 
         try:
-            # ── 1. Load settings ──────────────────────────────────────
-            yield _sse("agent_status", {"step": "init", "message": "Loading settings..."})
+            # ── 1. Load settings and product in parallel ─────────────────
+            yield _sse("agent_status", {"step": "init", "message": "Loading settings and product..."})
             from app.api.settings import get_active_llm_settings
-            llm_settings = await get_active_llm_settings(session)
+            from app.db.database import async_session_maker
+            from sqlalchemy import select
+            from app.models.product import Product as ProductModel
+
+            async def _fetch_product():
+                if not product_id:
+                    return ("General Assistant", None)
+                async with async_session_maker() as db:
+                    result = await db.execute(select(ProductModel).where(ProductModel.product_id == product_id))
+                    product = result.scalar_one_or_none()
+                    if not product:
+                        return ("Unknown Product", None)
+                    return (product.product_name, product.description)
+
+            async def _fetch_kb_summary():
+                if not product_id:
+                    return None
+                try:
+                    from app.rag.kb_search import get_product_summary
+                    return await get_product_summary(product_id)
+                except Exception:
+                    return None
+
+            llm_settings, (product_name, product_description), kb_summary = await asyncio.gather(
+                get_active_llm_settings(session),
+                _fetch_product(),
+                _fetch_kb_summary(),
+            )
 
             if not llm_settings.get("api_key"):
                 yield _sse("agent_error", {"detail": "No API key configured. Go to Settings."})
@@ -407,28 +507,20 @@ class AgentService:
             yield _sse("agent_status", {"step": "init", "message": "Initializing model..."})
             chat_model = _build_langchain_model(llm_settings)
 
-            # Also build an AsyncOpenAI client for deep_websearch (needs async)
+            # Also build an AsyncOpenAI client for web_research (needs async)
             client_kwargs: dict[str, Any] = {"api_key": llm_settings["api_key"]}
             if llm_settings.get("api_url"):
                 client_kwargs["base_url"] = llm_settings["api_url"]
             async_llm_client = AsyncOpenAI(**client_kwargs)
             model_name = llm_settings.get("model_name", app_settings.REASONING_MODEL)
 
-            # ── 3. Get product info ──────────────────────────────────
-            from sqlalchemy import select
-            from app.models.product import Product as ProductModel
-            product = None
-            product_name = "General Assistant"
-            product_description = None
-            if product_id:
-                result = await session.execute(select(ProductModel).where(ProductModel.product_id == product_id))
-                product = result.scalar_one_or_none()
-                product_name = product.product_name if product else "Unknown Product"
-                product_description = product.description if product else None
-
-            # ── 4. Build tools (including knowledge base tool) ──────────
+            # ── 3. Build tools (including knowledge base tool) ──────────
             yield _sse("agent_status", {"step": "init", "message": "Loading tools..."})
             from app.tools import get_all_tools, get_tool_descriptions
+
+            # Configure web search (Serper API)
+            from app.tools.web_search import configure_web_search
+            configure_web_search(serper_api_key=llm_settings.get("serper_api_key", ""))
 
             tools = get_all_tools(
                 llm_client=async_llm_client,
@@ -438,14 +530,17 @@ class AgentService:
                 screenops_model=llm_settings.get("screenops_model"),
                 screenops_api_url=llm_settings.get("screenops_api_url"),
                 screenops_mouse_timeout=int(llm_settings.get("screenops_mouse_timeout", 30) or 30),
+                screenops_image_scale=max(25, min(100, int(llm_settings.get("screenops_image_scale", 100) or 100))),
                 product_id=product_id,
                 product_description=product_description,
                 api_key=llm_settings.get("api_key", ""),
                 api_url=llm_settings.get("api_url"),
                 conversation_id=thread_id,
             )
-            # Filter by user-disabled tools
+            # Filter by user-disabled tools (legacy KB names → disable knowledge_base)
             disabled = set((llm_settings.get("agent_tools_config") or {}).get("disabled") or [])
+            if disabled & {"search_knowledge_base", "list_kb_entries", "read_kb_file", "browse_kb_structure"}:
+                disabled = set(disabled) | {"knowledge_base"}
             tools = [t for t in tools if t.name not in disabled]
             tool_desc = get_tool_descriptions(tools)
             tool_names = [t.name for t in tools]
@@ -453,12 +548,15 @@ class AgentService:
             yield _sse("agent_tools", {"tools": tool_names, "count": len(tools)})
             timings["init_ms"] = int((time.time() - t0) * 1000)
 
-            # ── 5. Build system prompt ────────────────────────────────
+            # ── 5. Build system prompt (includes KB summary and user platform) ─
             system_prompt = _build_system_prompt(
                 product_name=product_name,
                 tool_descriptions=tool_desc,
                 product_description=product_description,
+                kb_summary=kb_summary,
                 max_iterations=max_iterations,
+                available_tool_names=tool_names,
+                user_platform=user_platform,
             )
 
             # ── 6. Build LangGraph agent (shared checkpointer for conversation memory) ─
@@ -474,8 +572,12 @@ class AgentService:
             yield _sse("agent_status", {"step": "executing", "message": "Agent is working..."})
             t_exec = time.time()
 
+            task_content = task
+            if use_reasoning:
+                task_content = "Think through this carefully step by step before giving your answer.\n\n" + task
+
             initial_state: AgentState = {
-                "messages": [HumanMessage(content=task)],
+                "messages": [HumanMessage(content=task_content)],
                 "script": None,
                 "context": {},
                 "current_iteration": 0,
@@ -529,6 +631,8 @@ class AgentService:
                         if msg_type == "ai":
                             # Complete AI response from call_model
                             code = extract_python_code(content)
+                            if not code:
+                                code = extract_tool_call_as_python(content, known_tools=set(tool_names))
                             if code:
                                 yield _sse("agent_code", {
                                     "iteration": iteration,

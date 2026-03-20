@@ -3,17 +3,20 @@ Terminal tool — execute shell commands via a persistent PTY session.
 
 Each conversation gets a real shell process (bash/zsh) managed by the
 PTY manager.  Environment variables, PATH, aliases, and CWD persist
-naturally across calls — no more "command not found" after installing
-tools in earlier commands.
+naturally across calls.
+
+The factory ``make_terminal_for_conversation`` accepts an optional
+*output_callback* that receives decoded text chunks in real time (used
+by the agent service to stream terminal output via SSE).
 
 For backward compatibility when no conversation_id is available, falls
-back to the legacy subprocess-per-call approach.
+back to a legacy subprocess-per-call approach.
 """
 
 import os
 import re
 import subprocess
-from typing import Optional
+from typing import Callable, Optional
 
 import structlog
 
@@ -29,11 +32,19 @@ _BLOCKED_COMMANDS = [
     "mkfs",
     "format c:",
     "dd if=/dev/zero",
-    ":(){ :|:& };:",  # fork bomb
+    ":(){ :|:& };:",
 ]
 
 MAX_OUTPUT_SIZE = 100_000  # 100 KB
 TIMEOUT_SECONDS = 30
+SSH_TIMEOUT_SECONDS = 120
+
+_SSH_COMMANDS = {"ssh", "scp", "sftp"}
+_SSH_NON_INTERACTIVE_OPTS = (
+    "-o BatchMode=yes "
+    "-o StrictHostKeyChecking=accept-new "
+    "-o ConnectTimeout=20"
+)
 
 
 def _is_blocked(command: str) -> bool:
@@ -41,16 +52,42 @@ def _is_blocked(command: str) -> bool:
     return any(blocked in cmd_lower for blocked in _BLOCKED_COMMANDS)
 
 
+def _is_ssh_command(command: str) -> bool:
+    parts = command.strip().split(None, 1)
+    if not parts:
+        return False
+    return os.path.basename(parts[0]) in _SSH_COMMANDS
+
+
+def _inject_ssh_flags(command: str) -> str:
+    parts = command.strip().split(None, 1)
+    if not parts:
+        return command
+
+    base_cmd = os.path.basename(parts[0])
+    if base_cmd not in _SSH_COMMANDS:
+        return command
+
+    if "batchmode" in command.lower():
+        return command
+
+    rest = parts[1] if len(parts) > 1 else ""
+    return f"{parts[0]} {_SSH_NON_INTERACTIVE_OPTS} {rest}".strip()
+
+
 # ---------------------------------------------------------------------------
 # Factory — creates a per-conversation terminal tool
 # ---------------------------------------------------------------------------
 
-def make_terminal_for_conversation(conversation_id: str):
+def make_terminal_for_conversation(
+    conversation_id: str,
+    output_callback: Optional[Callable[[str], None]] = None,
+):
     """Return a ``terminal(command)`` function bound to a conversation's PTY.
 
-    The returned function is injected into the agent's tool context so
-    every ``terminal("...")`` call in the sandbox routes to the same
-    persistent shell.
+    *output_callback*, when provided, is called with decoded text chunks as
+    command output arrives in real time.  The agent service uses this to push
+    ``terminal_output`` SSE events to the frontend.
     """
     from app.services.pty_manager import pty_manager
 
@@ -59,7 +96,7 @@ def make_terminal_for_conversation(conversation_id: str):
 
         Environment variables, PATH, and CWD persist across calls.
         Blocked commands are rejected.  Output is truncated to 100 KB.
-        Timeout: 30 seconds.
+        Timeout: 30 s (120 s for SSH commands).
         """
         command = command.strip()
         if not command:
@@ -68,9 +105,15 @@ def make_terminal_for_conversation(conversation_id: str):
         if _is_blocked(command):
             return "Error: command blocked for security reasons"
 
+        timeout = SSH_TIMEOUT_SECONDS if _is_ssh_command(command) else TIMEOUT_SECONDS
+        command = _inject_ssh_flags(command)
+
         try:
             return pty_manager.execute_command(
-                conversation_id, command, timeout=TIMEOUT_SECONDS
+                conversation_id,
+                command,
+                timeout=timeout,
+                output_callback=output_callback,
             )
         except Exception as exc:
             logger.error(
@@ -92,7 +135,6 @@ _cwd: str = os.getcwd()
 
 
 def _extract_cd_target(command: str) -> Optional[str]:
-    """Extract target directory from a cd command."""
     cmd = command.strip()
     if not cmd.startswith("cd "):
         m = re.search(r"\bcd\s+([^\s;&|]+)", cmd)
@@ -125,15 +167,17 @@ def terminal(command: str) -> str:
     if _is_blocked(command):
         return "Error: command blocked for security reasons"
 
+    timeout = SSH_TIMEOUT_SECONDS if _is_ssh_command(command) else TIMEOUT_SECONDS
+    command = _inject_ssh_flags(command)
+
     try:
-        return _run_sync(command)
+        return _run_sync(command, timeout=timeout)
     except Exception as exc:
         logger.error("terminal_tool_error", command=command[:80], error=str(exc))
         return f"Error: {exc}"
 
 
-def _run_sync(command: str) -> str:
-    """Synchronous subprocess execution with CWD tracking (legacy path)."""
+def _run_sync(command: str, timeout: float = TIMEOUT_SECONDS) -> str:
     global _cwd
 
     if not os.path.isdir(_cwd):
@@ -150,13 +194,13 @@ def _run_sync(command: str) -> str:
             env=os.environ.copy(),
         )
         try:
-            stdout, stderr = proc.communicate(timeout=TIMEOUT_SECONDS)
+            stdout, stderr = proc.communicate(timeout=timeout)
             exit_code = proc.returncode
         except subprocess.TimeoutExpired:
             proc.kill()
             stdout, stderr = proc.communicate()
             exit_code = 124
-            stderr = (stderr or "") + "\n[Command timed out after 30 seconds]"
+            stderr = (stderr or "") + f"\n[Command timed out after {int(timeout)} seconds]"
     except Exception as exc:
         return f"Error executing command: {exc}"
 

@@ -16,8 +16,11 @@ interface LLMSettings {
   screenops_api_key?: string | null
   screenops_model?: string | null
   screenops_mouse_timeout?: number | null
+  screenops_image_scale?: number | null
+  serper_api_key?: string | null
   debug_logging?: boolean | null
   max_parallel_files?: number | null
+  agent_max_iterations?: number | null
 }
 
 interface LLMSettingsResponse {
@@ -26,11 +29,14 @@ interface LLMSettingsResponse {
   provider: string
   api_key_set: boolean
   screenops_api_key_set: boolean
+  serper_api_key_set?: boolean
   screenops_api_url?: string | null
   screenops_model?: string | null
   screenops_mouse_timeout?: number
+  screenops_image_scale?: number
   debug_logging?: boolean
   max_parallel_files?: number
+  agent_max_iterations?: number
 }
 
 const api = axios.create({ baseURL: '/api/v1' })
@@ -53,8 +59,11 @@ export default function Settings() {
   const [screenopsKey, setScreenopsKey] = useState('')
   const [screenopsModel, setScreenopsModel] = useState('gpt-4o-mini')
   const [screenopsMouseTimeout, setScreenopsMouseTimeout] = useState(30)
+  const [screenopsImageScale, setScreenopsImageScale] = useState(100)
+  const [serperKey, setSerperKey] = useState('')
   const [debugLogging, setDebugLogging] = useState(false)
   const [maxParallelFiles, setMaxParallelFiles] = useState(1)
+  const [agentMaxIterations, setAgentMaxIterations] = useState(10)
   const [testResult, setTestResult] = useState<{ success: boolean; message: string; latency_ms?: number } | null>(null)
   const [layoutThemeExpanded, setLayoutThemeExpanded] = useState(false)
   const [llmExpanded, setLlmExpanded] = useState(false)
@@ -157,8 +166,10 @@ export default function Settings() {
       setScreenopsUrl(currentSettings.screenops_api_url || '')
       setScreenopsModel(currentSettings.screenops_model || 'gpt-4o-mini')
       setScreenopsMouseTimeout(Math.max(5, Math.min(120, currentSettings.screenops_mouse_timeout ?? 30)))
+      setScreenopsImageScale(Math.max(25, Math.min(100, currentSettings.screenops_image_scale ?? 100)))
       setDebugLogging(currentSettings.debug_logging ?? false)
       setMaxParallelFiles(Math.max(1, Math.min(32, currentSettings.max_parallel_files ?? 1)))
+      setAgentMaxIterations(Math.max(1, Math.min(50, currentSettings.agent_max_iterations ?? 10)))
       // Note: API keys are not loaded from server for security
     }
   }, [currentSettings])
@@ -183,6 +194,7 @@ export default function Settings() {
       // Clear password fields
       setApiKey('')
       setScreenopsKey('')
+      setSerperKey('')
       
       // Invalidate and wait for refetch to complete
       await queryClient.invalidateQueries({ queryKey: ['settings', 'llm'] })
@@ -442,8 +454,13 @@ export default function Settings() {
       payload.screenops_model = null
     }
     payload.screenops_mouse_timeout = Math.max(5, Math.min(120, screenopsMouseTimeout))
+    payload.screenops_image_scale = Math.max(25, Math.min(100, screenopsImageScale))
+    if (serperKey.trim()) {
+      payload.serper_api_key = serperKey.trim()
+    }
     payload.debug_logging = debugLogging
     payload.max_parallel_files = Math.max(1, Math.min(32, maxParallelFiles))
+    payload.agent_max_iterations = Math.max(1, Math.min(50, agentMaxIterations))
 
     console.log('Saving settings with payload:', {
       ...payload,
@@ -878,6 +895,27 @@ export default function Settings() {
               </div>
             </div>
 
+            {/* Agent — Max iterations */}
+            <div className="border-t border-rt-border pt-4 mt-4">
+              <h4 className="text-xs font-semibold text-rt-text-muted uppercase tracking-wide mb-3">Agent</h4>
+              <div className="flex items-center gap-3">
+                <label htmlFor="agent-max-iterations" className="label whitespace-nowrap">Max iterations</label>
+                <select
+                  id="agent-max-iterations"
+                  value={agentMaxIterations}
+                  onChange={(e) => setAgentMaxIterations(Number(e.target.value))}
+                  className="input w-24"
+                >
+                  {[5, 10, 15, 20, 25, 30, 40, 50].map((n) => (
+                    <option key={n} value={n}>{n}</option>
+                  ))}
+                </select>
+                <p className="text-xs text-rt-text-muted">
+                  Max tool-use steps per agent task (higher = more steps, may hit context limits).
+                </p>
+              </div>
+            </div>
+
             {/* ScreenOps Configuration */}
             <div className="border-t border-rt-border pt-4 mt-4">
               <div className="flex items-center gap-2 mb-3">
@@ -922,7 +960,7 @@ export default function Settings() {
                     ScreenOps API key is configured (enter new key to update)
                   </p>
                 )}
-                <div className="border-t border-rt-border/50 pt-3 mt-3">
+                <div className="border-t border-rt-border/50 pt-3 mt-3 space-y-3">
                   <div className="flex items-center gap-3">
                     <label htmlFor="screenops-mouse-timeout" className="label text-xs whitespace-nowrap mb-0">Mouse wait timeout</label>
                     <input
@@ -936,15 +974,66 @@ export default function Settings() {
                     />
                     <span className="text-xs text-rt-text-muted">seconds</span>
                   </div>
-                  <p className="text-xs text-rt-text-muted mt-1">
+                  <p className="text-xs text-rt-text-muted -mt-1">
                     When running in keyboard-only mode (no API configured above), if a mouse click
                     is unavoidable the agent waits this long for you to click manually, then stops.
                   </p>
+                  <div>
+                    <div className="flex items-center gap-3">
+                      <label htmlFor="screenops-image-scale" className="label text-xs whitespace-nowrap mb-0">Image scale</label>
+                      <input
+                        id="screenops-image-scale"
+                        type="range"
+                        min={25}
+                        max={100}
+                        step={5}
+                        value={screenopsImageScale}
+                        onChange={(e) => setScreenopsImageScale(Number(e.target.value))}
+                        className="flex-1 h-2 rounded-lg appearance-none cursor-pointer bg-rt-border accent-rt-primary"
+                      />
+                      <span className="text-xs font-mono w-10 text-right">{screenopsImageScale}%</span>
+                    </div>
+                    <p className="text-xs text-rt-text-muted mt-1">
+                      Percentage of screenshot size sent to the model (25–100). Lower = fewer tokens and faster; higher = more detail.
+                      Saved screenshots use this scale too.
+                    </p>
+                  </div>
                 </div>
                 <p className="text-xs text-rt-text-muted mt-3">
                   ScreenOps works in keyboard-only mode without the above API. Configure URL + model + key
                   to enable mouse coordinate finding for fully automated screen operations.
                 </p>
+              </div>
+            </div>
+
+            {/* Serper API Key — Web Search */}
+            <div className="border-t border-rt-border pt-4 mt-4">
+              <div className="flex items-center gap-2 mb-3">
+                <Sparkles className="w-4 h-4 text-blue-400" />
+                <label className="label mb-0">Serper API — Web Search (Optional)</label>
+              </div>
+              
+              <div className="space-y-3 bg-rt-surface/30 rounded-lg p-3">
+                <div>
+                  <label className="label text-xs mb-1 block">Serper API Key</label>
+                  <input
+                    type="password"
+                    className="input font-mono text-sm"
+                    placeholder="Your Serper API key"
+                    value={serperKey}
+                    onChange={(e) => setSerperKey(e.target.value)}
+                  />
+                  <p className="text-xs text-rt-text-muted mt-1">
+                    Get your API key from <a href="https://serper.dev" target="_blank" rel="noopener noreferrer" className="text-rt-primary hover:underline">serper.dev</a>. 
+                    Enables enhanced web search with advanced operators. Falls back to DuckDuckGo if not configured.
+                  </p>
+                </div>
+                {currentSettings?.serper_api_key_set && !serperKey && (
+                  <p className="text-xs text-rt-success flex items-center gap-1">
+                    <CheckCircle className="w-3 h-3" />
+                    Serper API key is configured (enter new key to update)
+                  </p>
+                )}
               </div>
             </div>
 

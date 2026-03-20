@@ -81,10 +81,12 @@ EXCLUDE_EXTENSIONS: frozenset[str] = frozenset({
 })
 
 # Directories that should never appear in the tree at all.
-# These are universally non-useful (version-control internals, OS metadata).
+# These are universally non-useful (version-control internals, OS metadata,
+# package manager dirs that often contain symlink loops and huge file counts).
 IGNORE_DIRS: frozenset[str] = frozenset({
     ".git", ".svn", ".hg", ".bzr", "_darcs", ".fossil",
     "__MACOSX", "$RECYCLE.BIN", "System Volume Information",
     ".Spotlight-V100", ".Trashes", ".fseventsd",
     ".DS_Store",
+    "node_modules",  # npm/yarn; often contains circular symlinks (e.g. workspace links)
 })

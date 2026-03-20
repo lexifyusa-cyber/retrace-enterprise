@@ -5,6 +5,7 @@ Loop: screenshot → vision model → parse operations → coordinate finder →
 """
 
 import base64
+import io
 import json
 import logging
 import re
@@ -49,6 +50,38 @@ def _debug_log(tag: str, **kwargs):
 def _empty_usage():
     return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
             "cache_write_tokens": 0, "cache_read_tokens": 0, "cached_tokens": 0}
+
+
+def _resize_screenshot_by_scale(
+    screenshot_base64: str, scale_pct: int
+) -> tuple[str, int, int]:
+    """Resize screenshot to scale_pct (25-100) of original size. Returns (resized_b64, new_w, new_h)."""
+    if scale_pct >= 100:
+        raw = base64.b64decode(screenshot_base64)
+        from PIL import Image as PILImage
+        img = PILImage.open(io.BytesIO(raw))
+        w, h = img.size
+        return screenshot_base64, w, h
+    try:
+        from PIL import Image as PILImage
+        raw = base64.b64decode(screenshot_base64)
+        img = PILImage.open(io.BytesIO(raw))
+        w, h = img.size
+        scale = max(0.25, min(1.0, scale_pct / 100.0))
+        new_w = max(1, int(round(w * scale)))
+        new_h = max(1, int(round(h * scale)))
+        img = img.resize((new_w, new_h), PILImage.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        resized_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+        return resized_b64, new_w, new_h
+    except Exception as e:
+        logger.warning("ScreenOps resize by scale failed, using original: %s", e)
+        raw = base64.b64decode(screenshot_base64)
+        from PIL import Image as PILImage
+        img = PILImage.open(io.BytesIO(raw))
+        w, h = img.size
+        return screenshot_base64, w, h
 
 
 # ---------------------------------------------------------------------------
@@ -153,12 +186,16 @@ def run_screen_workflow(
     keyboard_only: bool = False,
     mouse_timeout: int = 30,
     max_steps: int = 10,
+    image_scale: int = 100,
 ) -> dict[str, Any]:
     """Run the ScreenOps agentic loop.
 
     When *keyboard_only* is True (or *coordinate_finder_invoker* is None),
     keyboard shortcuts are preferred and unavoidable clicks trigger a wait
     of *mouse_timeout* seconds before ending.
+
+    *image_scale*: 25-100, percentage of screenshot size sent to the model (reduces tokens).
+    Screenshots saved to disk and sent to the vision model and coordinate finder use this scale.
 
     Returns ``{"result": str, "token_usage": {"main": {}, "sub_sonnet": {}}, "iterations": int}``.
     """
@@ -182,14 +219,19 @@ def run_screen_workflow(
 
             # Screenshot
             try:
-                b64, scr_w, scr_h, img_w, img_h = capture_screenshot_base64()
-                _debug_log("workflow", event="screenshot", step=step, screen=f"{scr_w}x{scr_h}", image=f"{img_w}x{img_h}")
+                b64_raw, scr_w, scr_h, raw_w, raw_h = capture_screenshot_base64()
+                scale_pct = max(25, min(100, image_scale))
+                b64, img_w, img_h = _resize_screenshot_by_scale(b64_raw, scale_pct)
+                _debug_log(
+                    "workflow", event="screenshot", step=step,
+                    screen=f"{scr_w}x{scr_h}", image=f"{img_w}x{img_h}", scale_pct=scale_pct,
+                )
             except Exception as e:
                 _debug_log("workflow", event="screenshot_error", step=step, error=str(e))
                 result_text = f"ScreenOps error: {e}"
                 break
 
-            # Save screenshot to project folder (same image sent to the vision model)
+            # Save screenshot to project folder (resized image, same as sent to vision model)
             try:
                 _SCREENOPS_SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
                 ts = datetime.utcnow().strftime("%Y-%m-%d_%H-%M-%S")

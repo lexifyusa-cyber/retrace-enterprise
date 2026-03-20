@@ -560,7 +560,7 @@ async def _resolve_user_for_login(
 # ── Auth Options (public — login page discovery) ─────────────────────
 
 
-@router.get("/auth/options")
+@router.get("/options")
 @limiter.limit("10/minute")
 async def auth_options(
     identifier: str,

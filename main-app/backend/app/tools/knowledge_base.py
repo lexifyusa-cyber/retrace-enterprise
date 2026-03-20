@@ -1,16 +1,15 @@
 """
-Knowledge base tools — gives the agent multiple ways to query the trained KB.
+Knowledge base tools — single unified tool with four actions (subtools).
 
-Four tools for agentic RAG:
-  1. search_knowledge_base — hybrid search (multi-query + structural + vector + RRF + LLM re-rank)
-  2. list_kb_entries       — list skills, files, components, directories
-  3. read_kb_file          — read a specific file's full content from the KB
-  4. browse_kb_structure   — browse the KB folder tree (like `ls`)
+One tool `knowledge_base` with action: search | list | read_file | browse.
+The search action accepts optional agent-provided keywords for zero-latency
+query expansion (no internal LLM calls).
 """
 
-from typing import Optional
+from typing import Literal, Optional
 import asyncio
 import structlog
+from pydantic import BaseModel, Field
 
 logger = structlog.get_logger()
 
@@ -32,21 +31,79 @@ def _run_async(coro):
 
 
 # ---------------------------------------------------------------------------
-# Tool 1: Hybrid search
+# Single-tool schema and dispatcher
+# ---------------------------------------------------------------------------
+
+class KnowledgeBaseToolInput(BaseModel):
+    """Arguments for the unified knowledge_base tool."""
+    action: Literal["search", "list", "read_file", "browse"] = Field(
+        description="Action: 'search' = fast hybrid search; 'list' = list key_files/dirs/files; 'read_file' = read one file; 'browse' = browse folder tree."
+    )
+    query: Optional[str] = Field(default=None, description="Search query (required when action='search').")
+    keywords: Optional[list[str]] = Field(
+        default=None,
+        description="Optional list of search keywords, synonyms, and related terms to improve recall. Provide when action='search'.",
+    )
+    top_k: Optional[int] = Field(default=10, ge=1, le=20, description="Max results for search.")
+    category: Optional[str] = Field(default="all", description="Category for list: 'all', 'key_files', 'directories', 'files'.")
+    file_path: Optional[str] = Field(default=None, description="File path in KB (required when action='read_file').")
+    path: Optional[str] = Field(default="/", description="Folder path to browse (action='browse').")
+
+
+def _knowledge_base_dispatcher(
+    action: str,
+    product_id: str,
+    api_key: str,
+    model: str,
+    base_url: Optional[str],
+    query: Optional[str] = None,
+    keywords: Optional[list[str]] = None,
+    top_k: int = 10,
+    category: str = "all",
+    file_path: Optional[str] = None,
+    path: str = "/",
+) -> str:
+    """Dispatch to the correct KB operation."""
+    if action == "search":
+        if not (query or "").strip():
+            return "Error: action='search' requires a non-empty 'query'."
+        return search_knowledge_base(
+            query=query.strip(),
+            product_id=product_id,
+            api_key=api_key,
+            model=model,
+            base_url=base_url,
+            top_k=min(max(1, top_k or 10), 20),
+            agent_keywords=keywords,
+        )
+    if action == "list":
+        return list_kb_entries_tool(product_id=product_id, category=category or "all")
+    if action == "read_file":
+        if not (file_path or "").strip():
+            return "Error: action='read_file' requires a non-empty 'file_path'."
+        return read_kb_file_tool(product_id=product_id, file_path=file_path.strip())
+    if action == "browse":
+        return browse_kb_structure_tool(product_id=product_id, path=(path or "/").strip())
+    return f"Error: unknown action '{action}'. Use one of: search, list, read_file, browse."
+
+
+# ---------------------------------------------------------------------------
+# Internal implementations
 # ---------------------------------------------------------------------------
 
 def search_knowledge_base(
     query: str,
     product_id: str,
-    api_key: str,
-    model: str,
+    api_key: str = "",
+    model: str = "",
     base_url: Optional[str] = None,
     top_k: int = 10,
+    agent_keywords: Optional[list[str]] = None,
 ) -> str:
-    """Search the product's trained knowledge base using enterprise hybrid retrieval.
+    """Search the product's trained knowledge base using fast hybrid retrieval.
 
-    Uses multi-query expansion, structural registry, keyword search, vector
-    similarity (if embeddings exist), RRF fusion, and LLM re-ranking.
+    Uses deterministic keyword expansion (+ optional agent-provided keywords),
+    structural registry, keyword search, and RRF fusion.  No internal LLM calls.
     """
     limited_top_k = min(max(1, top_k), 20)
 
@@ -60,6 +117,7 @@ def search_knowledge_base(
                 model=model,
                 base_url=base_url,
                 top_k=limited_top_k,
+                agent_keywords=agent_keywords,
             )
         except Exception as exc:
             logger.error("knowledge_base_search_error", query=query, product_id=product_id, error=str(exc))
@@ -69,18 +127,14 @@ def search_knowledge_base(
 
 
 # ---------------------------------------------------------------------------
-# Tool 2: List KB entries
+# List KB entries
 # ---------------------------------------------------------------------------
 
 def list_kb_entries_tool(
     product_id: str,
     category: str = "all",
 ) -> str:
-    """List entries in the knowledge base: skills, directories, files, or all.
-
-    Use this to discover what's in the knowledge base before searching.
-    Categories: 'all', 'skills', 'directories', 'files'.
-    """
+    """List entries in the knowledge base: key_files, directories, files, or all."""
     async def _async_list() -> str:
         try:
             from app.rag.kb_search import list_kb_entries
@@ -93,7 +147,7 @@ def list_kb_entries_tool(
 
 
 # ---------------------------------------------------------------------------
-# Tool 3: Read specific KB file
+# Read specific KB file
 # ---------------------------------------------------------------------------
 
 def read_kb_file_tool(
@@ -102,7 +156,7 @@ def read_kb_file_tool(
 ) -> str:
     """Read the full content of a specific file from the knowledge base.
 
-    Use after search or list to get the complete text of a file.
+    Use after search to get the complete text of a file.
     Supports fuzzy path matching (partial paths work).
     """
     async def _async_read() -> str:
@@ -117,7 +171,7 @@ def read_kb_file_tool(
 
 
 # ---------------------------------------------------------------------------
-# Tool 4: Browse KB structure
+# Browse KB structure
 # ---------------------------------------------------------------------------
 
 def browse_kb_structure_tool(
@@ -141,7 +195,7 @@ def browse_kb_structure_tool(
 
 
 # ---------------------------------------------------------------------------
-# Tool builders (called by tools/__init__.py)
+# Tool builder (called by tools/__init__.py)
 # ---------------------------------------------------------------------------
 
 def make_knowledge_base_tools(
@@ -151,71 +205,46 @@ def make_knowledge_base_tools(
     model: str = "",
     base_url: Optional[str] = None,
 ) -> list:
-    """Create all KB StructuredTool instances for a product."""
+    """Create the single knowledge_base StructuredTool for a product."""
     from langchain_core.tools import StructuredTool
 
-    # Tool 1: Hybrid search
-    search_desc = (
-        "Search the trained knowledge base for product information. "
-        "Uses enterprise hybrid retrieval: multi-query expansion, structural "
-        "registry, keyword + vector search, and LLM re-ranking. "
-        "Use for questions about architecture, code, features, skills, "
-        "configuration, or any trained content."
+    description = (
+        "Product knowledge base tool with four actions (use the 'action' parameter):\n"
+        "- **search**: Fast hybrid search. Requires 'query'; also provide 'keywords' (list of synonyms/related terms) for better recall. Optional 'top_k' (1-20).\n"
+        "- **list**: List what's in the KB. Use 'category': 'all' | 'key_files' | 'directories' | 'files'.\n"
+        "- **read_file**: Read full content of a file by 'file_path'. Use after search. Supports fuzzy path matching.\n"
+        "- **browse**: Browse folder structure. Use 'path' (default '/'). Like 'ls' for the KB."
     )
     if product_description:
-        search_desc += f"\n\nProduct Description: {product_description}"
+        description += f"\n\nProduct: {product_description[:300]}"
 
-    def _search(query: str, top_k: int = 10) -> str:
-        return search_knowledge_base(query, product_id, api_key, model, base_url, top_k)
+    def _kb_tool(
+        action: str,
+        query: Optional[str] = None,
+        keywords: Optional[list[str]] = None,
+        top_k: int = 10,
+        category: str = "all",
+        file_path: Optional[str] = None,
+        path: str = "/",
+    ) -> str:
+        return _knowledge_base_dispatcher(
+            action=action,
+            product_id=product_id,
+            api_key=api_key,
+            model=model,
+            base_url=base_url,
+            query=query,
+            keywords=keywords,
+            top_k=top_k,
+            category=category,
+            file_path=file_path,
+            path=path,
+        )
 
-    # Tool 2: List entries
-    def _list_entries(category: str = "all") -> str:
-        return list_kb_entries_tool(product_id, category)
-
-    # Tool 3: Read file
-    def _read_file(file_path: str) -> str:
-        return read_kb_file_tool(product_id, file_path)
-
-    # Tool 4: Browse structure
-    def _browse(path: str = "/") -> str:
-        return browse_kb_structure_tool(product_id, path)
-
-    tools = [
-        StructuredTool.from_function(
-            name="search_knowledge_base",
-            description=search_desc,
-            func=_search,
-        ),
-        StructuredTool.from_function(
-            name="list_kb_entries",
-            description=(
-                "List what's in the knowledge base: skills, directories, "
-                "files, or all. Use this FIRST when you need to discover "
-                "what the product contains — like checking a table of "
-                "contents before reading a book. "
-                "Categories: 'all', 'skills', 'directories', 'files'."
-            ),
-            func=_list_entries,
-        ),
-        StructuredTool.from_function(
-            name="read_kb_file",
-            description=(
-                "Read the full content of a specific file from the knowledge "
-                "base by its path. Use after search or list to get complete "
-                "file text. Supports fuzzy path matching (partial paths work)."
-            ),
-            func=_read_file,
-        ),
-        StructuredTool.from_function(
-            name="browse_kb_structure",
-            description=(
-                "Browse the knowledge base folder structure. Like 'ls' or "
-                "'tree' for the KB. Shows directories and files with their "
-                "descriptions. Start from '/' and drill down into "
-                "subdirectories to explore."
-            ),
-            func=_browse,
-        ),
-    ]
-
-    return tools
+    tool = StructuredTool.from_function(
+        name="knowledge_base",
+        description=description,
+        func=_kb_tool,
+        args_schema=KnowledgeBaseToolInput,
+    )
+    return [tool]

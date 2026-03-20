@@ -498,6 +498,7 @@ def build_screenops_tool(
     screenops_model: Optional[str] = None,
     screenops_api_url: Optional[str] = None,
     screenops_mouse_timeout: int = 30,
+    screenops_image_scale: int = 100,
 ) -> Optional[StructuredTool]:
     """Build the ScreenOps StructuredTool.
 
@@ -506,6 +507,7 @@ def build_screenops_tool(
     *screenops_model* — Model name for the coordinate finder.
     *screenops_api_url* — Base URL for the coordinate finder API (OpenAI-compatible).
     *screenops_mouse_timeout* — Seconds to wait for manual click in keyboard-only mode.
+    *screenops_image_scale* — 25-100, percentage of screenshot size sent to model (reduces tokens).
     """
     if not chat_model:
         return None
@@ -530,6 +532,7 @@ def build_screenops_tool(
         logger.info("ScreenOps: keyboard-only mode (no coordinate finder API configured)")
 
     mouse_timeout = max(5, min(120, screenops_mouse_timeout))
+    image_scale = max(25, min(100, screenops_image_scale))
 
     def run_screenops(task: str) -> str:
         out = run_screen_workflow(
@@ -539,6 +542,7 @@ def build_screenops_tool(
             keyboard_only=keyboard_only,
             mouse_timeout=mouse_timeout,
             max_steps=10,
+            image_scale=image_scale,
         )
         return json.dumps({
             "result": out.get("result", ""),

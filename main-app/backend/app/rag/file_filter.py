@@ -174,9 +174,6 @@ EXCLUDE files that are:
   • Compiled output accidentally present
   • Files unlikely to answer any question about how the product works
 
-Files already tagged [PHASE1_EXCLUDED] → return as decision "excluded"
-with content_type "excluded".
-
 All paths are RELATIVE (the selected root folder is "/").
 Use the SAME relative paths in your response keys.
 
@@ -248,15 +245,18 @@ class FileFilterService:
         # Apply folder decisions to tree nodes so _collect_surviving_files
         # only returns files from kept folders (not the entire tree).
         self.apply_folder_decisions_to_trees(trees)
+        # Mark Phase-1-excluded file nodes as excluded so they are not sent to the LLM.
+        self._mark_phase1_excluded_files_excluded(trees)
 
-        # Step 2 — File evaluation (only files in kept folders)
+        # Step 2 — File evaluation (only files in kept folders, Phase-1-kept only)
         surviving_files = []
         for tree in trees:
             surviving_files.extend(self._collect_surviving_files(tree))
 
         if on_progress:
             await on_progress(
-                f"Phase 2b: Evaluating {len(surviving_files)} files with LLM…"
+                f"Phase 2b: Evaluating {len(surviving_files)} files with LLM… "
+                "(Phase-1-excluded files in kept folders are marked excluded and not sent.)"
             )
 
         if surviving_files:
@@ -570,10 +570,20 @@ class FileFilterService:
     # Helpers
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _mark_phase1_excluded_files_excluded(trees: list[TreeNode]) -> None:
+        """Mark every file node with phase1_excluded as decision=excluded so they are not sent to the LLM."""
+        for tree in trees:
+            for node in tree.all_files():
+                if node.phase1_excluded:
+                    node.decision = "excluded"
+                    node.content_type = "excluded"
+
     def _collect_surviving_files(self, node: TreeNode) -> list[TreeNode]:
-        """Collect files that survived folder-level exclusion."""
+        """Collect files that survived folder-level exclusion (Phase-1-kept only; Phase-1-excluded are already marked and not sent)."""
         if node.is_file:
-            # Include Phase 1 excluded files too so LLM can echo them
+            if node.phase1_excluded:
+                return []
             if node.decision != "excluded":
                 return [node]
             return []
