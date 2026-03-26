@@ -127,6 +127,7 @@ export default function McpBuilder() {
   const [methodFilter, setMethodFilter] = useState<string[]>([])
   const [resultTab, setResultTab] = useState<'config' | 'quickstart' | 'files'>('config')
   const [registryCollapsed, setRegistryCollapsed] = useState(false)
+  const [wizardStarted, setWizardStarted] = useState(false)
   const terminalEndRef = useRef<HTMLDivElement>(null)
   const [stepDirection, setStepDirection] = useState(1) // 1 = forward, -1 = back
 
