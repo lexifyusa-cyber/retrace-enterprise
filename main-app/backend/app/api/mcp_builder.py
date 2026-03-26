@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import tempfile
+from pathlib import Path
 from typing import List, Optional, Any
 from fastapi import APIRouter, Depends, HTTPException, File, UploadFile
 from fastapi.responses import StreamingResponse
@@ -279,8 +280,13 @@ async def get_mcp_server(server_id: str, session: AsyncSession = Depends(get_ses
 
 
 @router.delete("/servers/{server_id}")
-async def delete_mcp_server(server_id: str, session: AsyncSession = Depends(get_session)):
-    """Remove an MCP server from the registry (does not delete files on disk)."""
+async def delete_mcp_server(
+    server_id: str,
+    delete_files: bool = False,
+    session: AsyncSession = Depends(get_session),
+):
+    """Remove an MCP server from the registry. Optionally delete generated files on disk."""
+    import shutil
     from app.models.mcp_server import McpServer
     from sqlalchemy import select
 
@@ -291,8 +297,117 @@ async def delete_mcp_server(server_id: str, session: AsyncSession = Depends(get_
     if not srv:
         raise HTTPException(status_code=404, detail="Server not found")
 
+    files_deleted = False
+    if delete_files and srv.destination_folder:
+        folder = srv.destination_folder
+        if folder.startswith("~/") or folder.startswith("~\\"):
+            folder = str(Path.home() / folder[2:])
+        folder_path = Path(folder)
+        if folder_path.is_dir():
+            shutil.rmtree(folder_path, ignore_errors=True)
+            files_deleted = True
+
     await session.delete(srv)
-    return {"status": "deleted", "server_id": server_id}
+    return {"status": "deleted", "server_id": server_id, "files_deleted": files_deleted}
+
+
+# ---------------------------------------------------------------------------
+# MCP Server Start / Stop
+# ---------------------------------------------------------------------------
+
+_running_servers: dict[str, "subprocess.Popen[bytes]"] = {}
+
+
+def _expand_dest(destination_folder: str) -> str:
+    """Expand ~ in destination folder paths."""
+    if destination_folder.startswith("~/") or destination_folder.startswith("~\\"):
+        return str(Path.home() / destination_folder[2:])
+    return os.path.expanduser(destination_folder)
+
+
+@router.post("/servers/{server_id}/start")
+async def start_mcp_server(server_id: str, session: AsyncSession = Depends(get_session)):
+    """Start an MCP server process."""
+    import subprocess
+    from app.models.mcp_server import McpServer
+    from sqlalchemy import select
+
+    result = await session.execute(
+        select(McpServer).where(McpServer.server_id == server_id)
+    )
+    srv = result.scalar_one_or_none()
+    if not srv:
+        raise HTTPException(status_code=404, detail="Server not found")
+
+    dest = _expand_dest(srv.destination_folder)
+    module_name = srv.module_name
+
+    # Check if already running
+    if _check_server_status(srv.destination_folder, module_name) == "running":
+        return {"status": "already_running", "server_id": server_id}
+
+    venv_python = os.path.join(dest, ".venv", "bin", "python")
+    if not os.path.exists(venv_python):
+        raise HTTPException(status_code=400, detail=f"Virtual environment not found at {dest}/.venv")
+
+    try:
+        proc = subprocess.Popen(
+            [venv_python, "-m", f"{module_name}.server"],
+            cwd=dest,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        _running_servers[server_id] = proc
+        return {"status": "started", "server_id": server_id, "pid": proc.pid}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to start server: {e}")
+
+
+@router.post("/servers/{server_id}/stop")
+async def stop_mcp_server(server_id: str, session: AsyncSession = Depends(get_session)):
+    """Stop a running MCP server process."""
+    import subprocess
+    import signal
+    from app.models.mcp_server import McpServer
+    from sqlalchemy import select
+
+    result = await session.execute(
+        select(McpServer).where(McpServer.server_id == server_id)
+    )
+    srv = result.scalar_one_or_none()
+    if not srv:
+        raise HTTPException(status_code=404, detail="Server not found")
+
+    killed = False
+
+    # Try killing from tracked processes first
+    proc = _running_servers.pop(server_id, None)
+    if proc and proc.poll() is None:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            proc.wait(timeout=5)
+            killed = True
+        except Exception:
+            try:
+                proc.kill()
+                killed = True
+            except Exception:
+                pass
+
+    # Fallback: kill by pattern
+    if not killed:
+        module_name = srv.module_name
+        try:
+            subprocess.run(
+                ["pkill", "-f", f"{module_name}.server"],
+                capture_output=True, timeout=5,
+            )
+            killed = True
+        except Exception:
+            pass
+
+    return {"status": "stopped", "server_id": server_id, "killed": killed}
 
 
 class MCPDiscoverRequest(BaseModel):

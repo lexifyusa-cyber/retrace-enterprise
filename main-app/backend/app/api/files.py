@@ -37,7 +37,10 @@ def _is_path_allowed(path_str: str) -> tuple[bool, Path | None]:
     if not path_str:
         return False, None
     try:
-        path = Path(path_str)
+        if path_str.startswith("~/") or path_str.startswith("~\\"):
+            path = Path.home() / path_str[2:]
+        else:
+            path = Path(path_str)
         if not path.is_absolute():
             # Resolve relative to cwd
             path = path.resolve()
@@ -57,6 +60,8 @@ def _resolve_browse_path(path: str) -> Path:
     """Resolve the path for browsing. '/' or '~' or '' means the parent of home (e.g. /Users, C:\\Users)."""
     if path in ("/", "~", ""):
         return Path.home().parent  # e.g. /Users (macOS) or /home (Linux) or C:\Users (Windows)
+    if path.startswith("~/") or path.startswith("~\\"):
+        return Path.home() / path[2:]
     return Path(path)
 
 
