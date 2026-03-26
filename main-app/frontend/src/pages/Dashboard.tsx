@@ -1,147 +1,128 @@
 import { useQuery } from '@tanstack/react-query'
 import {
-  Server, FolderTree, Activity, MessageSquare, ArrowRight, Bot,
-  ClipboardList, FileText, CheckCircle2, XCircle, Loader2, Clock,
-  Zap, TrendingUp, Calendar, Timer, ChevronRight, Play, BarChart3,
-  Sparkles,
+  FolderTree, Activity, ArrowRight, Bot,
+  CheckCircle2, XCircle, Loader2,
+  Zap, TrendingUp, Calendar,
+  Sparkles, RefreshCw, Share2, SlidersHorizontal,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { agentApi } from '@/utils/api'
 import { motion } from 'framer-motion'
+import { useAuth } from '@/context/AuthContext'
 
 export default function Dashboard() {
   const { data, isLoading } = useQuery({
     queryKey: ['dashboard-stats'],
     queryFn: () => agentApi.getDashboardStats(),
-    refetchInterval: 30000, // auto-refresh every 30s
+    refetchInterval: 30000,
   })
 
+  const { user } = useAuth()
   const stats = data?.stats
   const recentRuns = data?.recent_runs || []
   const upcomingSchedules = data?.upcoming_schedules || []
   const productCoverage = data?.product_coverage || []
 
   const greeting = getGreeting()
+  const firstName = user?.display_name?.split(' ')[0] || user?.email?.split('@')[0] || ''
 
   return (
-    <div className="p-8 max-w-[1400px] mx-auto">
-      {/* Header */}
-      <motion.div
+    <div className="px-12 pb-20 pt-8">
+      {/* Hero Header — Editorial Style */}
+      <motion.section
         initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
-        className="mb-8"
+        className="mb-12"
       >
-        <h1 className="text-3xl font-display font-bold mb-1">{greeting}</h1>
-        <p className="text-rt-text-muted">
-          {stats?.conversations_today
-            ? `${stats.conversations_today} agent session${stats.conversations_today === 1 ? '' : 's'} today · `
-            : ''}
-          {stats ? `${stats.total_automations} automation${stats.total_automations === 1 ? '' : 's'} · ${stats.total_docs} document${stats.total_docs === 1 ? '' : 's'}` : 'Loading your workspace...'}
+        <h1 className="text-5xl font-headline font-bold tracking-tight mb-4">
+          {greeting}, <span className="text-rt-primary-container italic">{firstName}.</span>
+        </h1>
+        <p className="text-on-surface-variant text-lg max-w-2xl leading-relaxed">
+          {stats
+            ? <>Your digital curation engine is running at <span className="font-bold text-rt-primary">{stats.execution_success_rate || 100}% efficiency</span>. Here is what has evolved since your last session.</>
+            : 'Loading your workspace...'}
         </p>
-      </motion.div>
+      </motion.section>
 
       {isLoading ? (
-        <div className="flex items-center justify-center py-20 gap-2 text-rt-text-muted">
+        <div className="flex items-center justify-center py-20 gap-3 text-rt-text-muted">
           <Loader2 className="w-5 h-5 animate-spin" />
-          Loading dashboard...
+          <span className="font-body text-sm">Loading dashboard...</span>
         </div>
       ) : (
         <>
           {/* ============================================================
-              ROW 1: Hero Stat Cards
+              ROW 1: Hero Stat Cards — Editorial Style
               ============================================================ */}
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8 mb-16">
             <StatCard
-              label="Knowledge Coverage"
-              value={`${stats?.knowledge_coverage_pct || 0}%`}
-              sub={`${stats?.trained_groups || 0}/${stats?.total_groups || 0} groups`}
-              icon={BarChart3}
-              color="text-rt-primary"
-              bg="bg-rt-primary/10"
-              href="/products"
+              label="Total Artifacts"
+              value={stats?.total_docs || 0}
+              icon={<Sparkles className="w-5 h-5 text-rt-primary" />}
+              badge={stats?.docs_this_week ? `+${stats.docs_this_week}` : undefined}
+              badgeColor="text-green-700 bg-green-50"
+              href="/docs"
               delay={0}
-              ring={stats?.knowledge_coverage_pct}
             />
             <StatCard
-              label="Active Automations"
+              label="Active Agents"
               value={stats?.active_automations || 0}
-              sub={`${stats?.approved_automations || 0} approved`}
-              icon={ClipboardList}
-              color="text-emerald-400"
-              bg="bg-emerald-500/10"
+              icon={<Bot className="w-5 h-5 text-rt-primary" />}
+              badge="Active"
+              badgeColor="text-rt-primary bg-rt-primary-fixed/20"
               href="/sops"
               delay={0.05}
             />
             <StatCard
-              label="Agent Sessions"
-              value={stats?.conversations_today || 0}
-              sub="today"
-              icon={Bot}
-              color="text-blue-400"
-              bg="bg-blue-500/10"
-              href="/agent"
+              label="Knowledge Groups"
+              value={`${stats?.trained_groups || 0}/${stats?.total_groups || 0}`}
+              icon={<FolderTree className="w-5 h-5 text-rt-primary" />}
+              badge={stats?.knowledge_coverage_pct === 100 ? 'Complete' : 'Healthy'}
+              badgeColor="text-rt-primary bg-rt-primary-fixed/20"
+              href="/products"
               delay={0.1}
-            />
-            <StatCard
-              label="Documents"
-              value={stats?.total_docs || 0}
-              sub={stats?.docs_this_week ? `+${stats.docs_this_week} this week` : 'none this week'}
-              icon={FileText}
-              color="text-purple-400"
-              bg="bg-purple-500/10"
-              href="/docs"
-              delay={0.15}
             />
             <StatCard
               label="Success Rate"
               value={`${stats?.execution_success_rate || 100}%`}
-              sub={`${stats?.total_runs || 0} total runs`}
-              icon={TrendingUp}
-              color={stats?.execution_success_rate && stats.execution_success_rate < 80 ? 'text-amber-400' : 'text-emerald-400'}
-              bg={stats?.execution_success_rate && stats.execution_success_rate < 80 ? 'bg-amber-500/10' : 'bg-emerald-500/10'}
+              icon={<TrendingUp className="w-5 h-5 text-rt-primary" />}
+              badge="Optimized"
+              badgeColor="text-rt-primary bg-rt-primary-fixed/20"
               href="/sops"
-              delay={0.2}
-            />
-            <StatCard
-              label="Connected PODs"
-              value={`${stats?.online_pods || 0}/${stats?.total_pods || 0}`}
-              sub={stats?.online_pods ? 'online' : 'none connected'}
-              icon={Server}
-              color={stats?.online_pods ? 'text-emerald-400' : 'text-rt-text-muted'}
-              bg={stats?.online_pods ? 'bg-emerald-500/10' : 'bg-rt-surface'}
-              href="/pods"
-              delay={0.25}
+              delay={0.15}
             />
           </div>
 
           {/* ============================================================
-              ROW 2: Activity Timeline + Knowledge Coverage
+              ROW 2: Asymmetric Layout — Activity + Knowledge Coverage
               ============================================================ */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-            {/* Automation Activity */}
+          <div className="grid grid-cols-12 gap-8 mb-16">
+            {/* Automation Activity (Large Column) */}
             <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.3 }}
-              className="card"
+              transition={{ delay: 0.2 }}
+              className="col-span-12 lg:col-span-8 card p-10"
             >
-              <div className="flex items-center justify-between mb-5">
-                <div className="flex items-center gap-2">
-                  <Activity className="w-4 h-4 text-rt-primary" />
-                  <h2 className="text-sm font-display font-semibold">Automation Activity</h2>
+              <div className="flex justify-between items-end mb-8">
+                <div>
+                  <h3 className="text-2xl font-headline font-bold mb-2">Automation Activity</h3>
+                  <p className="text-on-surface-variant text-sm">Synthetic workload distribution over the last 24 hours.</p>
                 </div>
-                <Link to="/sops" className="text-xs text-rt-primary hover:underline">View all</Link>
+                <Link to="/sops" className="text-rt-primary font-bold text-sm flex items-center gap-1 hover:gap-2 transition-all">
+                  View Report <ArrowRight className="w-4 h-4" />
+                </Link>
               </div>
               {recentRuns.length === 0 ? (
-                <div className="text-center py-10">
-                  <Activity className="w-8 h-8 mx-auto mb-2 text-rt-text-muted/20" />
-                  <p className="text-xs text-rt-text-muted">No automation runs yet</p>
-                  <Link to="/sops" className="text-xs text-rt-primary hover:underline mt-1 inline-block">Create your first automation</Link>
+                <div className="text-center py-16">
+                  <Activity className="w-10 h-10 mx-auto mb-3 text-rt-text-muted/20" />
+                  <p className="text-sm text-rt-text-muted">No automation runs yet</p>
+                  <Link to="/sops" className="text-sm text-rt-primary hover:underline mt-2 inline-block font-semibold">Create your first automation</Link>
                 </div>
               ) : (
                 <div className="space-y-1 max-h-[320px] overflow-y-auto pr-1">
-                  {recentRuns.map((run: any, i: number) => (
-                    <div key={run.run_id} className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-rt-surface/40 transition-colors group">
+                  {recentRuns.map((run: any) => (
+                    <div key={run.run_id} className="flex items-center gap-4 px-4 py-3 rounded-xl hover:bg-rt-bg-lighter transition-colors group">
                       <div className="flex-shrink-0">
                         {run.status === 'completed' ? (
                           <CheckCircle2 className="w-4 h-4 text-emerald-400" />
@@ -152,14 +133,14 @@ export default function Dashboard() {
                         )}
                       </div>
                       <div className="flex-1 min-w-0">
-                        <p className="text-xs font-medium truncate">{run.sop_title}</p>
-                        <p className="text-[10px] text-rt-text-muted">
-                          {run.trigger === 'manual' ? '🖱 Manual' : '⏰ Scheduled'}
+                        <p className="text-sm font-semibold truncate">{run.sop_title}</p>
+                        <p className="text-xs text-rt-text-muted">
+                          {run.trigger === 'manual' ? 'Manual' : 'Scheduled'}
                           {' · '}{run.steps_completed}/{run.steps_total} steps
                           {run.duration_ms ? ` · ${(run.duration_ms / 1000).toFixed(1)}s` : ''}
                         </p>
                       </div>
-                      <span className="text-[10px] text-rt-text-muted/60 flex-shrink-0">
+                      <span className="text-xs text-rt-text-muted/60 flex-shrink-0 italic">
                         {run.started_at ? timeAgo(run.started_at) : ''}
                       </span>
                     </div>
@@ -168,84 +149,77 @@ export default function Dashboard() {
               )}
             </motion.div>
 
-            {/* Knowledge Coverage by Product */}
+            {/* Knowledge Coverage (Amber Feature Card) */}
             <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.35 }}
-              className="card"
+              transition={{ delay: 0.25 }}
+              className="col-span-12 lg:col-span-4 bg-rt-primary-container rounded-2xl p-10 text-[#2a1700] flex flex-col relative overflow-hidden editorial-shadow"
             >
-              <div className="flex items-center justify-between mb-5">
-                <div className="flex items-center gap-2">
-                  <FolderTree className="w-4 h-4 text-rt-primary" />
-                  <h2 className="text-sm font-display font-semibold">Knowledge Coverage by Product</h2>
-                </div>
-                <Link to="/products" className="text-xs text-rt-primary hover:underline">View all</Link>
-              </div>
-              {productCoverage.length === 0 ? (
-                <div className="text-center py-10">
-                  <FolderTree className="w-8 h-8 mx-auto mb-2 text-rt-text-muted/20" />
-                  <p className="text-xs text-rt-text-muted">No products created yet</p>
-                  <Link to="/products" className="text-xs text-rt-primary hover:underline mt-1 inline-block">Create your first product</Link>
-                </div>
-              ) : (
-                <div className="space-y-3 max-h-[320px] overflow-y-auto pr-1">
-                  {productCoverage.map((p: any) => (
-                    <Link key={p.product_id} to="/products" className="block group">
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="text-xs font-medium truncate">{p.product_name}</span>
-                        <span className="text-[10px] text-rt-text-muted">{p.coverage_pct}%</span>
+              <div className="relative z-10">
+                <h3 className="text-2xl font-headline font-bold mb-4">Knowledge <span className="italic">Coverage</span></h3>
+                <p className="text-[#2a1700]/70 text-sm leading-relaxed mb-8">
+                  {productCoverage.length > 0
+                    ? `Your digital library spans ${productCoverage.length} product${productCoverage.length === 1 ? '' : 's'}. Expand your reach today.`
+                    : 'Start by creating products to build your knowledge base.'}
+                </p>
+                <div className="space-y-5">
+                  {productCoverage.slice(0, 3).map((p: any) => (
+                    <div key={p.product_id} className="space-y-2">
+                      <div className="flex justify-between text-xs font-bold uppercase tracking-wider">
+                        <span className="truncate mr-2">{p.product_name}</span>
+                        <span>{p.coverage_pct}%</span>
                       </div>
-                      <div className="w-full h-2 rounded-full bg-rt-surface overflow-hidden">
-                        <div className="h-full rounded-full bg-gradient-to-r from-rt-primary to-emerald-400 transition-all duration-700"
+                      <div className="w-full bg-white/20 h-1 rounded-full">
+                        <div className="bg-[#2a1700] h-full rounded-full transition-all duration-700"
                           style={{ width: `${p.coverage_pct}%` }} />
                       </div>
-                      <div className="flex items-center gap-3 mt-1 text-[10px] text-rt-text-muted">
-                        <span>{p.trained_groups} trained</span>
-                        {p.in_progress_groups > 0 && <span className="text-amber-400">{p.in_progress_groups} training</span>}
-                        <span>{p.total_groups - p.trained_groups - p.in_progress_groups} pending</span>
-                      </div>
-                    </Link>
+                    </div>
                   ))}
+                  {productCoverage.length === 0 && (
+                    <p className="text-xs text-[#2a1700]/50 italic">No products created yet</p>
+                  )}
                 </div>
-              )}
+                <Link to="/products" className="mt-10 bg-[#2a1700] text-white px-6 py-3 rounded-full font-bold text-sm w-full hover:bg-rt-primary transition-all active:scale-95 inline-block text-center">
+                  Expand Curations
+                </Link>
+              </div>
+              {/* Decorative blur */}
+              <div className="absolute -bottom-10 -right-10 w-40 h-40 bg-white/10 rounded-full blur-3xl"></div>
             </motion.div>
           </div>
 
           {/* ============================================================
-              ROW 3: Upcoming Schedules + System Overview + Quick Actions
+              ROW 3: Bottom Three Columns
               ============================================================ */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
             {/* Upcoming Scheduled Runs */}
             <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.4 }}
-              className="card"
+              transition={{ delay: 0.3 }}
+              className="card p-8"
             >
-              <div className="flex items-center gap-2 mb-5">
-                <Calendar className="w-4 h-4 text-rt-primary" />
-                <h2 className="text-sm font-display font-semibold">Upcoming Runs</h2>
-              </div>
+              <h4 className="font-headline font-bold text-xl mb-6 flex items-center gap-2">
+                <Calendar className="w-5 h-5 text-rt-primary" />
+                Upcoming Runs
+              </h4>
               {upcomingSchedules.length === 0 ? (
                 <div className="text-center py-8">
                   <Calendar className="w-8 h-8 mx-auto mb-2 text-rt-text-muted/20" />
-                  <p className="text-xs text-rt-text-muted">No scheduled runs</p>
+                  <p className="text-sm text-rt-text-muted">No scheduled runs</p>
                 </div>
               ) : (
-                <div className="space-y-2">
+                <div className="space-y-5">
                   {upcomingSchedules.map((s: any) => (
-                    <div key={s.sop_id} className="flex items-center gap-3 px-3 py-2 rounded-lg bg-rt-surface/30">
-                      <Timer className="w-4 h-4 text-blue-400 flex-shrink-0" />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-xs font-medium truncate">{s.title}</p>
-                        <p className="text-[10px] text-rt-text-muted">
-                          {scheduleLabel(s.schedule_type, s.schedule_config)}
+                    <div key={s.sop_id} className="flex items-start gap-4">
+                      <div className="mt-1.5 w-2 h-2 rounded-full bg-rt-primary-container flex-shrink-0"></div>
+                      <div>
+                        <p className="text-sm font-bold">{s.title}</p>
+                        <p className="text-xs text-rt-text-muted italic">
+                          {s.next_run_at ? `Scheduled for ${formatNextRun(s.next_run_at)}` : scheduleLabel(s.schedule_type, s.schedule_config)}
                         </p>
                       </div>
-                      <span className="text-[10px] text-blue-400 flex-shrink-0 font-medium">
-                        {s.next_run_at ? formatNextRun(s.next_run_at) : '—'}
-                      </span>
                     </div>
                   ))}
                 </div>
@@ -256,20 +230,20 @@ export default function Dashboard() {
             <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.45 }}
-              className="card"
+              transition={{ delay: 0.35 }}
+              className="card p-8"
             >
-              <div className="flex items-center gap-2 mb-5">
-                <Zap className="w-4 h-4 text-rt-primary" />
-                <h2 className="text-sm font-display font-semibold">System Overview</h2>
-              </div>
-              <div className="space-y-3">
-                <SystemRow label="Products" value={stats?.total_products || 0} icon={FolderTree} color="text-rt-primary" />
-                <SystemRow label="Total Automations" value={stats?.total_automations || 0} icon={ClipboardList} color="text-emerald-400" />
-                <SystemRow label="Approved Docs" value={`${stats?.approved_docs || 0} / ${stats?.total_docs || 0}`} icon={FileText} color="text-purple-400" />
-                <SystemRow label="Agent Conversations" value={stats?.total_conversations || 0} icon={MessageSquare} color="text-blue-400" />
-                <SystemRow label="Execution Runs" value={stats?.total_runs || 0} icon={Play} color="text-amber-400" />
-                <SystemRow label="Failed Runs" value={stats?.failed_runs || 0} icon={XCircle} color={stats?.failed_runs ? 'text-red-400' : 'text-rt-text-muted'} />
+              <h4 className="font-headline font-bold text-xl mb-6 flex items-center gap-2">
+                <Zap className="w-5 h-5 text-rt-primary" />
+                System Overview
+              </h4>
+              <div className="space-y-0">
+                <SystemRow label="Products" value={stats?.total_products || 0} />
+                <SystemRow label="Total Automations" value={stats?.total_automations || 0} />
+                <SystemRow label="Approved Docs" value={`${stats?.approved_docs || 0} / ${stats?.total_docs || 0}`} />
+                <SystemRow label="Agent Conversations" value={stats?.total_conversations || 0} />
+                <SystemRow label="Execution Runs" value={stats?.total_runs || 0} />
+                <SystemRow label="Failed Runs" value={stats?.failed_runs || 0} highlight={!!stats?.failed_runs} />
               </div>
             </motion.div>
 
@@ -277,19 +251,15 @@ export default function Dashboard() {
             <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.5 }}
-              className="card"
+              transition={{ delay: 0.4 }}
+              className="card p-8"
             >
-              <div className="flex items-center gap-2 mb-5">
-                <Sparkles className="w-4 h-4 text-rt-primary" />
-                <h2 className="text-sm font-display font-semibold">Quick Actions</h2>
-              </div>
-              <div className="space-y-2">
-                <QuickAction to="/agent" icon={Bot} label="Start Agent Task" desc="Run an AI-powered task" color="text-blue-400" bg="bg-blue-500/10" />
-                <QuickAction to="/products" icon={FolderTree} label="Create Product" desc="Set up a new knowledge product" color="text-rt-primary" bg="bg-rt-primary/10" />
-                <QuickAction to="/sops" icon={ClipboardList} label="View Automations" desc="Manage scheduled workflows" color="text-emerald-400" bg="bg-emerald-500/10" />
-                <QuickAction to="/docs" icon={FileText} label="Browse Documentation" desc="Knowledge articles library" color="text-purple-400" bg="bg-purple-500/10" />
-                <QuickAction to="/pods" icon={Server} label="Manage PODs" desc="Distributed infrastructure" color="text-amber-400" bg="bg-amber-500/10" />
+              <h4 className="font-headline font-bold text-xl mb-6">Quick Actions</h4>
+              <div className="grid grid-cols-2 gap-4">
+                <QuickActionButton to="/agent" icon={<Bot className="w-5 h-5 text-rt-primary" />} label="Add Task" />
+                <QuickActionButton to="/sops" icon={<RefreshCw className="w-5 h-5 text-rt-primary" />} label="Sync All" />
+                <QuickActionButton to="/docs" icon={<Share2 className="w-5 h-5 text-rt-primary" />} label="Export" />
+                <QuickActionButton to="/settings" icon={<SlidersHorizontal className="w-5 h-5 text-rt-primary" />} label="Tune AI" />
               </div>
             </motion.div>
           </div>
@@ -303,9 +273,9 @@ export default function Dashboard() {
 // Sub-components
 // ---------------------------------------------------------------------------
 
-function StatCard({ label, value, sub, icon: Icon, color, bg, href, delay, ring }: {
-  label: string; value: any; sub: string; icon: any;
-  color: string; bg: string; href: string; delay: number; ring?: number
+function StatCard({ label, value, icon, badge, badgeColor, href, delay }: {
+  label: string; value: any; icon: React.ReactNode;
+  badge?: string; badgeColor?: string; href: string; delay: number
 }) {
   return (
     <motion.div
@@ -313,54 +283,42 @@ function StatCard({ label, value, sub, icon: Icon, color, bg, href, delay, ring 
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay }}
     >
-      <Link to={href} className="card !p-4 flex flex-col hover:border-rt-primary/30 transition-all group relative overflow-hidden">
-        <div className="flex items-center justify-between mb-3">
-          <div className={`w-9 h-9 rounded-lg ${bg} flex items-center justify-center`}>
-            <Icon className={`w-4.5 h-4.5 ${color}`} />
+      <Link to={href} className="card !p-8 flex flex-col hover:-translate-y-1 transition-all duration-300 group relative overflow-hidden">
+        <div className="flex items-center justify-between mb-6">
+          <div className="icon-orb">
+            {icon}
           </div>
-          {ring !== undefined && (
-            <svg className="w-9 h-9" viewBox="0 0 36 36">
-              <circle cx="18" cy="18" r="15" fill="none" stroke="currentColor" className="text-rt-surface" strokeWidth="3" />
-              <circle cx="18" cy="18" r="15" fill="none" stroke="currentColor" className={color} strokeWidth="3"
-                strokeDasharray={`${ring * 0.94} 100`}
-                strokeLinecap="round" transform="rotate(-90 18 18)" />
-            </svg>
+          {badge && (
+            <span className={`text-[10px] font-bold px-2.5 py-1 rounded-full ${badgeColor || ''}`}>
+              {badge}
+            </span>
           )}
         </div>
-        <p className="text-2xl font-display font-bold leading-none mb-0.5">{value}</p>
-        <p className="text-[11px] text-rt-text-muted">{label}</p>
-        <p className="text-[10px] text-rt-text-muted/60 mt-0.5">{sub}</p>
-        <ArrowRight className="w-3.5 h-3.5 text-rt-text-muted absolute bottom-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity" />
+        <p className="text-3xl font-headline font-bold mb-1">{value}</p>
+        <p className="text-xs text-on-surface-variant uppercase tracking-[0.15em] font-bold">{label}</p>
       </Link>
     </motion.div>
   )
 }
 
-function SystemRow({ label, value, icon: Icon, color }: {
-  label: string; value: any; icon: any; color: string
+function SystemRow({ label, value, highlight }: {
+  label: string; value: any; highlight?: boolean
 }) {
   return (
-    <div className="flex items-center gap-3 px-3 py-2 rounded-lg bg-rt-surface/30">
-      <Icon className={`w-4 h-4 ${color} flex-shrink-0`} />
-      <span className="text-xs flex-1">{label}</span>
-      <span className="text-sm font-semibold font-display">{value}</span>
+    <div className="flex justify-between items-center py-3 border-b border-outline-variant/10 last:border-b-0">
+      <span className="text-sm text-on-surface-variant">{label}</span>
+      <span className={`text-sm font-bold ${highlight ? 'text-red-500' : ''}`}>{value}</span>
     </div>
   )
 }
 
-function QuickAction({ to, icon: Icon, label, desc, color, bg }: {
-  to: string; icon: any; label: string; desc: string; color: string; bg: string
+function QuickActionButton({ to, icon, label }: {
+  to: string; icon: React.ReactNode; label: string
 }) {
   return (
-    <Link to={to} className="flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-rt-surface/40 transition-colors group">
-      <div className={`w-8 h-8 rounded-lg ${bg} flex items-center justify-center flex-shrink-0`}>
-        <Icon className={`w-4 h-4 ${color}`} />
-      </div>
-      <div className="flex-1 min-w-0">
-        <p className="text-xs font-medium">{label}</p>
-        <p className="text-[10px] text-rt-text-muted">{desc}</p>
-      </div>
-      <ChevronRight className="w-3.5 h-3.5 text-rt-text-muted opacity-0 group-hover:opacity-100 transition-opacity" />
+    <Link to={to} className="flex flex-col items-center justify-center p-4 rounded-xl bg-rt-bg-lighter hover:bg-rt-primary-fixed/30 transition-colors group">
+      <div className="mb-2">{icon}</div>
+      <span className="text-[10px] font-bold uppercase tracking-[0.15em] text-rt-text-muted group-hover:text-rt-primary">{label}</span>
     </Link>
   )
 }

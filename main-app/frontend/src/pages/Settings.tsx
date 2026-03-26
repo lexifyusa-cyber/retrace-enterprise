@@ -528,8 +528,8 @@ export default function Settings() {
         animate={{ opacity: 1, y: 0 }}
         className="mb-8"
       >
-        <h1 className="text-3xl font-display font-bold mb-2">Settings</h1>
-        <p className="text-rt-text-muted">
+        <h1 className="text-4xl font-headline font-bold tracking-tight mb-2">Platform <span className="text-rt-primary-container italic">Settings</span></h1>
+        <p className="text-on-surface-variant text-lg">
           Configure your <span className="font-extrabold bg-gradient-to-r from-indigo-400 via-purple-400 to-violet-400 bg-clip-text text-transparent">ReTrace</span> system
         </p>
       </motion.div>
@@ -554,7 +554,7 @@ export default function Settings() {
               )}
               <LayoutPanelLeft className="w-4 h-4 text-purple-400" />
               <Palette className="w-4 h-4 text-pink-400" />
-              <span className="text-sm font-display font-semibold">Layout & theme</span>
+              <span className="text-sm font-headline font-semibold">Interface <span className="italic text-rt-primary-container">Identity</span></span>
             </div>
             <span className="text-xs text-rt-text-muted">
               {layoutMode === 'classic' ? 'Classic' : 'Command Center'} · {themeMode === 'dark' ? 'Dark' : themeMode === 'light' ? 'Light' : 'Colorful'}
@@ -566,7 +566,7 @@ export default function Settings() {
               <div>
                 <div className="flex items-center gap-2 mb-3">
                   <LayoutPanelLeft className="w-4 h-4 text-purple-400" />
-                  <h2 className="text-sm font-display font-semibold">Interface Layout</h2>
+                  <h2 className="text-sm font-headline font-semibold">Interface Layout</h2>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
             <button
@@ -646,7 +646,7 @@ export default function Settings() {
               <div>
                 <div className="flex items-center gap-2 mb-3">
                   <Palette className="w-4 h-4 text-pink-400" />
-                  <h2 className="text-sm font-display font-semibold">Color Theme</h2>
+                  <h2 className="text-sm font-headline font-semibold">Color Theme</h2>
                 </div>
                 <div className="grid grid-cols-3 gap-2">
             <button
@@ -763,7 +763,7 @@ export default function Settings() {
                 <ChevronRight className="w-4 h-4 text-rt-text-muted" />
               )}
               <Zap className="w-4 h-4 text-rt-primary" />
-              <span className="text-sm font-display font-semibold">LLM API Configuration</span>
+              <span className="text-sm font-headline font-semibold">Intelligence <span className="italic text-rt-primary-container">Engine</span></span>
             </div>
             <span className="text-xs text-rt-text-muted">
               {provider === 'openai' ? 'OpenAI' : provider === 'anthropic' ? 'Anthropic' : 'Custom'} · {modelName || 'not set'}
@@ -1153,7 +1153,7 @@ export default function Settings() {
                 <ChevronRight className="w-4 h-4 text-rt-text-muted" />
               )}
               <SettingsIcon className="w-4 h-4 text-purple-400" />
-              <span className="text-sm font-display font-semibold">Organization Settings</span>
+              <span className="text-sm font-headline font-semibold">Organization Settings</span>
             </div>
           </button>
           {orgExpanded && (
@@ -1300,7 +1300,7 @@ export default function Settings() {
                 <ChevronRight className="w-4 h-4 text-rt-text-muted" />
               )}
               <Mail className="w-4 h-4 text-blue-400" />
-              <span className="text-sm font-display font-semibold">Email Provider</span>
+              <span className="text-sm font-headline font-semibold">Email Provider</span>
             </div>
             <span className="text-xs text-rt-text-muted">
               {emailConnections.length > 0
@@ -1623,7 +1623,7 @@ export default function Settings() {
                 <ChevronRight className="w-4 h-4 text-rt-text-muted" />
               )}
               <MessageSquare className="w-4 h-4 text-green-400" />
-              <span className="text-sm font-display font-semibold">Slack & Teams Channels</span>
+              <span className="text-sm font-headline font-semibold">Slack & Teams Channels</span>
             </div>
             <span className="text-xs text-rt-text-muted">
               {channelConnections.length > 0
@@ -1867,17 +1867,14 @@ export default function Settings() {
         className="max-w-4xl mt-10 mb-4"
       >
         <div className="flex items-center justify-center gap-3 py-4 border-t border-rt-border/30">
-          <div className="w-5 h-5 bg-gradient-to-br from-indigo-500 to-purple-600 rounded flex items-center justify-center">
-            <svg className="w-3 h-3 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M4 4v16" /><path d="M4 4h8q5 0 5 5t-5 5H4" /><path d="M11 14l7 6" />
-            </svg>
-          </div>
           <div className="text-xs text-rt-text-muted">
-            <span className="font-extrabold bg-gradient-to-r from-indigo-400 via-purple-400 to-violet-400 bg-clip-text text-transparent">ReTrace</span>
-            <span className="opacity-60"> is a product of </span>
-            <span className="font-semibold opacity-80">Lumena Technologies</span>
+            <span className="font-headline font-bold text-rt-primary">ReTrace</span>
+            <span className="opacity-60"> by </span>
+            <span className="font-semibold opacity-80">Lumena</span>
             <span className="opacity-40"> · </span>
-            <a href="https://lumenatech.io" target="_blank" rel="noopener noreferrer" className="opacity-50 hover:opacity-80 hover:text-indigo-400 transition-all">lumenatech.io</a>
+            <span className="opacity-60">Enterprise Edition</span>
+            <span className="opacity-40"> · </span>
+            <a href="https://lumenatech.io" target="_blank" rel="noopener noreferrer" className="opacity-50 hover:opacity-80 hover:text-rt-primary transition-all">lumenatech.io</a>
           </div>
         </div>
       </motion.div>
