@@ -159,6 +159,144 @@ class KnowledgeBaseStore:
         return d
 
     # ------------------------------------------------------------------
+    # MCP Docs — lightweight KB from crawled/uploaded text
+    # ------------------------------------------------------------------
+
+    async def store_mcp_docs(
+        self,
+        product_id: str,
+        pages: list[tuple[str, str]],
+        api_name: str = "",
+    ) -> dict:
+        """Store crawled/uploaded API documentation as a searchable KB.
+
+        This is a lightweight alternative to the full 4-phase training pipeline.
+        No LLM analysis — just chunk the text and store for keyword retrieval.
+
+        Args:
+            product_id: The ID to store under (e.g., "__mcp__webull").
+            pages: List of (page_title_or_url, page_text) tuples.
+            api_name: Display name for the API.
+
+        Returns:
+            Stats dict with file_count, chunk_count, etc.
+        """
+        MAX_CHUNK_CHARS = 20_400
+
+        file_texts: dict[str, dict] = {}
+        file_analysis: dict[str, dict] = {}
+        chunk_map: dict[str, dict] = {}
+
+        for i, (title, text) in enumerate(pages):
+            if not text.strip():
+                continue
+
+            file_key = f"doc/{title}" if not title.startswith("doc/") else title
+
+            file_texts[file_key] = {
+                "content_type": "text",
+                "extraction_method": "direct",
+                "text": text,
+                "size_bytes": len(text.encode("utf-8")),
+                "modified_at": datetime.utcnow().isoformat(),
+            }
+
+            file_analysis[file_key] = {
+                "description": title,
+                "component": "api_docs",
+                "role": "documentation",
+                "technologies": [],
+                "relationships": [],
+                "importance": "high",
+            }
+
+            offset = 0
+            while offset < len(text):
+                end = min(offset + MAX_CHUNK_CHARS, len(text))
+                cid = str(uuid4())
+                chunk_map[cid] = {
+                    "type": "content",
+                    "file": file_key,
+                    "offset": offset,
+                    "length": end - offset,
+                }
+                offset = end
+
+        kb_json = {
+            "product_id": product_id,
+            "version": 2,
+            "created_at": datetime.utcnow().isoformat() + "Z",
+            "project_analysis": {
+                "summary": f"API documentation for {api_name}",
+                "tech_stack": [],
+                "key_components": [{"name": "api_docs", "description": f"{api_name} API documentation"}],
+                "key_files": [{"path": k, "description": v.get("description", "")} for k, v in file_analysis.items()],
+            },
+            "folder_analysis": {
+                "doc": {"purpose": "API documentation pages", "technologies": [], "importance": "high"}
+            },
+            "file_analysis": file_analysis,
+            "folder_structure": [{
+                "name": "doc",
+                "path": "doc",
+                "is_file": False,
+                "decision": "keep",
+                "children": [
+                    {"name": title, "path": f"doc/{title}", "is_file": True, "ext": ".md",
+                     "size_bytes": len(text.encode("utf-8")), "content_type": "text", "decision": "keep"}
+                    for title, text in pages if text.strip()
+                ],
+            }],
+            "files": file_texts,
+            "chunk_map": chunk_map,
+        }
+
+        json_bytes = json.dumps(kb_json, ensure_ascii=False).encode("utf-8")
+        total_text_bytes = sum(
+            len(f.get("text", "").encode("utf-8"))
+            for f in file_texts.values()
+        )
+        compressed = gzip.compress(json_bytes, compresslevel=6)
+        encrypted = encrypt_text(compressed.decode("latin-1"))
+
+        async with async_session_maker() as session:
+            existing = await session.execute(
+                select(KnowledgeBase).where(KnowledgeBase.product_id == product_id)
+            )
+            old = existing.scalar_one_or_none()
+            new_version = (old.version + 1) if old else 1
+
+            if old:
+                await session.execute(
+                    delete(KnowledgeBase).where(KnowledgeBase.product_id == product_id)
+                )
+
+            kb = KnowledgeBase(
+                kb_id=str(uuid4()),
+                product_id=product_id,
+                version=new_version,
+                compressed_data=encrypted if isinstance(encrypted, bytes) else encrypted.encode("latin-1"),
+                file_count=len(file_texts),
+                total_text_bytes=total_text_bytes,
+                compressed_bytes=len(compressed),
+                created_at=datetime.utcnow(),
+            )
+            session.add(kb)
+            await session.commit()
+
+        _kb_cache.pop(product_id, None)
+
+        stats = {
+            "file_count": len(file_texts),
+            "chunk_count": len(chunk_map),
+            "total_text_bytes": total_text_bytes,
+            "compressed_bytes": len(compressed),
+            "version": new_version,
+        }
+        logger.info("mcp_kb_stored", product_id=product_id, **stats)
+        return stats
+
+    # ------------------------------------------------------------------
     # Read path
     # ------------------------------------------------------------------
 

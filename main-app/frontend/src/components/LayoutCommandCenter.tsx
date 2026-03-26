@@ -3,7 +3,7 @@ import { Outlet, NavLink, useLocation, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, FolderTree, Bot, Settings, Search,
   ChevronRight, Command, ClipboardList, FileText,
-  Activity, Zap, PanelLeftClose, PanelLeft, User, Users,
+  Activity, Zap, PanelLeftClose, PanelLeft, User, Users, Wand2,
 } from 'lucide-react'
 import { clsx } from 'clsx'
 import { motion } from 'framer-motion'
@@ -29,7 +29,8 @@ const navigation = [
   { name: 'Agent', href: '/agent', icon: Bot, shortcut: '3' },
   { name: 'Automations', href: '/sops', icon: ClipboardList, shortcut: '4' },
   { name: 'Documentation', href: '/docs', icon: FileText, shortcut: '5' },
-  { name: 'User Management', href: '/users', icon: Users, shortcut: '6', minRole: 'user_admin' as const },
+  { name: 'MCP Builder', href: '/mcp-builder', icon: Wand2, shortcut: '6', minRole: 'admin' as const },
+  { name: 'User Management', href: '/users', icon: Users, shortcut: '7', minRole: 'user_admin' as const },
 ]
 
 // Breadcrumb map

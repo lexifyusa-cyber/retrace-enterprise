@@ -35,11 +35,13 @@ from app.models import email_connection as email_connection_model  # noqa: F401
 from app.models import email_inbox as email_inbox_model  # noqa: F401
 from app.models import email_message as email_message_model  # noqa: F401
 from app.models import channel_connection as channel_connection_model  # noqa: F401
+from app.models import mcp_server as mcp_server_model  # noqa: F401  – registers McpServer table
 from app.models import tenant as tenant_model  # noqa: F401
 from app.models import user_session as user_session_model  # noqa: F401
 from app.models import product_access as product_access_model  # noqa: F401
 from app.models import audit_log as audit_log_model  # noqa: F401
 from app.api import auth as auth_api
+from app.api import mcp_builder as mcp_builder_api
 
 logger = structlog.get_logger()
 
@@ -266,6 +268,7 @@ app.include_router(files_api.router, prefix="/api/v1/files", tags=["Local Files"
 app.include_router(email_api.router, prefix="/api/v1/email", tags=["Email"])
 app.include_router(channels_api.router, prefix="/api/v1/channels", tags=["Channels"])
 app.include_router(terminal_ws_api.router, tags=["Terminal WebSocket"])
+app.include_router(mcp_builder_api.router, prefix="/api/v1/mcp-builder", tags=["MCP Builder"])
 app.include_router(email_api.product_email_router, prefix="/api/v1/products", tags=["Product Email"])
 
 # RAG product-assistant router

@@ -54,6 +54,7 @@ class AgentState(TypedDict):
     max_iterations: int
     is_final_answer: bool
     syntax_error_count: int
+    has_native_tool_calls: bool
 
 
 # ---------------------------------------------------------------------------
@@ -436,6 +437,264 @@ def _build_codeact_graph(
 
 
 # ---------------------------------------------------------------------------
+# MCP Builder hybrid graph (native tool calls + CodeAct sandbox)
+# ---------------------------------------------------------------------------
+
+NATIVE_TOOL_NAMES = {"write_file", "str_replace", "read_file", "delete_file"}
+
+
+def _build_mcp_builder_graph(
+    model: Any,
+    tools: list[StructuredTool],
+    system_prompt: str,
+    max_iterations: int = 60,
+    use_gemini_compat: bool = False,
+) -> StateGraph:
+    """Build the hybrid LangGraph agent for MCP Builder.
+
+    Supports two execution paths:
+      1. Native tool calls — file operations (write_file, str_replace,
+         read_file, delete_file) are bound via model.bind_tools().
+      2. Python sandbox (CodeAct) — all other tools via code blocks.
+    """
+
+    # ── Separate native tools from sandbox tools ─────────────────────
+    native_tools: list[StructuredTool] = []
+    sandbox_tools: list[StructuredTool] = []
+    for tool in tools:
+        name = tool.name if isinstance(tool, StructuredTool) else getattr(tool, "name", str(tool))
+        if name in NATIVE_TOOL_NAMES:
+            native_tools.append(tool)
+        else:
+            sandbox_tools.append(tool)
+
+    # Bind native tools to the model so the LLM can call them via JSON
+    model_with_tools = model.bind_tools(native_tools) if native_tools else model
+
+    # Map for executing native tool calls by name
+    native_tools_by_name: dict[str, Any] = {}
+    for tool in native_tools:
+        native_tools_by_name[tool.name] = tool.func
+
+    # Map sandbox tool names → callable functions
+    tools_context: dict[str, Any] = {}
+    for tool in tools:
+        if isinstance(tool, StructuredTool):
+            tools_context[tool.name] = tool.func
+        else:
+            tools_context[getattr(tool, "name", str(tool))] = getattr(tool, "func", tool)
+
+    # ── call_model node ──────────────────────────────────────────────
+    def call_model(state: AgentState):
+        current_iteration = state.get("current_iteration", 0) + 1
+        max_iter = state.get("max_iterations", max_iterations)
+        syntax_error_count = state.get("syntax_error_count", 0)
+
+        if syntax_error_count >= 3:
+            msg = AIMessage(content="I encountered multiple syntax errors. Stopping.")
+            return {
+                "messages": [msg],
+                "current_iteration": current_iteration,
+                "is_final_answer": True,
+                "script": None,
+                "has_native_tool_calls": False,
+                "syntax_error_count": 0,
+            }
+
+        if current_iteration > max_iter:
+            msg = AIMessage(content=f"Maximum iterations ({max_iter}) reached.")
+            return {
+                "messages": [msg],
+                "current_iteration": current_iteration,
+                "is_final_answer": True,
+                "script": None,
+                "has_native_tool_calls": False,
+            }
+
+        messages = [{"role": "system", "content": system_prompt}] + state["messages"]
+        response = model_with_tools.invoke(messages)
+
+        # ── Check for native structured tool calls first ─────────────
+        native_tc = getattr(response, "tool_calls", None) or []
+        valid_native_tc = [tc for tc in native_tc if tc.get("name") in native_tools_by_name]
+
+        if valid_native_tc:
+            return {
+                "messages": [response],
+                "script": None,
+                "is_final_answer": False,
+                "has_native_tool_calls": True,
+                "current_iteration": current_iteration,
+            }
+
+        # ── Otherwise: check for Python code block (CodeAct path) ────
+        raw_content = response.content if hasattr(response, "content") else str(response)
+        # Handle Anthropic list content format
+        if isinstance(raw_content, list):
+            raw_content = "\n".join(
+                block.get("text", "") if isinstance(block, dict) else str(block)
+                for block in raw_content
+            )
+
+        if isinstance(raw_content, str) and "```" in raw_content:
+            stripped = strip_text_from_code_response(raw_content)
+            if stripped != raw_content:
+                response.content = stripped
+                raw_content = stripped
+
+        code = extract_python_code(raw_content)
+
+        if not code:
+            tool_names = set(tools_context.keys())
+            code = extract_tool_call_as_python(raw_content, known_tools=tool_names)
+
+        if code:
+            if not use_gemini_compat:
+                tool_call_id = f"code_exec_{uuid4().hex[:8]}"
+                response.tool_calls = [{
+                    "name": "code_execution",
+                    "args": {},
+                    "id": tool_call_id,
+                }]
+            return {
+                "messages": [response],
+                "script": code,
+                "is_final_answer": False,
+                "has_native_tool_calls": False,
+                "current_iteration": current_iteration,
+            }
+        else:
+            return {
+                "messages": [response],
+                "script": None,
+                "is_final_answer": True,
+                "has_native_tool_calls": False,
+                "current_iteration": current_iteration,
+            }
+
+    # ── sandbox node ─────────────────────────────────────────────────
+    def sandbox(state: AgentState):
+        code = state.get("script", "")
+        existing_context = state.get("context", {})
+        exec_globals = {**existing_context, **tools_context}
+
+        buf = io.StringIO()
+        try:
+            with redirect_stdout(buf):
+                exec(code, exec_globals)
+            output = buf.getvalue()
+        except Exception:
+            output = buf.getvalue() + "\n" + traceback.format_exc()
+
+        if len(output) > 50_000:
+            output = output[:50_000] + "\n[output truncated]"
+        if not output.strip():
+            output = "(no output)"
+
+        syntax_error_count = state.get("syntax_error_count", 0)
+        if "SyntaxError" in output:
+            syntax_error_count += 1
+        else:
+            syntax_error_count = 0
+
+        import types as _types
+        _skip_types = (_types.ModuleType, _types.FunctionType, _types.BuiltinFunctionType, type)
+        new_context = {k: v for k, v in exec_globals.items()
+                       if k not in tools_context and not k.startswith("__")
+                       and not isinstance(v, _skip_types)}
+
+        if use_gemini_compat:
+            return {
+                "messages": [HumanMessage(content=f"Code execution result:\n\n{output.rstrip()}")],
+                "context": {**existing_context, **new_context},
+                "syntax_error_count": syntax_error_count,
+            }
+
+        tool_call_id = "fallback_code_exec"
+        msgs = state.get("messages", [])
+        if msgs:
+            last = msgs[-1]
+            tc = getattr(last, "tool_calls", [])
+            if tc:
+                tool_call_id = tc[0].get("id", tool_call_id) if isinstance(tc[0], dict) else getattr(tc[0], "id", tool_call_id)
+
+        return {
+            "messages": [ToolMessage(content=output.rstrip(), tool_call_id=tool_call_id, name="code_execution")],
+            "context": {**existing_context, **new_context},
+            "syntax_error_count": syntax_error_count,
+        }
+
+    # ── execute_native_tools node ─────────────────────────────────────
+    def execute_native_tools(state: AgentState):
+        """Execute native structured tool calls (file operations) and return ToolMessages."""
+        msgs = state.get("messages", [])
+        if not msgs:
+            return {"messages": [], "has_native_tool_calls": False}
+
+        last_msg = msgs[-1]
+        tool_calls = getattr(last_msg, "tool_calls", []) or []
+        result_messages = []
+
+        for tc in tool_calls:
+            tc_name = tc.get("name", "")
+            tc_args = tc.get("args", {})
+            tc_id = tc.get("id", f"native_{uuid4().hex[:8]}")
+
+            fn = native_tools_by_name.get(tc_name)
+            if fn is None:
+                result_messages.append(
+                    ToolMessage(content=f"Error: unknown tool '{tc_name}'", tool_call_id=tc_id, name=tc_name)
+                )
+                continue
+
+            try:
+                result = fn(**tc_args)
+                output = str(result) if result is not None else "(no output)"
+            except Exception:
+                output = traceback.format_exc()
+
+            if len(output) > 50_000:
+                output = output[:50_000] + "\n[output truncated]"
+
+            result_messages.append(
+                ToolMessage(content=output.rstrip(), tool_call_id=tc_id, name=tc_name)
+            )
+
+        return {
+            "messages": result_messages,
+            "has_native_tool_calls": False,
+        }
+
+    # ── routing function ─────────────────────────────────────────────
+    def should_continue(state: AgentState) -> str:
+        if state.get("current_iteration", 0) >= state.get("max_iterations", max_iterations):
+            return "END"
+        if state.get("is_final_answer", False):
+            return "END"
+        if state.get("has_native_tool_calls", False):
+            return "NATIVE_TOOLS"
+        if state.get("script"):
+            return "EXECUTE"
+        return "END"
+
+    # ── build graph ──────────────────────────────────────────────────
+    graph = StateGraph(AgentState)
+    graph.add_node("call_model", call_model)
+    graph.add_node("sandbox", sandbox)
+    graph.add_node("execute_native_tools", execute_native_tools)
+    graph.add_edge(START, "call_model")
+    graph.add_conditional_edges("call_model", should_continue, {
+        "END": END,
+        "EXECUTE": "sandbox",
+        "NATIVE_TOOLS": "execute_native_tools",
+    })
+    graph.add_edge("sandbox", "call_model")
+    graph.add_edge("execute_native_tools", "call_model")
+
+    return graph
+
+
+# ---------------------------------------------------------------------------
 # Agent service (public API)
 # ---------------------------------------------------------------------------
 
@@ -451,6 +710,7 @@ class AgentService:
         thread_id: Optional[str] = None,
         user_platform: Optional[str] = None,
         use_reasoning: bool = False,
+        mcp_builder_config: Optional[dict] = None,
     ) -> AsyncIterator[str]:
         """Execute an agent task and yield SSE events.
 
@@ -559,20 +819,58 @@ class AgentService:
                 user_platform=user_platform,
             )
 
+            # ── 5b. MCP Builder mode — inject prompt supplement ──────────
+            if mcp_builder_config:
+                from app.skills.mcp_builder_prompt import build_mcp_builder_supplement_slim
+                from app.services.mcp_builder_service import format_endpoints_as_brief, MCPBuilderConfig
+                mcp_cfg = MCPBuilderConfig(**mcp_builder_config)
+                mcp_output_dir = mcp_cfg.output_dir or f"~/mcp-servers/{product_name}"
+                has_kb = bool(product_id and product_id.startswith("__mcp__"))
+                is_external = bool(mcp_cfg.api_docs_url or mcp_cfg.api_docs_text)
+                service_name = mcp_output_dir.rstrip("/").split("/")[-1]
+                supplement = build_mcp_builder_supplement_slim(
+                    output_dir=mcp_output_dir,
+                    service_name=service_name,
+                    is_external=is_external,
+                    has_kb=has_kb,
+                    api_docs_text=mcp_cfg.api_docs_text,
+                    api_base_url=mcp_cfg.api_base_url,
+                    auth_type=mcp_cfg.auth_type,
+                    auth_details=mcp_cfg.auth_details,
+                    selected_endpoints=mcp_cfg.selected_endpoints,
+                )
+                system_prompt += "\n\n" + supplement
+                yield _sse("agent_status", {"step": "init", "message": "MCP Builder mode activated"})
+
             # ── 6. Build LangGraph agent (shared checkpointer for conversation memory) ─
             yield _sse("agent_status", {"step": "agent", "message": "Building agent graph..."})
             use_gemini_compat = _is_gemini_model(llm_settings)
-            graph = _build_codeact_graph(
-                chat_model, tools, system_prompt, max_iterations,
-                use_gemini_compat=use_gemini_compat,
-            )
-            agent = graph.compile(checkpointer=_agent_checkpointer)
+            if mcp_builder_config:
+                # MCP Builder: use hybrid graph (native tool calls for file ops)
+                graph = _build_mcp_builder_graph(
+                    chat_model, tools, system_prompt, max_iterations,
+                    use_gemini_compat=use_gemini_compat,
+                )
+                agent = graph.compile()
+            else:
+                # Agent chat: use CodeAct-only graph
+                graph = _build_codeact_graph(
+                    chat_model, tools, system_prompt, max_iterations,
+                    use_gemini_compat=use_gemini_compat,
+                )
+                agent = graph.compile(checkpointer=_agent_checkpointer)
 
             # ── 7. Execute ────────────────────────────────────────────
             yield _sse("agent_status", {"step": "executing", "message": "Agent is working..."})
             t_exec = time.time()
 
             task_content = task
+            if mcp_builder_config:
+                from app.services.mcp_builder_service import format_endpoints_as_brief, MCPBuilderConfig
+                mcp_cfg = MCPBuilderConfig(**mcp_builder_config)
+                if mcp_cfg.selected_endpoints:
+                    endpoints_brief = format_endpoints_as_brief(mcp_cfg, product_name)
+                    task_content = endpoints_brief + "\n\n" + task_content
             if use_reasoning:
                 task_content = "Think through this carefully step by step before giving your answer.\n\n" + task
 

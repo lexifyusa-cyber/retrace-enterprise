@@ -11,6 +11,7 @@ import {
   LogOut,
   User,
   Users,
+  Wand2,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { clsx } from 'clsx'
@@ -81,6 +82,7 @@ const navigation: NavItem[] = [
   { name: 'Agent', href: '/agent', icon: Bot },
   { name: 'Automations', href: '/sops', icon: ClipboardList, minRole: 'admin' },
   { name: 'Documentation', href: '/docs', icon: FileText, minRole: 'admin' },
+  { name: 'MCP Builder', href: '/mcp-builder', icon: Wand2, minRole: 'admin' },
   { name: 'User Management', href: '/users', icon: Users, minRole: 'user_admin' },
 ]
 
