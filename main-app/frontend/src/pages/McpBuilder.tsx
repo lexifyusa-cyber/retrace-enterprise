@@ -722,7 +722,7 @@ export default function McpBuilder() {
 
   // ===================== RENDER =====================
 
-  const showHero = mcpServers.length === 0 && !endpoints && !isAnalyzing && !isGenerating && !result
+  const showHero = mcpServers.length === 0 && !endpoints && !isAnalyzing && !isGenerating && !result && !wizardStarted
 
   return (
     <div className="flex-1 p-8 overflow-y-auto">
@@ -937,7 +937,7 @@ export default function McpBuilder() {
               <span className="flex items-center gap-1.5"><Zap className="w-4 h-4 text-rt-primary" /> One-click deploy</span>
             </div>
             <button
-              onClick={() => setCurrentStep(1)}
+              onClick={() => { setWizardStarted(true); setCurrentStep(1) }}
               className="btn-primary mt-4"
             >
               Get Started
