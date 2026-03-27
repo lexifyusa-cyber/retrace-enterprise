@@ -88,7 +88,7 @@ export default function McpBuilder() {
   const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [analyzeError, setAnalyzeError] = useState(_saved.analyzeError ?? '')
 
-  const [destinationFolder, setDestinationFolder] = useState(_saved.destinationFolder ?? '')
+  const [destinationFolder, setDestinationFolder] = useState('')
   const [isGenerating, setIsGenerating] = useState(false)
   const [result, setResult] = useState<BuildResult | null>(_saved.result ?? null)
   const [copied, setCopied] = useState(false)
@@ -205,14 +205,14 @@ export default function McpBuilder() {
   // Persist key state to sessionStorage on every change
   useEffect(() => {
     saveSessionState({
-      selectedProductId, endpoints, destinationFolder, result,
+      selectedProductId, endpoints, result,
       generationPhase, generationLogs, sourceMode, externalApiName,
       externalSourceType, apiDocsUrl, apiDocsText, detectedBaseUrl,
       detectedAuthType, detectedAuthDetails, kbProductId, pagesCrawled,
       currentStep,
     })
   }, [
-    selectedProductId, endpoints, destinationFolder, result,
+    selectedProductId, endpoints, result,
     generationPhase, generationLogs, sourceMode, externalApiName,
     externalSourceType, apiDocsUrl, apiDocsText, detectedBaseUrl,
     detectedAuthType, detectedAuthDetails, kbProductId, pagesCrawled,
