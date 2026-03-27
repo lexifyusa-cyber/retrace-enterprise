@@ -437,10 +437,8 @@ def _build_codeact_graph(
 
 
 # ---------------------------------------------------------------------------
-# MCP Builder hybrid graph (native tool calls + CodeAct sandbox)
+# MCP Builder graph (fully native tool calls — no CodeAct sandbox)
 # ---------------------------------------------------------------------------
-
-NATIVE_TOOL_NAMES = {"write_file", "str_replace", "read_file", "delete_file"}
 
 
 def _build_mcp_builder_graph(
@@ -450,39 +448,29 @@ def _build_mcp_builder_graph(
     max_iterations: int = 60,
     use_gemini_compat: bool = False,
 ) -> StateGraph:
-    """Build the hybrid LangGraph agent for MCP Builder.
+    """Build the native-tool-calling LangGraph agent for MCP Builder.
 
-    Supports two execution paths:
-      1. Native tool calls — file operations (write_file, str_replace,
-         read_file, delete_file) are bound via model.bind_tools().
-      2. Python sandbox (CodeAct) — all other tools via code blocks.
+    ALL tools are bound as native structured tools via model.bind_tools().
+    No CodeAct sandbox — the LLM calls tools directly via JSON tool calls.
+    This keeps agent chat untouched (uses _build_codeact_graph).
     """
 
-    # ── Separate native tools from sandbox tools ─────────────────────
+    # ── ALL tools are native in MCP Builder (no CodeAct sandbox) ────
     native_tools: list[StructuredTool] = []
-    sandbox_tools: list[StructuredTool] = []
     for tool in tools:
-        name = tool.name if isinstance(tool, StructuredTool) else getattr(tool, "name", str(tool))
-        if name in NATIVE_TOOL_NAMES:
-            native_tools.append(tool)
-        else:
-            sandbox_tools.append(tool)
+        native_tools.append(tool)
 
-    # Bind native tools to the model so the LLM can call them via JSON
+    # Bind ALL tools to the model so the LLM calls them via structured JSON
     model_with_tools = model.bind_tools(native_tools) if native_tools else model
 
     # Map for executing native tool calls by name
     native_tools_by_name: dict[str, Any] = {}
     for tool in native_tools:
-        native_tools_by_name[tool.name] = tool.func
+        fn = tool.func if tool.func is not None else tool.coroutine
+        native_tools_by_name[tool.name] = fn
 
-    # Map sandbox tool names → callable functions
+    # Empty sandbox context — not used in MCP Builder mode
     tools_context: dict[str, Any] = {}
-    for tool in tools:
-        if isinstance(tool, StructuredTool):
-            tools_context[tool.name] = tool.func
-        else:
-            tools_context[getattr(tool, "name", str(tool))] = getattr(tool, "func", tool)
 
     # ── call_model node ──────────────────────────────────────────────
     def call_model(state: AgentState):
@@ -514,11 +502,24 @@ def _build_mcp_builder_graph(
         messages = [{"role": "system", "content": system_prompt}] + state["messages"]
         response = model_with_tools.invoke(messages)
 
-        # ── Check for native structured tool calls first ─────────────
+        # ── Log LLM response for debugging ─────────────────────────
+        response_text = getattr(response, "content", "") or ""
+        all_tc = getattr(response, "tool_calls", None) or []
+        logger.info(
+            "mcp_builder_llm_response",
+            iteration=current_iteration,
+            response_length=len(response_text),
+            response_preview=response_text[:500] if response_text else "(empty)",
+            tool_calls_count=len(all_tc),
+            tool_calls=[{"name": tc.get("name"), "args_keys": list(tc.get("args", {}).keys())} for tc in all_tc[:10]],
+        )
+
+        # ── Check for native structured tool calls ─────────────────
         native_tc = getattr(response, "tool_calls", None) or []
         valid_native_tc = [tc for tc in native_tc if tc.get("name") in native_tools_by_name]
 
         if valid_native_tc:
+            logger.info("mcp_builder_has_tool_calls", iteration=current_iteration, tools=[tc.get("name") for tc in valid_native_tc])
             return {
                 "messages": [response],
                 "script": None,
@@ -527,106 +528,19 @@ def _build_mcp_builder_graph(
                 "current_iteration": current_iteration,
             }
 
-        # ── Otherwise: check for Python code block (CodeAct path) ────
-        raw_content = response.content if hasattr(response, "content") else str(response)
-        # Handle Anthropic list content format
-        if isinstance(raw_content, list):
-            raw_content = "\n".join(
-                block.get("text", "") if isinstance(block, dict) else str(block)
-                for block in raw_content
-            )
-
-        if isinstance(raw_content, str) and "```" in raw_content:
-            stripped = strip_text_from_code_response(raw_content)
-            if stripped != raw_content:
-                response.content = stripped
-                raw_content = stripped
-
-        code = extract_python_code(raw_content)
-
-        if not code:
-            tool_names = set(tools_context.keys())
-            code = extract_tool_call_as_python(raw_content, known_tools=tool_names)
-
-        if code:
-            if not use_gemini_compat:
-                tool_call_id = f"code_exec_{uuid4().hex[:8]}"
-                response.tool_calls = [{
-                    "name": "code_execution",
-                    "args": {},
-                    "id": tool_call_id,
-                }]
-            return {
-                "messages": [response],
-                "script": code,
-                "is_final_answer": False,
-                "has_native_tool_calls": False,
-                "current_iteration": current_iteration,
-            }
-        else:
-            return {
-                "messages": [response],
-                "script": None,
-                "is_final_answer": True,
-                "has_native_tool_calls": False,
-                "current_iteration": current_iteration,
-            }
-
-    # ── sandbox node ─────────────────────────────────────────────────
-    def sandbox(state: AgentState):
-        code = state.get("script", "")
-        existing_context = state.get("context", {})
-        exec_globals = {**existing_context, **tools_context}
-
-        buf = io.StringIO()
-        try:
-            with redirect_stdout(buf):
-                exec(code, exec_globals)
-            output = buf.getvalue()
-        except Exception:
-            output = buf.getvalue() + "\n" + traceback.format_exc()
-
-        if len(output) > 50_000:
-            output = output[:50_000] + "\n[output truncated]"
-        if not output.strip():
-            output = "(no output)"
-
-        syntax_error_count = state.get("syntax_error_count", 0)
-        if "SyntaxError" in output:
-            syntax_error_count += 1
-        else:
-            syntax_error_count = 0
-
-        import types as _types
-        _skip_types = (_types.ModuleType, _types.FunctionType, _types.BuiltinFunctionType, type)
-        new_context = {k: v for k, v in exec_globals.items()
-                       if k not in tools_context and not k.startswith("__")
-                       and not isinstance(v, _skip_types)}
-
-        if use_gemini_compat:
-            return {
-                "messages": [HumanMessage(content=f"Code execution result:\n\n{output.rstrip()}")],
-                "context": {**existing_context, **new_context},
-                "syntax_error_count": syntax_error_count,
-            }
-
-        tool_call_id = "fallback_code_exec"
-        msgs = state.get("messages", [])
-        if msgs:
-            last = msgs[-1]
-            tc = getattr(last, "tool_calls", [])
-            if tc:
-                tool_call_id = tc[0].get("id", tool_call_id) if isinstance(tc[0], dict) else getattr(tc[0], "id", tool_call_id)
-
+        # ── No tool calls — treat as final answer ────────────────
+        logger.info("mcp_builder_final_answer", iteration=current_iteration, answer_preview=response_text[:300] if response_text else "(empty)")
         return {
-            "messages": [ToolMessage(content=output.rstrip(), tool_call_id=tool_call_id, name="code_execution")],
-            "context": {**existing_context, **new_context},
-            "syntax_error_count": syntax_error_count,
+            "messages": [response],
+            "script": None,
+            "is_final_answer": True,
+            "has_native_tool_calls": False,
+            "current_iteration": current_iteration,
         }
 
     # ── execute_native_tools node ─────────────────────────────────────
     def execute_native_tools(state: AgentState):
-        """Execute native structured tool calls (file operations) and return ToolMessages."""
+        """Execute native structured tool calls and return ToolMessages."""
         msgs = state.get("messages", [])
         if not msgs:
             return {"messages": [], "has_native_tool_calls": False}
@@ -640,6 +554,8 @@ def _build_mcp_builder_graph(
             tc_args = tc.get("args", {})
             tc_id = tc.get("id", f"native_{uuid4().hex[:8]}")
 
+            logger.info("mcp_builder_tool_exec", tool_name=tc_name, args_keys=list(tc_args.keys()), args_preview={k: str(v)[:100] for k, v in tc_args.items()})
+
             fn = native_tools_by_name.get(tc_name)
             if fn is None:
                 result_messages.append(
@@ -648,7 +564,17 @@ def _build_mcp_builder_graph(
                 continue
 
             try:
-                result = fn(**tc_args)
+                if asyncio.iscoroutinefunction(fn):
+                    # Async tool — run in event loop
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        import concurrent.futures
+                        future = asyncio.run_coroutine_threadsafe(fn(**tc_args), loop)
+                        result = future.result(timeout=120)
+                    else:
+                        result = asyncio.run(fn(**tc_args))
+                else:
+                    result = fn(**tc_args)
                 output = str(result) if result is not None else "(no output)"
             except Exception:
                 output = traceback.format_exc()
@@ -673,22 +599,17 @@ def _build_mcp_builder_graph(
             return "END"
         if state.get("has_native_tool_calls", False):
             return "NATIVE_TOOLS"
-        if state.get("script"):
-            return "EXECUTE"
         return "END"
 
-    # ── build graph ──────────────────────────────────────────────────
+    # ── build graph (no sandbox — all tools are native) ──────────────
     graph = StateGraph(AgentState)
     graph.add_node("call_model", call_model)
-    graph.add_node("sandbox", sandbox)
     graph.add_node("execute_native_tools", execute_native_tools)
     graph.add_edge(START, "call_model")
     graph.add_conditional_edges("call_model", should_continue, {
         "END": END,
-        "EXECUTE": "sandbox",
         "NATIVE_TOOLS": "execute_native_tools",
     })
-    graph.add_edge("sandbox", "call_model")
     graph.add_edge("execute_native_tools", "call_model")
 
     return graph

@@ -393,25 +393,23 @@ _SLIM_EXTERNAL = """\
 # MCP BUILDER MODE
 
 You are building a Python MCP server at `{output_dir}`.
-Use `write_file()` to create ALL files. Never output code as text.
+You have these native tools available: `write_file`, `read_file`, `str_replace`, `delete_file`, `terminal`, `knowledge_base`, `web_search`, `web_fetch`.
+Call them directly as tool calls — do NOT write Python code blocks.
 
 ## Step 1: Create project files
 
-Use write_file() to create these files:
+Call write_file for each of these files:
 
 **File 1: `{output_dir}/pyproject.toml`**
-```
+Content:
 {pyproject}
-```
 
 **File 2: `{output_dir}/src/{service}_mcp/__init__.py`**
-(empty file)
+Content: (empty string)
 
 **File 3: `{output_dir}/src/{service}_mcp/server.py`**
 Start from this template and add one @mcp.tool() function per endpoint:
-```
 {server_template}
-```
 
 For each endpoint below, add an @mcp.tool() async function that:
 - Takes typed parameters (use Pydantic BaseModel for complex inputs)
@@ -421,18 +419,23 @@ For each endpoint below, add an @mcp.tool() async function that:
 
 ## Step 2: Install & validate
 
-After writing all files, run:
-```python
-result = terminal("cd {output_dir} && uv sync")
-print(result)
-```
+**STOP! Do NOT output your final answer yet.** After writing all files, you MUST call the terminal tool for each of these commands in order:
+
+1. Install dependencies: call terminal with command `cd {output_dir} && uv sync`
+   — The server WILL NOT work without this step.
+2. Import check: call terminal with command `cd {output_dir} && .venv/bin/python -c "from {service}_mcp.server import mcp; print('Import OK')"`
+   — If this fails, fix the code with str_replace and retry.
+3. Server startup test: call terminal with command `cd {output_dir} && timeout 5 .venv/bin/python -m {service}_mcp.server 2>&1 || true`
+   — A timeout exit means success.
+
+**Do NOT output your final answer or config JSON until steps 1-2 above have been executed.**
 
 ## Endpoints to implement
 
 {endpoints}
 
 ## Rules
-- Use write_file() for EVERY file — never output code as chat text
+- Call write_file directly as a tool call — never output code as chat text
 - One @mcp.tool() per endpoint listed above
 - Include `if __name__ == "__main__": mcp.run()` at the end of server.py
 - No empty stubs or `pass` — every tool must call _request()
@@ -442,82 +445,59 @@ _SLIM_INTERNAL = """\
 # MCP BUILDER MODE
 
 You are building a Python MCP server at `{output_dir}` for an internal product.
+You have these native tools available: `write_file`, `read_file`, `str_replace`, `delete_file`, `terminal`, `knowledge_base`, `web_search`, `web_fetch`.
+Call them directly as tool calls — do NOT write Python code blocks.
 
 ## Step 1: Understand the product's API
 
-Run these knowledge base queries to discover exact routes, parameters, and auth:
+Call the knowledge_base tool for each of these queries to discover exact routes, parameters, and auth:
 
-```python
-# Query 1 — Route handlers and field names
-result = knowledge_base(action="search",
-    query="route handler function signatures request body parameters",
-    keywords=["def ", "async def", "@router", "@app", "BaseModel", "request", "body", "params"])
-print(result)
-```
+1. Call knowledge_base with action="search", query="route handler function signatures request body parameters", keywords=["def ", "async def", "@router", "@app", "BaseModel", "request", "body", "params"]
 
-```python
-# Query 2 — Route prefixes
-result = knowledge_base(action="search",
-    query="router mounting app include_router prefix API versioning",
-    keywords=["include_router", "prefix=", "/api/v", "app.mount", "APIRouter"])
-print(result)
-```
+2. Call knowledge_base with action="search", query="router mounting app include_router prefix API versioning", keywords=["include_router", "prefix=", "/api/v", "app.mount", "APIRouter"]
 
-```python
-# Query 3 — Authentication
-result = knowledge_base(action="search",
-    query="authentication middleware authorization header API key token",
-    keywords=["Authorization", "Bearer", "X-API-Key", "api_key", "token", "authenticate"])
-print(result)
-```
+3. Call knowledge_base with action="search", query="authentication middleware authorization header API key token", keywords=["Authorization", "Bearer", "X-API-Key", "api_key", "token", "authenticate"]
 
-After these queries, read the top 2-3 most relevant source files:
-```python
-result = knowledge_base(action="read_file", file_path="<path from search results>")
-print(result)
-```
+After these queries, call knowledge_base with action="read_file", file_path="<path from search results>" for the top 2-3 most relevant source files.
 
 **CRITICAL — SDK Auth Code:** If the KB contains files under `sdk/` paths (from the official SDK),
 you MUST read them and copy the EXACT authentication/signing implementation into your server code.
 Do NOT reimplement auth from docs — use the proven SDK code. Search for it:
-```python
-result = knowledge_base(action="search",
-    query="signature authentication signing HMAC credentials",
-    keywords=["sign", "hmac", "signature", "auth", "credential", "signer", "sdk"])
-print(result)
-```
+Call knowledge_base with action="search", query="signature authentication signing HMAC credentials", keywords=["sign", "hmac", "signature", "auth", "credential", "signer", "sdk"]
 
 ## Step 2: Create project files
 
-Use write_file() to create these files:
+Call write_file for each of these files:
 
 **File 1: `{output_dir}/pyproject.toml`**
-```
+Content:
 {pyproject}
-```
 
 **File 2: `{output_dir}/src/{service}_mcp/__init__.py`**
-(empty file)
+Content: (empty string)
 
 **File 3: `{output_dir}/src/{service}_mcp/server.py`**
 Start from this template:
-```
 {server_template}
-```
 
 For each endpoint you discovered in Step 1, add an @mcp.tool() async function.
 Use the EXACT field names, route prefixes, and auth patterns from the KB.
 
 ## Step 3: Install & validate
 
-After writing all files, run:
-```python
-result = terminal("cd {output_dir} && uv sync")
-print(result)
-```
+**STOP! Do NOT output your final answer yet.** After writing all files, you MUST call the terminal tool for each of these commands in order:
+
+1. Install dependencies: call terminal with command `cd {output_dir} && uv sync`
+   — The server WILL NOT work without this step.
+2. Import check: call terminal with command `cd {output_dir} && .venv/bin/python -c "from {service}_mcp.server import mcp; print('Import OK')"`
+   — If this fails, fix the code with str_replace and retry.
+3. Server startup test: call terminal with command `cd {output_dir} && timeout 5 .venv/bin/python -m {service}_mcp.server 2>&1 || true`
+   — A timeout exit means success.
+
+**Do NOT output your final answer or config JSON until steps 1-2 above have been executed.**
 
 ## Rules
-- Use write_file() for EVERY file — never output code as chat text
+- Call tools directly as native tool calls — never write Python code blocks
 - One @mcp.tool() per endpoint
 - Use the EXACT route prefix from Step 1 (e.g., /api/v1)
 - Use the EXACT auth pattern from Step 1
@@ -598,114 +578,66 @@ _SLIM_EXTERNAL_WITH_KB = """\
 
 You are building a Python MCP server at `{output_dir}`.
 You have access to a knowledge base containing the full API documentation.
-Use `write_file()` to create ALL files. Never output code as text.
+You have these native tools available: `write_file`, `read_file`, `str_replace`, `delete_file`, `terminal`, `knowledge_base`, `web_search`, `web_fetch`.
+Call them directly as tool calls — do NOT write Python code blocks.
 
 ## Step 1: Research the API (MANDATORY — do this BEFORE writing any code)
 
-Query the knowledge base to understand the API deeply:
+Call the knowledge_base tool for each of these queries to understand the API deeply:
 
-```python
-# 1. Authentication — HOW to authenticate requests
-result = knowledge_base(action="search", query="authentication signing headers API key secret token", keywords=["auth", "sign", "hmac", "header", "credential", "token", "key", "secret"])
-print(result)
-```
+1. Authentication: call knowledge_base with action="search", query="authentication signing headers API key secret token", keywords=["auth", "sign", "hmac", "header", "credential", "token", "key", "secret"]
 
-```python
-# 2. For each complex endpoint, get full parameter details
-result = knowledge_base(action="search", query="place order parameters request body fields", keywords=["order", "parameter", "field", "required", "body"])
-print(result)
-```
+2. Endpoint parameters: call knowledge_base with action="search", query="place order parameters request body fields", keywords=["order", "parameter", "field", "required", "body"]
 
-```python
-# 3. SDK source code for authentication implementation
-result = knowledge_base(action="search", query="SDK source code signature algorithm implementation", keywords=["sdk", "source", "sign", "hmac", "sha", "base64", "signature"])
-print(result)
-```
+3. SDK source code: call knowledge_base with action="search", query="SDK source code signature algorithm implementation", keywords=["sdk", "source", "sign", "hmac", "sha", "base64", "signature"]
 
-```python
-# 4. Error handling and response formats
-result = knowledge_base(action="search", query="error codes response format status", keywords=["error", "response", "status", "code", "exception"])
-print(result)
-```
+4. Error handling: call knowledge_base with action="search", query="error codes response format status", keywords=["error", "response", "status", "code", "exception"]
 
 IMPORTANT: Read the KB results carefully. Use the EXACT authentication method, header names,
 signing algorithm, and parameter names from the documentation. Do NOT guess or use generic patterns.
 
 ## Step 2: Create project files
 
-Write these files using write_file():
+Call write_file for each of these files:
 
-### File 1: `{output_dir}/pyproject.toml`
+**File 1: `{output_dir}/pyproject.toml`**
+Content:
 {pyproject}
 
-### File 2: `{output_dir}/src/{service}_mcp/__init__.py`
-Empty file (just create it).
+**File 2: `{output_dir}/src/{service}_mcp/__init__.py`**
+Content: (empty string)
 
-### File 3: `{output_dir}/src/{service}_mcp/server.py`
+**File 3: `{output_dir}/src/{service}_mcp/server.py`**
 Use this as a starting template, but REPLACE the auth code with what you found in the KB:
 {server_template}
 
-## Step 3: Install dependencies
-After writing all files, run:
-```python
-result = terminal("cd {output_dir} && rm -f uv.lock && uv sync")
-print(result)
-```
+## Step 3: Install & validate
+
+**STOP! Do NOT output your final answer yet.** After writing all files, you MUST call the terminal tool for each of these commands in order:
+
+1. Install dependencies: call terminal with command `cd {output_dir} && rm -f uv.lock && uv sync`
+   — The server WILL NOT work without this step.
+2. Import check: call terminal with command `cd {output_dir} && .venv/bin/python -c "from {service}_mcp.server import mcp; print('Import OK')"`
+   — If this fails, fix the code with str_replace and retry.
+3. Server startup test: call terminal with command `cd {output_dir} && timeout 5 .venv/bin/python -m {service}_mcp.server 2>&1 || true`
+   — A timeout exit means success.
+
+**Do NOT output your final answer or config JSON until steps 1-2 above have been executed.**
 
 ## Step 4: Verify with a real API call (MANDATORY)
 
-After installing, test the server by making a real HTTP request using the auth code you wrote.
-Pick the simplest read-only endpoint (e.g., list accounts, get instruments, get calendar).
-
-```python
-# Write a quick test script and run it
-test_code = '''
-import sys
-sys.path.insert(0, "{output_dir}/src")
-from {service}_mcp.server import _request
-import asyncio
-
-async def test():
-    try:
-        result = await _request("GET", "<pick a simple read-only endpoint path>")
-        print("SUCCESS:", result[:500] if isinstance(result, str) else result)
-    except Exception as e:
-        print("ERROR:", e)
-
-asyncio.run(test())
-'''
-result = write_file("{output_dir}/test_auth.py", test_code)
-print(result)
-```
-
-```python
-result = terminal("cd {output_dir} && .venv/bin/python test_auth.py 2>&1")
-print(result)
-```
-
-**If you get a 401 Unauthorized or signature error:**
-1. The signing implementation is wrong
-2. Query the KB again for SDK source code: `knowledge_base(action="search", query="SDK signature composer source code")`
-3. If an official SDK package exists (e.g., `webullsdkcore`), add it to pyproject.toml and import the signing function directly instead of reimplementing
-4. Fix server.py with str_replace() and test again
-5. Repeat until the test passes or you've tried 3 times
-
-**If you get a 403 or other auth error:** the credentials may be invalid — that's OK, just ensure the signing code matches the SDK exactly.
-
-**If you get a 200 or valid response:** the auth works! Clean up test_auth.py and proceed.
-
-```python
-# Clean up test file
-result = terminal("rm -f {output_dir}/test_auth.py")
-print(result)
-```
+After installing, test the server by making a real HTTP request:
+1. Call write_file to create `{output_dir}/test_auth.py` with a script that imports `_request` from the server and calls a simple read-only endpoint
+2. Call terminal with command `cd {output_dir} && .venv/bin/python test_auth.py 2>&1`
+3. If you get a 401/signature error, fix the auth code with str_replace and retest (up to 3 times)
+4. Call terminal with command `rm -f {output_dir}/test_auth.py` to clean up
 
 ## Endpoints to implement
 {endpoints}
 
 ## Rules
+- Call tools directly as native tool calls — never write Python code blocks
 - Query the KB FIRST, then write code based on what you found
-- Use write_file() for EVERY file — never output code as chat text
 - One @mcp.tool() per endpoint
 - Use the EXACT auth implementation from the KB/SDK (not generic X-API-Key)
 - If auth doesn't work, try importing the official SDK's signing function instead of reimplementing
