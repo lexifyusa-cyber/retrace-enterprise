@@ -302,10 +302,21 @@ async def delete_mcp_server(
         folder = srv.destination_folder
         if folder.startswith("~/") or folder.startswith("~\\"):
             folder = str(Path.home() / folder[2:])
-        folder_path = Path(folder)
-        if folder_path.is_dir():
+        folder_path = Path(folder).resolve()
+
+        # Safety: only delete if the folder's parent is named "mcp-servers"
+        # e.g. ~/mcp-servers/gta ✓, ~/Desktop/mcp-servers/gta ✓
+        # e.g. ~/Desktop ✗, ~/mcp-servers ✗, / ✗
+        is_safe = (folder_path.parent.name == "mcp-servers"
+                   and len(folder_path.parts) >= 3
+                   and folder_path.name != "mcp-servers")
+
+        if is_safe and folder_path.is_dir():
             shutil.rmtree(folder_path, ignore_errors=True)
             files_deleted = True
+        elif not is_safe and folder_path.is_dir():
+            logger.warning("delete_mcp_server_unsafe_path", path=str(folder_path),
+                           reason="Path parent is not 'mcp-servers/', refusing to delete")
 
     await session.delete(srv)
     return {"status": "deleted", "server_id": server_id, "files_deleted": files_deleted}
@@ -354,6 +365,7 @@ async def start_mcp_server(server_id: str, session: AsyncSession = Depends(get_s
         proc = subprocess.Popen(
             [venv_python, "-m", f"{module_name}.server"],
             cwd=dest,
+            stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
@@ -718,8 +730,16 @@ async def generate_mcp_server(
     safe_product_name = re.sub(r'_+', '_', safe_product_name)
     module_name = f"{safe_product_name}_mcp"
     
-    # Expand user in destination_folder to prevent path resolution issues in the agent's environment
-    dest = os.path.expanduser(request.destination_folder)
+    # Build destination: {user_chosen_dir}/mcp-servers/{server_name}
+    # This ensures MCP files are always inside an mcp-servers subdirectory
+    raw_dest = os.path.expanduser(request.destination_folder)
+    raw_dest_path = Path(raw_dest)
+    # If the path already ends with mcp-servers/{name}, use as-is (e.g. ~/mcp-servers/gta)
+    # Otherwise, append mcp-servers/{name} to the user's chosen directory
+    if raw_dest_path.parent.name == "mcp-servers":
+        dest = str(raw_dest_path)
+    else:
+        dest = str(raw_dest_path / "mcp-servers" / safe_product_name)
     
     is_external = bool(request.api_docs_url or request.api_docs_text)
 
