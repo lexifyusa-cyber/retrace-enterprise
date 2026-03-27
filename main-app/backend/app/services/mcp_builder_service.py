@@ -14,12 +14,24 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 import structlog
-from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
 
 from app.rag.kb_search import search_kb
 
 logger = structlog.get_logger()
+
+
+def _build_llm(api_key: str, model: str, api_url: str | None, provider: str = "openai"):
+    """Build a LangChain chat model from LLM settings (mirrors agent_service logic)."""
+    if provider == "anthropic":
+        from langchain_anthropic import ChatAnthropic
+        return ChatAnthropic(api_key=api_key, model=model)
+    else:
+        from langchain_openai import ChatOpenAI
+        kwargs: dict = {"api_key": api_key, "model": model}
+        if api_url:
+            kwargs["base_url"] = api_url
+        return ChatOpenAI(**kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -151,6 +163,7 @@ class MCPBuilderService:
         api_key: str,
         model: str = "gpt-4o",
         api_url: Optional[str] = None,
+        provider: str = "openai",
     ) -> list[EndpointInfo]:
         """Search KB and extract structured endpoints using LLM.
 
@@ -198,22 +211,15 @@ class MCPBuilderService:
             combined = combined[:80_000] + "\n\n[... truncated ...]"
 
         # ── 2. Extract endpoints using LLM ──────────────────────────────
-        client_kwargs: dict = {"api_key": api_key}
-        if api_url:
-            client_kwargs["base_url"] = api_url
-        client = AsyncOpenAI(**client_kwargs)
+        from langchain_core.messages import SystemMessage, HumanMessage
+        llm = _build_llm(api_key, model, api_url, provider)
 
         try:
-            response = await client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": _EXTRACTION_PROMPT},
-                    {"role": "user", "content": combined},
-                ],
-                temperature=0.2,
-                max_tokens=8000,
-            )
-            raw = response.choices[0].message.content or "[]"
+            response = await llm.ainvoke([
+                SystemMessage(content=_EXTRACTION_PROMPT),
+                HumanMessage(content=combined),
+            ])
+            raw = response.content or "[]"
         except Exception as exc:
             logger.error("mcp_discover_llm_failed", error=str(exc))
             return []
@@ -270,6 +276,7 @@ class MCPBuilderService:
         api_key: str,
         model: str = "gpt-4o",
         api_url: Optional[str] = None,
+        provider: str = "openai",
     ) -> DiscoveryResult:
         """Fetch external API docs from a URL and extract endpoints via LLM.
 
@@ -296,7 +303,7 @@ class MCPBuilderService:
         # ── 2. If it's already JSON/OpenAPI, parse directly (fast path) ──
         is_json = "json" in content_type or raw_content.strip().startswith("{")
         if is_json:
-            return await self._parse_documentation(api_name, api_docs_url, raw_content, content_type, api_key, model, api_url)
+            return await self._parse_documentation(api_name, api_docs_url, raw_content, content_type, api_key, model, api_url, provider)
 
         # ── 2b. Special Case: GitHub Repository URL ──────────────────────
         # If user provides a GitHub repo link, try to find a spec file in it
@@ -308,7 +315,7 @@ class MCPBuilderService:
                     async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as http:
                         resp = await http.get(spec_url)
                         resp.raise_for_status()
-                        return await self._parse_documentation(api_name, spec_url, resp.text, "application/json", api_key, model, api_url)
+                        return await self._parse_documentation(api_name, spec_url, resp.text, "application/json", api_key, model, api_url, provider)
                 except Exception:
                     pass
 
@@ -331,7 +338,7 @@ class MCPBuilderService:
                         spec_json = json.loads(spec_content)
                         if isinstance(spec_json, dict) and ("openapi" in spec_json or "swagger" in spec_json):
                             logger.info("mcp_discover_using_linked_spec", spec_url=spec_link)
-                            return await self._parse_documentation(api_name, spec_link, spec_content, "application/json", api_key, model, api_url)
+                            return await self._parse_documentation(api_name, spec_link, spec_content, "application/json", api_key, model, api_url, provider)
                     except json.JSONDecodeError:
                         pass  # Not a valid spec, fall through to crawling
                 except Exception:
@@ -345,7 +352,7 @@ class MCPBuilderService:
             result = await self._parse_documentation(
                 api_name, f"{api_docs_url} (+{pages_crawled - 1} linked pages)",
                 aggregated_text, "text/plain",  # Already extracted text
-                api_key, model, api_url,
+                api_key, model, api_url, provider,
             )
             result.pages_crawled = pages_crawled
             result.raw_pages = raw_pages
@@ -353,7 +360,7 @@ class MCPBuilderService:
             # ── 4b. Low endpoint count? Search for OpenAPI spec on GitHub ──
             if len(result.endpoints) < 10:
                 logger.info("mcp_discover_low_count", count=len(result.endpoints), api_name=api_name)
-                spec_result = await self._search_openapi_spec(api_name, api_key, model, api_url)
+                spec_result = await self._search_openapi_spec(api_name, api_key, model, api_url, provider)
                 if spec_result and len(spec_result.endpoints) > len(result.endpoints):
                     logger.info("mcp_discover_spec_found_better",
                                 crawl_count=len(result.endpoints),
@@ -391,7 +398,7 @@ class MCPBuilderService:
             return result
 
         # ── 5. Plain text / other formats — parse directly ───────────
-        return await self._parse_documentation(api_name, api_docs_url, raw_content, content_type, api_key, model, api_url)
+        return await self._parse_documentation(api_name, api_docs_url, raw_content, content_type, api_key, model, api_url, provider)
 
     async def _search_openapi_spec(
         self,
@@ -399,6 +406,7 @@ class MCPBuilderService:
         api_key: str,
         model: str,
         api_url: Optional[str],
+        provider: str = "openai",
     ) -> Optional[DiscoveryResult]:
         """Search GitHub for a public OpenAPI spec when crawled results are sparse."""
         search_terms = [
@@ -429,7 +437,7 @@ class MCPBuilderService:
                                 spec_resp.raise_for_status()
                                 return await self._parse_documentation(
                                     api_name, spec_url, spec_resp.text,
-                                    "application/json", api_key, model, api_url,
+                                    "application/json", api_key, model, api_url, provider,
                                 )
                             except Exception:
                                 continue
@@ -444,10 +452,11 @@ class MCPBuilderService:
         api_key: str,
         model: str = "gpt-4o",
         api_url: Optional[str] = None,
+        provider: str = "openai",
     ) -> DiscoveryResult:
         """Extract endpoints from directly provided raw text or JSON."""
         content_type = "application/json" if api_docs_text.strip().startswith("{") else "text/plain"
-        result = await self._parse_documentation(api_name, "Raw Text Input", api_docs_text, content_type, api_key, model, api_url)
+        result = await self._parse_documentation(api_name, "Raw Text Input", api_docs_text, content_type, api_key, model, api_url, provider)
 
         # Store text in KB so the generation agent can query it
         try:
@@ -474,6 +483,7 @@ class MCPBuilderService:
         api_key: str,
         model: str,
         api_url: Optional[str],
+        provider: str = "openai",
     ) -> DiscoveryResult:
         # Try deterministic JSON parsing first (OpenAPI/Swagger)
         is_openapi = False
@@ -594,22 +604,15 @@ class MCPBuilderService:
             f"{doc_text}"
         )
 
-        client_kwargs: dict = {"api_key": api_key}
-        if api_url:
-            client_kwargs["base_url"] = api_url
-        client = AsyncOpenAI(**client_kwargs)
+        from langchain_core.messages import SystemMessage, HumanMessage
+        llm = _build_llm(api_key, model, api_url, provider)
 
         try:
-            response = await client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": _EXTRACTION_PROMPT},
-                    {"role": "user", "content": prompt_text},
-                ],
-                temperature=0.2,
-                max_tokens=8000,
-            )
-            raw = response.choices[0].message.content or "[]"
+            response = await llm.ainvoke([
+                SystemMessage(content=_EXTRACTION_PROMPT),
+                HumanMessage(content=prompt_text),
+            ])
+            raw = response.content or "[]"
         except Exception as exc:
             logger.error("mcp_discover_url_llm_failed", error=str(exc))
             return DiscoveryResult()

@@ -457,11 +457,13 @@ async def discover_mcp_endpoints(
     model = llm_settings.get("model_name", "gpt-4o")
     api_url = llm_settings.get("api_url")
     
+    provider = llm_settings.get("provider", "openai")
     endpoints = await mcp_builder_service.discover_endpoints(
         product_id=request.product_id,
         api_key=api_key,
         model=model,
-        api_url=api_url
+        api_url=api_url,
+        provider=provider,
     )
     
     return {"status": "success", "endpoints": [ep.model_dump() for ep in endpoints]}
@@ -481,6 +483,7 @@ async def discover_external_endpoints(
 
     model = llm_settings.get("model_name", "gpt-4o")
     api_url = llm_settings.get("api_url")
+    provider = llm_settings.get("provider", "openai")
 
     if not request.api_docs_url and not request.api_docs_text:
         raise HTTPException(status_code=400, detail="Must provide either api_docs_url or api_docs_text")
@@ -491,7 +494,8 @@ async def discover_external_endpoints(
             api_docs_text=request.api_docs_text,
             api_key=api_key,
             model=model,
-            api_url=api_url
+            api_url=api_url,
+            provider=provider,
         )
     else:
         result = await mcp_builder_service.discover_from_url(
@@ -499,7 +503,8 @@ async def discover_external_endpoints(
             api_docs_url=request.api_docs_url,
             api_key=api_key,
             model=model,
-            api_url=api_url
+            api_url=api_url,
+            provider=provider,
         )
 
     # Determine kb_product_id from the result
@@ -704,6 +709,7 @@ async def analyze_kb_endpoints(
         api_key=llm_settings.get("api_key", ""),
         model=llm_settings.get("model_name", "gpt-4o"),
         api_url=llm_settings.get("api_url"),
+        provider=llm_settings.get("provider", "openai"),
     )
 
     return {
