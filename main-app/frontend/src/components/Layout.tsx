@@ -48,7 +48,7 @@ function UserMenu({ onOpenProfile }: { onOpenProfile?: () => void }) {
         </div>
         <div className="flex-1 min-w-0">
           <p className="text-sm font-bold truncate">{user.display_name || user.email}</p>
-          <p className="text-[10px] text-rt-text-muted/50 truncate">Community Edition</p>
+          <p className="text-[10px] text-rt-text-muted/50 truncate">Enterprise Edition</p>
         </div>
       </button>
       <button
