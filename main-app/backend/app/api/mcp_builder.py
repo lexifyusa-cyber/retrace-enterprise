@@ -859,8 +859,11 @@ async def generate_mcp_server(
         The agent often outputs placeholder paths like /Users/<you>/ or YOUR_USER.
         We always use the actual dest/module_name we know are correct.
         """
-        # Try to extract env vars from agent's JSON (it often gets those right)
-        env_vars = {f"{safe_product_name.upper()}_API_TOKEN": "<your-token>"}
+        # Only include env vars when auth is actually needed
+        auth = getattr(request, 'auth_type', None) or ''
+        env_vars = {}
+        if auth and auth.lower() not in ('none', '', 'no auth', 'no_auth'):
+            env_vars = {f"{safe_product_name.upper()}_API_TOKEN": "<your-token>"}
         match = re.search(r'```json\n(.*?)\n```', final_answer_text, re.DOTALL)
         if match:
             try:
