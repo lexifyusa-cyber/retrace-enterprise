@@ -110,7 +110,7 @@ export default function McpBuilder() {
   const [detectedBaseUrl, setDetectedBaseUrl] = useState<string | null>(_saved.detectedBaseUrl ?? null)
   const [detectedAuthType, setDetectedAuthType] = useState<string | null>(_saved.detectedAuthType ?? null)
   const [detectedAuthDetails, setDetectedAuthDetails] = useState<string | null>(_saved.detectedAuthDetails ?? null)
-  const [kbProductId, setKbProductId] = useState<string | null>(_saved.kbProductId ?? null)
+  const [kbProductId, setKbProductId] = useState<string | null>(null)
   const [pagesCrawled, setPagesCrawled] = useState<number>(_saved.pagesCrawled ?? 0)
   const [analyzePhase, setAnalyzePhase] = useState<string>('')
   // MCP Server registry
@@ -208,14 +208,14 @@ export default function McpBuilder() {
       selectedProductId, endpoints, result,
       generationPhase, generationLogs, sourceMode, externalApiName,
       externalSourceType, apiDocsUrl, apiDocsText, detectedBaseUrl,
-      detectedAuthType, detectedAuthDetails, kbProductId, pagesCrawled,
+      detectedAuthType, detectedAuthDetails, pagesCrawled,
       currentStep,
     })
   }, [
     selectedProductId, endpoints, result,
     generationPhase, generationLogs, sourceMode, externalApiName,
     externalSourceType, apiDocsUrl, apiDocsText, detectedBaseUrl,
-    detectedAuthType, detectedAuthDetails, kbProductId, pagesCrawled,
+    detectedAuthType, detectedAuthDetails, pagesCrawled,
     currentStep,
   ])
 
