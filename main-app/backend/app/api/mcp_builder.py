@@ -749,7 +749,22 @@ async def generate_mcp_server(
         dest = str(raw_dest_path)
     else:
         dest = str(raw_dest_path / "mcp-servers" / safe_product_name)
-    
+
+    # Auto-increment folder name if it already exists (like file downloads: name, name_1, name_2)
+    if os.path.exists(dest):
+        base_dest = dest.rstrip('/')
+        base_match = re.match(r'^(.+?)(?:_(\d+))?$', base_dest)
+        base_path = base_match.group(1) if base_match else base_dest
+        counter = 1
+        while os.path.exists(f"{base_path}_{counter}"):
+            counter += 1
+        dest = f"{base_path}_{counter}"
+        new_folder_name = os.path.basename(dest)
+        safe_product_name = re.sub(r'[^a-zA-Z0-9]', '_', new_folder_name).lower().strip('_')
+        safe_product_name = re.sub(r'_+', '_', safe_product_name)
+        module_name = f"{safe_product_name}_mcp"
+        logger.info("mcp_builder_auto_increment", original=request.destination_folder, new_dest=dest)
+
     is_external = bool(request.api_docs_url or request.api_docs_text)
 
     if is_external:

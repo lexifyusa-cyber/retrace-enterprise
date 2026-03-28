@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { FolderTree, Blocks, AlertCircle, Copy, CheckCircle2, ChevronDown, ChevronUp, Wand2, Search, Terminal, Globe, Upload, Trash2, Circle, Loader2, ChevronLeft, ChevronRight, Zap, Server, Clock, Check, FileCode, Folder, File, FolderOpen, Play, Square } from 'lucide-react'
+import { FolderTree, Blocks, AlertCircle, Copy, CheckCircle2, ChevronDown, ChevronUp, Wand2, Search, Terminal, Globe, Upload, Trash2, Circle, Loader2, ChevronLeft, ChevronRight, Zap, Server, Clock, Check, FileCode, Folder, File, FolderOpen, Play, Square, RotateCcw } from 'lucide-react'
 import { localFilesApi } from '../utils/api'
 import type { FileEntry } from '../types'
 
@@ -146,6 +146,35 @@ export default function McpBuilder() {
 
   // Server start/stop toggling
   const [togglingServer, setTogglingServer] = useState<string | null>(null)
+
+  // Full reset – used by refresh icon and Build Another
+  const resetAll = useCallback(() => {
+    setCurrentStep(1)
+    setStepDirection(-1)
+    setEndpoints(null)
+    setResult(null)
+    setAnalyzeError('')
+    setIsAnalyzing(false)
+    setIsGenerating(false)
+    setGenerationPhase('')
+    setCurrentIteration(0)
+    setGenerationLogs([])
+    setSourceMode('internal')
+    setExternalApiName('')
+    setExternalSourceType('url')
+    setApiDocsUrl('')
+    setApiDocsText('')
+    setUploadedFile(null)
+    setDetectedBaseUrl('')
+    setDetectedAuthType('')
+    setDetectedAuthDetails('')
+    setPagesCrawled(0)
+    setKbProductId(null)
+    setDestinationFolder('')
+    setSelectedProductId(null)
+    setCopiedCmd(false)
+    sessionStorage.removeItem('mcp_builder_state')
+  }, [])
 
   // On mount: check if a generation was in progress when we left
   useEffect(() => {
@@ -981,6 +1010,13 @@ export default function McpBuilder() {
         {/* ===== STEPPER BAR ===== */}
         {!showHero && (
           <div className="flex items-center justify-center gap-0">
+            <button
+              onClick={resetAll}
+              title="Reset & start over"
+              className="mr-3 p-2 rounded-lg text-rt-text-muted hover:text-rt-primary hover:bg-rt-primary/10 transition-all"
+            >
+              <RotateCcw className="w-4 h-4" />
+            </button>
             {STEPS.map((step, i) => {
               const isActive = currentStep === step.num
               const isCompleted = currentStep > step.num
@@ -1850,26 +1886,7 @@ export default function McpBuilder() {
                   </button>
                   {result && (
                     <button
-                      onClick={() => {
-                        setResult(null)
-                        setEndpoints(null)
-                        setGenerationLogs([])
-                        setGenerationPhase('')
-                        setCurrentIteration(0)
-                        setDestinationFolder('')
-                        setExternalApiName('')
-                        setSelectedProductId('')
-                        setApiDocsUrl('')
-                        setApiDocsText('')
-                        setDetectedBaseUrl('')
-                        setDetectedAuthType('')
-                        setDetectedAuthDetails('')
-                        setPagesCrawled(0)
-                        setKbProductId(null)
-                        setAnalyzeError('')
-                        setCurrentStep(1)
-                        setStepDirection(-1)
-                      }}
+                      onClick={resetAll}
                       className="flex items-center gap-2 px-5 py-2.5 bg-rt-primary text-white rounded-lg font-medium hover:bg-rt-primary-dark transition-all shadow-sm"
                     >
                       <Zap className="w-4 h-4" />
