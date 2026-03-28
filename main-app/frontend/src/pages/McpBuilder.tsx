@@ -89,6 +89,10 @@ export default function McpBuilder() {
   const [analyzeError, setAnalyzeError] = useState(_saved.analyzeError ?? '')
 
   const [destinationFolder, setDestinationFolder] = useState('')
+  const [showFolderPicker, setShowFolderPicker] = useState(false)
+  const [pickerPath, setPickerPath] = useState('~')
+  const [pickerFiles, setPickerFiles] = useState<FileEntry[]>([])
+  const [pickerLoading, setPickerLoading] = useState(false)
   const [isGenerating, setIsGenerating] = useState(false)
   const [result, setResult] = useState<BuildResult | null>(_saved.result ?? null)
   const [copied, setCopied] = useState(false)
@@ -650,6 +654,28 @@ export default function McpBuilder() {
       setBrowseLoading(false)
     }
   }, [])
+
+  // Folder picker for destination
+  const pickerBrowse = useCallback(async (path: string) => {
+    setPickerLoading(true)
+    setPickerPath(path)
+    try {
+      const data = await localFilesApi.browse(path)
+      const dirs = data.files
+        .filter((f: FileEntry) => f.type === 'directory')
+        .sort((a: FileEntry, b: FileEntry) => a.name.localeCompare(b.name))
+      setPickerFiles(dirs)
+    } catch {
+      setPickerFiles([])
+    } finally {
+      setPickerLoading(false)
+    }
+  }, [])
+
+  const openFolderPicker = useCallback(() => {
+    setShowFolderPicker(true)
+    pickerBrowse('~')
+  }, [pickerBrowse])
 
   const getEffectiveDestFolder = useCallback(() => {
     // Find the destination folder from the most recent built server or from form input
@@ -1446,18 +1472,99 @@ export default function McpBuilder() {
                     <div className="space-y-5">
                       <div className="space-y-1.5">
                         <label className="text-sm font-medium text-rt-text-muted">File Destination</label>
-                        <div className="relative">
-                          <FolderTree className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-rt-text-muted/50" />
-                          <input
-                            type="text"
-                            placeholder="e.g. ~/mcp-servers/project"
-                            value={destinationFolder}
-                            onChange={(e) => setDestinationFolder(e.target.value)}
-                            className="w-full bg-rt-bg border border-rt-border rounded-lg pl-9 pr-4 py-2.5 text-sm focus:ring-2 focus:ring-rt-primary/20 focus:border-rt-primary transition-all text-rt-text font-mono text-xs"
-                          />
+                        <div className="flex gap-2">
+                          <div className="relative flex-1">
+                            <FolderTree className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-rt-text-muted/50" />
+                            <input
+                              type="text"
+                              placeholder="e.g. ~/mcp-servers/project"
+                              value={destinationFolder}
+                              onChange={(e) => setDestinationFolder(e.target.value)}
+                              className="w-full bg-rt-bg border border-rt-border rounded-lg pl-9 pr-4 py-2.5 text-sm focus:ring-2 focus:ring-rt-primary/20 focus:border-rt-primary transition-all text-rt-text font-mono text-xs"
+                            />
+                          </div>
+                          <button
+                            type="button"
+                            onClick={openFolderPicker}
+                            className="px-3 py-2.5 bg-rt-bg border border-rt-border rounded-lg hover:bg-rt-surface transition-colors text-rt-text-muted hover:text-rt-text"
+                            title="Browse folders"
+                          >
+                            <FolderOpen className="w-4 h-4" />
+                          </button>
                         </div>
                         <p className="text-[11px] text-rt-text-muted/60 mt-1">If blank, creates a default folder.</p>
                       </div>
+
+                      {/* Folder Picker Modal */}
+                      {showFolderPicker && (
+                        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={() => setShowFolderPicker(false)}>
+                          <div className="bg-rt-surface border border-rt-border rounded-2xl shadow-2xl w-[520px] max-h-[500px] flex flex-col" onClick={e => e.stopPropagation()}>
+                            {/* Header */}
+                            <div className="px-5 py-4 border-b border-rt-border/50">
+                              <h3 className="text-sm font-semibold text-rt-text-strong mb-2">Select Destination Folder</h3>
+                              {/* Breadcrumb */}
+                              <div className="flex items-center gap-1 text-xs text-rt-text-muted overflow-x-auto">
+                                <button
+                                  onClick={() => pickerBrowse('/')}
+                                  className="hover:text-rt-primary transition-colors shrink-0"
+                                >/</button>
+                                {pickerPath.replace(/^~/, '').split('/').filter(Boolean).map((part, i, arr) => {
+                                  const fullPath = '/' + arr.slice(0, i + 1).join('/')
+                                  return (
+                                    <span key={fullPath} className="flex items-center gap-1 shrink-0">
+                                      <ChevronRight className="w-3 h-3 text-rt-text-muted/40" />
+                                      <button
+                                        onClick={() => pickerBrowse(fullPath)}
+                                        className={`hover:text-rt-primary transition-colors ${i === arr.length - 1 ? 'text-rt-text-strong font-medium' : ''}`}
+                                      >{part}</button>
+                                    </span>
+                                  )
+                                })}
+                              </div>
+                            </div>
+
+                            {/* Directory list */}
+                            <div className="flex-1 overflow-y-auto min-h-0 max-h-[320px]">
+                              {pickerLoading ? (
+                                <div className="flex items-center justify-center py-12 text-rt-text-muted text-sm">Loading...</div>
+                              ) : pickerFiles.length === 0 ? (
+                                <div className="flex items-center justify-center py-12 text-rt-text-muted text-sm">No subdirectories</div>
+                              ) : (
+                                <div className="py-1">
+                                  {pickerFiles.map(file => (
+                                    <button
+                                      key={file.path}
+                                      onClick={() => pickerBrowse(file.path)}
+                                      className="w-full flex items-center gap-3 px-5 py-2.5 hover:bg-rt-primary/5 transition-colors text-left"
+                                    >
+                                      <Folder className="w-4 h-4 text-rt-primary/70 shrink-0" />
+                                      <span className="text-sm text-rt-text truncate">{file.name}</span>
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+
+                            {/* Footer */}
+                            <div className="px-5 py-3 border-t border-rt-border/50 flex items-center justify-between">
+                              <p className="text-xs text-rt-text-muted font-mono truncate max-w-[280px]">{pickerPath}</p>
+                              <div className="flex gap-2">
+                                <button
+                                  onClick={() => setShowFolderPicker(false)}
+                                  className="px-3 py-1.5 text-xs text-rt-text-muted hover:text-rt-text transition-colors"
+                                >Cancel</button>
+                                <button
+                                  onClick={() => {
+                                    setDestinationFolder(pickerPath)
+                                    setShowFolderPicker(false)
+                                  }}
+                                  className="px-4 py-1.5 text-xs bg-rt-primary text-white rounded-lg hover:bg-rt-primary-dark transition-colors font-medium"
+                                >Select This Folder</button>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
 
                       <div className="pt-2">
                         <button

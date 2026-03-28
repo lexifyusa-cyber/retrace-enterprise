@@ -358,12 +358,15 @@ async def start_mcp_server(server_id: str, session: AsyncSession = Depends(get_s
         return {"status": "already_running", "server_id": server_id}
 
     venv_python = os.path.join(dest, ".venv", "bin", "python")
-    if not os.path.exists(venv_python):
-        raise HTTPException(status_code=400, detail=f"Virtual environment not found at {dest}/.venv")
+    if os.path.isfile(venv_python):
+        cmd = [venv_python, "-m", f"{module_name}.server"]
+    else:
+        # No venv yet — use uv run which auto-creates one
+        cmd = ["uv", "run", "--directory", dest, "python", "-m", f"{module_name}.server"]
 
     try:
         proc = subprocess.Popen(
-            [venv_python, "-m", f"{module_name}.server"],
+            cmd,
             cwd=dest,
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
@@ -860,16 +863,62 @@ async def generate_mcp_server(
         return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
     def _extract_mcp_config(final_answer_text: str) -> dict:
-        """Build the correct MCP config using known paths — never trust agent's JSON.
+        """Build MCP config by inspecting what the agent actually generated on disk.
 
-        The agent often outputs placeholder paths like /Users/<you>/ or YOUR_USER.
-        We always use the actual dest/module_name we know are correct.
+        1. Read pyproject.toml to find the real module name
+        2. Scan server.py for os.environ/os.getenv calls to discover real env var names
+        3. Fall back to conventions only if files are missing
         """
-        # Only include env vars when auth is actually needed
-        auth = getattr(request, 'auth_type', None) or ''
-        env_vars = {}
-        if auth and auth.lower() not in ('none', '', 'no auth', 'no_auth'):
-            env_vars = {f"{safe_product_name.upper()}_API_TOKEN": "<your-token>"}
+        expanded_dest = os.path.expanduser(dest)
+
+        # ── 1. Discover real module name from pyproject.toml ──
+        actual_module = module_name  # fallback
+        pyproject_path = os.path.join(expanded_dest, "pyproject.toml")
+        if os.path.isfile(pyproject_path):
+            try:
+                with open(pyproject_path) as f:
+                    content = f.read()
+                # Look for: module_name.server:main  in [project.scripts]
+                m = re.search(r'=\s*"([a-zA-Z0-9_]+)\.server:main"', content)
+                if m:
+                    actual_module = m.group(1)
+            except Exception:
+                pass
+
+        # ── 2. Find server.py — check both src/ layout and flat layout ──
+        server_path = None
+        for candidate in [
+            os.path.join(expanded_dest, "src", actual_module, "server.py"),
+            os.path.join(expanded_dest, actual_module, "server.py"),
+            os.path.join(expanded_dest, "server.py"),
+        ]:
+            if os.path.isfile(candidate):
+                server_path = candidate
+                break
+
+        # ── 3. Extract env var names from actual server.py ──
+        env_vars: dict = {}
+        if server_path:
+            try:
+                with open(server_path) as f:
+                    server_src = f.read()
+                # Match os.environ["KEY"], os.environ.get("KEY"), os.getenv("KEY")
+                env_matches = re.findall(
+                    r'os\.(?:environ(?:\.get)?\s*\[\s*["\']|environ\.get\s*\(\s*["\']|getenv\s*\(\s*["\'])([A-Z][A-Z0-9_]*)',
+                    server_src,
+                )
+                for var_name in dict.fromkeys(env_matches):  # dedupe, preserve order
+                    env_vars[var_name] = f"<your-{var_name.lower()}>"
+            except Exception:
+                pass
+
+        # Fallback: if no env vars found but auth is needed, use convention
+        if not env_vars:
+            auth = getattr(request, 'auth_type', None) or ''
+            if auth and auth.lower() not in ('none', '', 'no auth', 'no_auth'):
+                env_vars = {f"{safe_product_name.upper()}_API_TOKEN": "<your-token>"}
+
+        # Also check agent's JSON output for env vars we might have missed
         match = re.search(r'```json\n(.*?)\n```', final_answer_text, re.DOTALL)
         if match:
             try:
@@ -877,21 +926,55 @@ async def generate_mcp_server(
                 servers = parsed.get("mcpServers", parsed)
                 for srv_config in servers.values():
                     if isinstance(srv_config, dict) and "env" in srv_config:
-                        env_vars = srv_config["env"]
+                        # Merge — agent env vars fill in any we missed
+                        for k, v in srv_config["env"].items():
+                            if k not in env_vars:
+                                env_vars[k] = v
                         break
             except Exception:
                 pass
 
-        expanded_dest = os.path.expanduser(dest)
-        return {
+        # ── 4. Determine command — prefer .venv if it exists, else uv run ──
+        venv_python = os.path.join(expanded_dest, ".venv", "bin", "python")
+        if os.path.isfile(venv_python):
+            command = venv_python
+            args = ["-m", f"{actual_module}.server"]
+        else:
+            command = "uv"
+            args = ["run", "--directory", expanded_dest, "python", "-m", f"{actual_module}.server"]
+
+        config = {
             safe_product_name: {
-                "command": f"{expanded_dest}/.venv/bin/python",
-                "args": ["-m", f"{module_name}.server"],
-                "env": env_vars,
+                "command": command,
+                "args": args,
             }
         }
+        if env_vars:
+            config[safe_product_name]["env"] = env_vars
+        return config
 
     def _build_quick_start() -> str:
+        expanded_dest = os.path.expanduser(dest)
+
+        # Discover actual module name (same logic as config)
+        actual_module = module_name
+        pyproject_path = os.path.join(expanded_dest, "pyproject.toml")
+        if os.path.isfile(pyproject_path):
+            try:
+                with open(pyproject_path) as f:
+                    content = f.read()
+                m = re.search(r'=\s*"([a-zA-Z0-9_]+)\.server:main"', content)
+                if m:
+                    actual_module = m.group(1)
+            except Exception:
+                pass
+
+        venv_python = os.path.join(expanded_dest, ".venv", "bin", "python")
+        if os.path.isfile(venv_python):
+            run_cmd = f"{venv_python} -m {actual_module}.server"
+        else:
+            run_cmd = f"uv run --directory {dest} python -m {actual_module}.server"
+
         return (
             f"# Step 1: Install dependencies (only needed once)\n"
             f"cd {dest}\n"
@@ -899,10 +982,10 @@ async def generate_mcp_server(
             f"uv sync\n"
             f"\n"
             f"# Step 2: Start the MCP server\n"
-            f"{dest}/.venv/bin/python -m {safe_product_name}_mcp.server\n"
+            f"{run_cmd}\n"
             f"\n"
             f"# Step 3 (optional): Test with MCP Inspector\n"
-            f"npx @modelcontextprotocol/inspector {dest}/.venv/bin/python -m {safe_product_name}_mcp.server"
+            f"npx @modelcontextprotocol/inspector {run_cmd}"
         )
 
     # For external APIs with a KB, use the KB product_id so the agent gets
