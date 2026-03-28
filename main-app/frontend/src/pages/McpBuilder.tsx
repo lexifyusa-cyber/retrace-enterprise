@@ -1472,26 +1472,18 @@ export default function McpBuilder() {
                     <div className="space-y-5">
                       <div className="space-y-1.5">
                         <label className="text-sm font-medium text-rt-text-muted">File Destination</label>
-                        <div className="flex gap-2">
-                          <div className="relative flex-1">
-                            <FolderTree className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-rt-text-muted/50" />
-                            <input
-                              type="text"
-                              placeholder="e.g. ~/mcp-servers/project"
-                              value={destinationFolder}
-                              onChange={(e) => setDestinationFolder(e.target.value)}
-                              className="w-full bg-rt-bg border border-rt-border rounded-lg pl-9 pr-4 py-2.5 text-sm focus:ring-2 focus:ring-rt-primary/20 focus:border-rt-primary transition-all text-rt-text font-mono text-xs"
-                            />
-                          </div>
-                          <button
-                            type="button"
-                            onClick={openFolderPicker}
-                            className="px-3 py-2.5 bg-rt-bg border border-rt-border rounded-lg hover:bg-rt-surface transition-colors text-rt-text-muted hover:text-rt-text"
-                            title="Browse folders"
-                          >
-                            <FolderOpen className="w-4 h-4" />
-                          </button>
-                        </div>
+                        <button
+                          type="button"
+                          onClick={openFolderPicker}
+                          className="w-full flex items-center gap-3 bg-rt-bg border border-rt-border rounded-lg px-4 py-2.5 text-sm hover:bg-rt-surface transition-colors text-left"
+                        >
+                          <FolderOpen className="w-4 h-4 text-rt-text-muted/50 shrink-0" />
+                          {destinationFolder ? (
+                            <span className="text-rt-text font-mono text-xs truncate">{destinationFolder}</span>
+                          ) : (
+                            <span className="text-rt-text-muted/50 text-xs">Click to select folder...</span>
+                          )}
+                        </button>
                         <p className="text-[11px] text-rt-text-muted/60 mt-1">If blank, creates a default folder.</p>
                       </div>
 
