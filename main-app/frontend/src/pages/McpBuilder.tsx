@@ -658,14 +658,21 @@ export default function McpBuilder() {
   // Folder picker for destination
   const pickerBrowse = useCallback(async (path: string) => {
     setPickerLoading(true)
-    setPickerPath(path)
     try {
       const data = await localFilesApi.browse(path)
       const dirs = data.files
         .filter((f: FileEntry) => f.type === 'directory')
         .sort((a: FileEntry, b: FileEntry) => a.name.localeCompare(b.name))
+      // Resolve ~ to actual path using the first file's parent
+      let resolvedPath = path
+      if ((path === '~' || path.startsWith('~/')) && dirs.length > 0) {
+        const firstChild = dirs[0].path
+        resolvedPath = firstChild.substring(0, firstChild.lastIndexOf('/')) || '/'
+      }
+      setPickerPath(resolvedPath)
       setPickerFiles(dirs)
     } catch {
+      setPickerPath(path)
       setPickerFiles([])
     } finally {
       setPickerLoading(false)
