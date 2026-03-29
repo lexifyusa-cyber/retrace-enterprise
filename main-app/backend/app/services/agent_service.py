@@ -723,6 +723,33 @@ class AgentService:
             if disabled & {"search_knowledge_base", "list_kb_entries", "read_kb_file", "browse_kb_structure"}:
                 disabled = set(disabled) | {"knowledge_base"}
             tools = [t for t in tools if t.name not in disabled]
+
+            # ── 3b. Load MCP tools from configured servers ────────────
+            mcp_processes = {}
+            if not mcp_builder_config:  # skip for MCP builder itself
+                try:
+                    from app.services.mcp_client import get_mcp_tools_for_agent, cleanup_mcp_processes
+                    from app.models.mcp_tool_config import McpToolConfig
+                    from app.db.database import async_session_maker
+                    async with async_session_maker() as mcp_session:
+                        result = await mcp_session.execute(
+                            select(McpToolConfig).where(McpToolConfig.enabled == True)
+                        )
+                        mcp_configs = [c.to_dict() for c in result.scalars().all()]
+
+                    if mcp_configs:
+                        import asyncio as _aio
+                        loop = _aio.get_event_loop()
+                        mcp_tools, mcp_processes = await loop.run_in_executor(
+                            None, get_mcp_tools_for_agent, mcp_configs
+                        )
+                        # Filter out disabled MCP tools
+                        mcp_tools = [t for t in mcp_tools if t.name not in disabled]
+                        tools.extend(mcp_tools)
+                        logger.info("mcp_tools_loaded", count=len(mcp_tools), servers=len(mcp_processes))
+                except Exception as e:
+                    logger.warning("mcp_tools_load_failed", error=str(e))
+
             tool_desc = get_tool_descriptions(tools)
             tool_names = [t.name for t in tools]
 
@@ -884,7 +911,12 @@ class AgentService:
             timings["execution_ms"] = int((time.time() - t_exec) * 1000)
             timings["total_ms"] = int((time.time() - t0) * 1000)
 
-            # ── 8. Done ───────────────────────────────────────────────
+            # ── 8. Cleanup MCP processes ──────────────────────────────
+            if 'mcp_processes' in locals() and mcp_processes:
+                from app.services.mcp_client import cleanup_mcp_processes
+                cleanup_mcp_processes(mcp_processes)
+
+            # ── 9. Done ───────────────────────────────────────────────
             yield _sse("agent_done", {
                 "session_id": session_id,
                 "thread_id": thread_id,
@@ -916,6 +948,10 @@ class AgentService:
                 logger.warning("agent_session_save_failed")
 
         except Exception as exc:
+            # Cleanup MCP processes on error
+            if 'mcp_processes' in locals() and mcp_processes:
+                from app.services.mcp_client import cleanup_mcp_processes
+                cleanup_mcp_processes(mcp_processes)
             logger.error("agent_execution_failed", error=str(exc), exc_info=True)
             yield _sse("agent_error", {"detail": str(exc)})
 

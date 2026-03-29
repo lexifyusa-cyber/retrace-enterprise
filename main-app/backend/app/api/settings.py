@@ -14,6 +14,7 @@ import structlog
 from app.core.config import settings as app_settings
 from app.db.database import get_session, async_session_maker
 from app.models.settings import LLMSettingsModel
+from app.models.mcp_tool_config import McpToolConfig
 
 logger = structlog.get_logger()
 router = APIRouter()
@@ -499,3 +500,141 @@ async def get_active_llm_settings(session: AsyncSession, consumer_key: str | Non
         "debug_logging": bool(getattr(db_settings, "debug_logging", False)),
         "max_parallel_files": max(1, min(32, int(getattr(db_settings, "max_parallel_files", 1) or 1))),
     }
+
+
+# ── MCP Tool Configs CRUD ──────────────────────────────────────
+
+
+class McpToolConfigCreate(BaseModel):
+    """Schema for creating MCP tool config(s). Accepts raw mcpServers JSON."""
+    name: Optional[str] = None
+    config_json: Optional[dict] = None
+    # Bulk import: paste full mcpServers block
+    mcp_servers: Optional[dict] = None
+    enabled: bool = True
+
+
+class McpToolConfigUpdate(BaseModel):
+    """Schema for updating an MCP tool config."""
+    name: Optional[str] = None
+    config_json: Optional[dict] = None
+    enabled: Optional[bool] = None
+
+
+@router.get("/mcp-tools")
+async def list_mcp_tool_configs(session: AsyncSession = Depends(get_session)):
+    """List all configured MCP tool servers."""
+    result = await session.execute(
+        select(McpToolConfig).order_by(McpToolConfig.created_at.desc())
+    )
+    configs = result.scalars().all()
+    return [c.to_dict() for c in configs]
+
+
+@router.post("/mcp-tools")
+async def create_mcp_tool_config(
+    data: McpToolConfigCreate,
+    session: AsyncSession = Depends(get_session),
+):
+    """Add MCP server(s) as tool sources.
+
+    Accepts either:
+    - Single server: {name, config_json}
+    - Bulk import: {mcp_servers: {"github": {...}, "slack": {...}}}
+    """
+    created = []
+
+    # Bulk import from mcpServers JSON
+    if data.mcp_servers:
+        for server_name, server_config in data.mcp_servers.items():
+            config = McpToolConfig(
+                name=server_name,
+                config_json=server_config,
+                enabled=data.enabled,
+            )
+            session.add(config)
+            created.append(config)
+        await session.flush()
+        for c in created:
+            await session.refresh(c)
+        return [c.to_dict() for c in created]
+
+    # Single server
+    if not data.name:
+        raise HTTPException(status_code=400, detail="name is required")
+    if not data.config_json:
+        raise HTTPException(status_code=400, detail="config_json is required")
+
+    config = McpToolConfig(
+        name=data.name,
+        config_json=data.config_json,
+        enabled=data.enabled,
+    )
+    session.add(config)
+    await session.flush()
+    await session.refresh(config)
+    return config.to_dict()
+
+
+@router.put("/mcp-tools/{config_id}")
+async def update_mcp_tool_config(
+    config_id: str,
+    data: McpToolConfigUpdate,
+    session: AsyncSession = Depends(get_session),
+):
+    """Update an existing MCP tool config."""
+    result = await session.execute(
+        select(McpToolConfig).where(McpToolConfig.config_id == config_id)
+    )
+    config = result.scalar_one_or_none()
+    if not config:
+        raise HTTPException(status_code=404, detail="MCP tool config not found")
+
+    from datetime import datetime
+    if data.name is not None:
+        config.name = data.name
+    if data.config_json is not None:
+        config.config_json = data.config_json
+    if data.enabled is not None:
+        config.enabled = data.enabled
+    config.updated_at = datetime.utcnow()
+    await session.flush()
+    return config.to_dict()
+
+
+@router.delete("/mcp-tools/{config_id}")
+async def delete_mcp_tool_config(
+    config_id: str,
+    session: AsyncSession = Depends(get_session),
+):
+    """Delete an MCP tool config."""
+    result = await session.execute(
+        select(McpToolConfig).where(McpToolConfig.config_id == config_id)
+    )
+    config = result.scalar_one_or_none()
+    if not config:
+        raise HTTPException(status_code=404, detail="MCP tool config not found")
+
+    await session.delete(config)
+    await session.flush()
+    return {"ok": True}
+
+
+@router.post("/mcp-tools/{config_id}/toggle")
+async def toggle_mcp_tool_config(
+    config_id: str,
+    session: AsyncSession = Depends(get_session),
+):
+    """Toggle enabled/disabled for an MCP tool config."""
+    result = await session.execute(
+        select(McpToolConfig).where(McpToolConfig.config_id == config_id)
+    )
+    config = result.scalar_one_or_none()
+    if not config:
+        raise HTTPException(status_code=404, detail="MCP tool config not found")
+
+    from datetime import datetime
+    config.enabled = not config.enabled
+    config.updated_at = datetime.utcnow()
+    await session.flush()
+    return config.to_dict()

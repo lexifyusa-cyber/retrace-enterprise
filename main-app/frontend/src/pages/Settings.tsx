@@ -1,6 +1,6 @@
 import React, { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Settings as SettingsIcon, Zap, CheckCircle, XCircle, Loader2, Info, Monitor, LayoutPanelLeft, Command, Palette, Sun, Moon, Sparkles, ChevronDown, ChevronRight, Mail, Trash2, Plus, MessageSquare, RefreshCw } from 'lucide-react'
+import { Settings as SettingsIcon, Zap, CheckCircle, XCircle, Loader2, Info, Monitor, LayoutPanelLeft, Command, Palette, Sun, Moon, Sparkles, ChevronDown, ChevronRight, Mail, Trash2, Plus, MessageSquare, RefreshCw, Plug, Power, PowerOff, Edit2 } from 'lucide-react'
 import { motion } from 'framer-motion'
 import toast from 'react-hot-toast'
 import axios from 'axios'
@@ -79,6 +79,10 @@ export default function Settings() {
   const [emailRedirectUri, setEmailRedirectUri] = useState('')
   const [globalSlackWebhook, setGlobalSlackWebhook] = useState('')
   const [globalTeamsWebhook, setGlobalTeamsWebhook] = useState('')
+  const [mcpExpanded, setMcpExpanded] = useState(false)
+  const [mcpJsonInput, setMcpJsonInput] = useState('')
+  const [mcpEditId, setMcpEditId] = useState<string | null>(null)
+  const [mcpEditName, setMcpEditName] = useState('')
   const [channelsExpanded, setChannelsExpanded] = useState(false)
   const [channelPlatform, setChannelPlatform] = useState<'slack' | 'teams'>('slack')
   const [channelBotToken, setChannelBotToken] = useState('')
@@ -120,6 +124,45 @@ export default function Settings() {
       return r.data
     },
     enabled: !!user && (!!user.tenant_id || isGlobalAdmin),
+  })
+
+  // Load MCP tool configs
+  const { data: mcpConfigs = [] } = useQuery<any[]>({
+    queryKey: ['settings', 'mcp-tools'],
+    queryFn: async () => {
+      const r = await api.get('/settings/mcp-tools')
+      return r.data
+    }
+  })
+
+  const mcpSaveMutation = useMutation({
+    mutationFn: async (data: any) => {
+      if (data.config_id) {
+        return api.put(`/settings/mcp-tools/${data.config_id}`, data)
+      }
+      return api.post('/settings/mcp-tools', data)
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['settings', 'mcp-tools'] })
+      setMcpJsonInput(''); setMcpEditId(null); setMcpEditName('')
+      toast.success('MCP server saved')
+    },
+    onError: () => toast.error('Failed to save MCP server'),
+  })
+
+  const mcpDeleteMutation = useMutation({
+    mutationFn: async (id: string) => api.delete(`/settings/mcp-tools/${id}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['settings', 'mcp-tools'] })
+      toast.success('MCP server removed')
+    },
+  })
+
+  const mcpToggleMutation = useMutation({
+    mutationFn: async (id: string) => api.post(`/settings/mcp-tools/${id}/toggle`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['settings', 'mcp-tools'] })
+    },
   })
 
   // Load tenant auth config
@@ -1856,6 +1899,151 @@ export default function Settings() {
               </div>
             </div>
           )}
+        </div>
+      </motion.div>
+
+      {/* ─── MCP Servers ──────────────────────────────────────── */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.35 }}
+        className="max-w-4xl mt-6"
+      >
+        <div className="card overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setMcpExpanded((e) => !e)}
+            className="w-full flex items-center justify-between gap-3 p-3 text-left hover:bg-rt-bg-light/50 transition-colors"
+          >
+            <div className="flex items-center gap-2">
+              {mcpExpanded ? (
+                <ChevronDown className="w-4 h-4 text-rt-text-muted" />
+              ) : (
+                <ChevronRight className="w-4 h-4 text-rt-text-muted" />
+              )}
+              <Plug className="w-4 h-4 text-rt-primary" />
+              <span className="text-sm font-headline font-semibold">MCP Servers</span>
+            </div>
+            <span className="text-xs text-rt-text-muted">
+              {mcpConfigs.length > 0 ? `${mcpConfigs.length} configured` : 'Not configured'}
+            </span>
+          </button>
+
+        {mcpExpanded && (
+          <div className="p-4 space-y-4">
+            {/* Existing MCP configs */}
+            {mcpConfigs.length > 0 && (
+              <div className="space-y-2">
+                {mcpConfigs.map((cfg: any) => {
+                  const cj = cfg.config_json || {}
+                  const transport = cj.url ? 'HTTP/SSE' : 'stdio'
+                  const summary = cj.command
+                    ? `${cj.command} ${(cj.args || []).join(' ')}`
+                    : cj.url || 'No config'
+                  return (
+                    <div key={cfg.config_id} className="flex items-center justify-between p-3 bg-rt-bg-light/30 rounded-lg border border-rt-border/20">
+                      <div className="flex items-center gap-3">
+                        <button
+                          onClick={() => mcpToggleMutation.mutate(cfg.config_id)}
+                          className={`p-1 rounded transition-colors ${cfg.enabled ? 'text-green-600 hover:text-green-700' : 'text-rt-text-muted hover:text-rt-text'}`}
+                          title={cfg.enabled ? 'Enabled — click to disable' : 'Disabled — click to enable'}
+                        >
+                          {cfg.enabled ? <Power className="w-4 h-4" /> : <PowerOff className="w-4 h-4" />}
+                        </button>
+                        <div>
+                          <div className="font-medium text-sm">{cfg.name} <span className="text-xs text-rt-text-muted font-normal">({transport})</span></div>
+                          <div className="text-xs text-rt-text-muted font-mono truncate max-w-md">{summary}</div>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => {
+                            setMcpEditId(cfg.config_id)
+                            setMcpEditName(cfg.name)
+                            setMcpJsonInput(JSON.stringify({ [cfg.name]: cfg.config_json }, null, 2))
+                          }}
+                          className="p-1.5 text-rt-text-muted hover:text-rt-primary transition-colors"
+                          title="Edit"
+                        >
+                          <Edit2 className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => mcpDeleteMutation.mutate(cfg.config_id)}
+                          className="p-1.5 text-rt-text-muted hover:text-red-500 transition-colors"
+                          title="Delete"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+
+            {/* Add/Edit MCP config — JSON paste */}
+            <div className="space-y-3 p-3 border border-dashed border-rt-border/40 rounded-lg">
+              <div className="text-xs font-semibold text-rt-text-muted uppercase tracking-wider">
+                {mcpEditId ? `Edit: ${mcpEditName}` : 'Add MCP Server(s)'}
+              </div>
+              <div>
+                <label className="text-xs text-rt-text-muted mb-1 block">
+                  Paste MCP JSON config (same format as Claude Desktop / Cursor)
+                </label>
+                <textarea
+                  value={mcpJsonInput}
+                  onChange={(e) => setMcpJsonInput(e.target.value)}
+                  placeholder={`{\n  "github": {\n    "command": "npx",\n    "args": ["-y", "@modelcontextprotocol/server-github"],\n    "env": {\n      "GITHUB_TOKEN": "ghp_xxx"\n    }\n  }\n}`}
+                  rows={10}
+                  className="w-full px-3 py-2 text-sm border border-rt-border/30 rounded-lg bg-white focus:outline-none focus:ring-1 focus:ring-rt-primary/30 font-mono"
+                />
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => {
+                    if (!mcpJsonInput.trim()) {
+                      toast.error('Paste a JSON config')
+                      return
+                    }
+                    try {
+                      let parsed = JSON.parse(mcpJsonInput)
+                      // Handle wrapping: {"mcpServers": {...}} or direct {"name": {...}}
+                      if (parsed.mcpServers) parsed = parsed.mcpServers
+
+                      if (mcpEditId) {
+                        // Editing a single server — extract first key
+                        const keys = Object.keys(parsed)
+                        const name = keys[0] || mcpEditName
+                        const config_json = keys[0] ? parsed[keys[0]] : parsed
+                        mcpSaveMutation.mutate({ config_id: mcpEditId, name, config_json })
+                      } else {
+                        // Adding — could be single or multiple
+                        mcpSaveMutation.mutate({ mcp_servers: parsed })
+                      }
+                    } catch {
+                      toast.error('Invalid JSON — check your config')
+                    }
+                  }}
+                  className="px-4 py-2 bg-rt-primary text-white text-sm rounded-lg hover:bg-rt-primary-hover transition-colors"
+                >
+                  {mcpEditId ? 'Update' : 'Add Server(s)'}
+                </button>
+                {mcpEditId && (
+                  <button
+                    onClick={() => { setMcpEditId(null); setMcpEditName(''); setMcpJsonInput('') }}
+                    className="px-4 py-2 text-sm text-rt-text-muted hover:text-rt-text transition-colors"
+                  >
+                    Cancel
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <p className="text-xs text-rt-text-muted">
+              Paste the same JSON you'd use in Claude Desktop or Cursor. Multiple servers can be added at once. Tools appear in Agent Chat and can be toggled on/off.
+            </p>
+          </div>
+        )}
         </div>
       </motion.div>
 
