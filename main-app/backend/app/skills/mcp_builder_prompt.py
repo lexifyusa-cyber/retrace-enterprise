@@ -21,6 +21,7 @@ _REFERENCE_FILES = {
     "typescript": _SKILL_DIR / "node_mcp_server.md",
     "python": _SKILL_DIR / "python_mcp_server.md",
     "evaluation": _SKILL_DIR / "evaluation.md",
+    "auth_patterns": _SKILL_DIR / "auth_patterns.md",
 }
 
 _cache: dict[str, str] = {}
@@ -761,10 +762,20 @@ def build_mcp_builder_supplement_slim(
 
     # Auth code snippet — use detailed auth if available, else fall back to generic
     auth = auth_type or "bearer"
+    _COMPLEX_AUTH_TYPES = {"oauth", "oauth2", "hmac", "jwt", "cookie", "session", "mtls", "multi_header"}
     if auth_details:
         auth_code = f'# Auth: {auth_details}\n    # Implement the authentication described above using env vars prefixed with {SERVICE}_'
+        # For complex auth types, append the full reference so agent has proven patterns
+        if auth.lower() in _COMPLEX_AUTH_TYPES:
+            auth_ref = _read_ref("auth_patterns")
+            if auth_ref:
+                auth_code += f"\n\n# === AUTH REFERENCE (use the {auth} pattern below) ===\n{auth_ref}"
     else:
         auth_code = _AUTH_SNIPPETS.get(auth, _AUTH_SNIPPETS["bearer"]).format(SERVICE=SERVICE)
+        if auth.lower() in _COMPLEX_AUTH_TYPES:
+            auth_ref = _read_ref("auth_patterns")
+            if auth_ref:
+                auth_code += f"\n\n# === AUTH REFERENCE (use the {auth} pattern below) ===\n{auth_ref}"
 
     # Server template
     server_template = _SLIM_SERVER_TEMPLATE.format(
