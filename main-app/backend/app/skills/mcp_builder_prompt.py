@@ -185,9 +185,8 @@ You MUST run ALL validation steps below IN ORDER. Do not skip any. Fix errors be
    — this catches missing imports, undefined names, Pydantic schema errors, and module structure issues.
    If this fails, read the error carefully, fix the code, and re-run until it prints "Import OK".
 
-4. **Server startup test**: run `terminal("cd {output_dir} && timeout 5 .venv/bin/python -m {{service}}_mcp.server 2>&1 || true")`
-   — a timeout exit (code 124) means the server started successfully and is waiting for connections.
-   If the server crashes on startup (non-timeout error), fix the error and re-run.
+4. **Do NOT run the server.** MCP servers use stdio transport and will hang indefinitely
+   waiting for input. The import check above is sufficient validation. Skip to step 5.
 
 5. **Tool count verification**: run `terminal("cd {output_dir} && .venv/bin/python -c \\"from {{service}}_mcp.server import mcp; print(f'Registered tools: {{len(mcp._tool_manager._tools)}}')\\")")`
    — the count MUST match the number of selected endpoints. If tools are missing, go back and implement them.
@@ -344,7 +343,9 @@ This MCP server targets an EXTERNAL third-party API, not a local product.
 # ---------------------------------------------------------------------------
 
 _SLIM_SERVER_TEMPLATE = '''import os
+import json
 from typing import Optional
+from enum import Enum
 import httpx
 from mcp.server.fastmcp import FastMCP
 
@@ -352,20 +353,92 @@ mcp = FastMCP("{service}_mcp")
 
 API_BASE_URL = "{base_url}"
 
+
+class ResponseFormat(Enum):
+    """Output format for tool responses."""
+    MARKDOWN = "markdown"
+    JSON = "json"
+
+
 def _get_headers() -> dict:
     """Build auth headers."""
     headers = {{"Content-Type": "application/json", "Accept": "application/json"}}
     {auth_code}
     return headers
 
+
+def _handle_api_error(status_code: int, response_text: str) -> str:
+    """Map HTTP status codes to actionable error messages."""
+    error_map = {{
+        400: "Bad request — check your parameters",
+        401: "Authentication failed — verify your API token",
+        403: "Forbidden — insufficient permissions for this resource",
+        404: "Resource not found — check the ID or path",
+        409: "Conflict — resource already exists or state conflict",
+        422: "Validation error — check parameter types and values",
+        429: "Rate limited — wait and retry in a few seconds",
+        500: "Internal server error — the API is experiencing issues",
+        502: "Bad gateway — the API is temporarily unavailable",
+        503: "Service unavailable — the API is under maintenance",
+    }}
+    msg = error_map.get(status_code, f"HTTP {{status_code}} error")
+    detail = response_text[:500] if response_text else ""
+    return f"Error: {{msg}}. Details: {{detail}}"
+
+
 async def _request(method: str, path: str, params: dict = None, json_body: dict = None) -> dict:
-    """Shared HTTP client."""
+    """Shared HTTP client with error handling."""
     async with httpx.AsyncClient(timeout=120.0) as client:
         resp = await client.request(method, f"{{API_BASE_URL}}{{path}}", params=params, json=json_body, headers=_get_headers())
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            return {{"error": _handle_api_error(resp.status_code, resp.text)}}
         return resp.json() if resp.content else {{"status": "ok"}}
 
+
+async def _paginated_request(method: str, path: str, params: dict = None, limit: int = 50, offset: int = 0) -> dict:
+    """Fetch a paginated list endpoint. Returns items + pagination metadata."""
+    params = params or {{}}
+    params["limit"] = limit
+    params["offset"] = offset
+    result = await _request(method, path, params=params)
+    if "error" in result:
+        return result
+    # Wrap in pagination metadata if the API returns a flat list
+    if isinstance(result, list):
+        return {{"items": result, "has_more": len(result) >= limit, "next_offset": offset + len(result)}}
+    return result
+
+
+def _format_response(data: dict, fmt: ResponseFormat = ResponseFormat.MARKDOWN) -> str:
+    """Format response as markdown or JSON."""
+    if fmt == ResponseFormat.JSON:
+        return json.dumps(data, indent=2, default=str)
+    # Markdown: render key-value pairs
+    if "error" in data:
+        return f"**Error:** {{data[\'error\']}}"
+    lines = []
+    for key, value in data.items():
+        if isinstance(value, list):
+            lines.append(f"**{{key}}:** {{len(value)}} items")
+            for item in value[:10]:
+                if isinstance(item, dict):
+                    summary = ", ".join(f"{{k}}={{v}}" for k, v in list(item.items())[:4])
+                    lines.append(f"  - {{summary}}")
+                else:
+                    lines.append(f"  - {{item}}")
+            if len(value) > 10:
+                lines.append(f"  - ... and {{len(value) - 10}} more")
+        else:
+            lines.append(f"**{{key}}:** {{value}}")
+    return "\\n".join(lines)
+
+
 # --- Add @mcp.tool() functions below, one per endpoint ---
+# Use annotations: @mcp.tool(annotations={{"readOnlyHint": True}}) for GET endpoints
+# Use annotations: @mcp.tool(annotations={{"destructiveHint": True}}) for DELETE endpoints
+# Use annotations: @mcp.tool(annotations={{"idempotentHint": True}}) for PUT endpoints
+# For list endpoints, use _paginated_request() instead of _request()
+# Return _format_response(result) for consistent output
 '''
 
 _SLIM_PYPROJECT_TEMPLATE = '''[build-system]
@@ -425,8 +498,8 @@ For each endpoint below, add an @mcp.tool() async function that:
    — The server WILL NOT work without this step.
 2. Import check: call terminal with command `cd {output_dir} && .venv/bin/python -c "from {service}_mcp.server import mcp; print('Import OK')"`
    — If this fails, fix the code with str_replace and retry.
-3. Server startup test: call terminal with command `cd {output_dir} && timeout 5 .venv/bin/python -m {service}_mcp.server 2>&1 || true`
-   — A timeout exit means success.
+3. Do NOT attempt to run or start the MCP server. MCP servers use stdio transport
+   and will hang indefinitely waiting for input. The import check above is sufficient.
 
 **Do NOT output your final answer or config JSON until steps 1-2 above have been executed.**
 
@@ -439,6 +512,12 @@ For each endpoint below, add an @mcp.tool() async function that:
 - One @mcp.tool() per endpoint listed above
 - Include `if __name__ == "__main__": mcp.run()` at the end of server.py
 - No empty stubs or `pass` — every tool must call _request()
+- Use `@mcp.tool(annotations={{"readOnlyHint": True}})` for GET endpoints
+- Use `@mcp.tool(annotations={{"destructiveHint": True}})` for DELETE endpoints
+- Use `@mcp.tool(annotations={{"idempotentHint": True}})` for PUT endpoints
+- For list endpoints that may return many items, use `_paginated_request()` instead of `_request()`
+- Return `_format_response(result)` for consistent human-readable output
+- All error handling is built into `_request()` via `_handle_api_error()` — do not add try/except around it
 """
 
 _SLIM_INTERNAL = """\
@@ -491,8 +570,8 @@ Use the EXACT field names, route prefixes, and auth patterns from the KB.
    — The server WILL NOT work without this step.
 2. Import check: call terminal with command `cd {output_dir} && .venv/bin/python -c "from {service}_mcp.server import mcp; print('Import OK')"`
    — If this fails, fix the code with str_replace and retry.
-3. Server startup test: call terminal with command `cd {output_dir} && timeout 5 .venv/bin/python -m {service}_mcp.server 2>&1 || true`
-   — A timeout exit means success.
+3. Do NOT attempt to run or start the MCP server. MCP servers use stdio transport
+   and will hang indefinitely waiting for input. The import check above is sufficient.
 
 **Do NOT output your final answer or config JSON until steps 1-2 above have been executed.**
 
@@ -503,6 +582,12 @@ Use the EXACT field names, route prefixes, and auth patterns from the KB.
 - Use the EXACT auth pattern from Step 1
 - Include `if __name__ == "__main__": mcp.run()` at the end of server.py
 - No empty stubs or `pass` — every tool must call _request()
+- Use `@mcp.tool(annotations={{"readOnlyHint": True}})` for GET endpoints
+- Use `@mcp.tool(annotations={{"destructiveHint": True}})` for DELETE endpoints
+- Use `@mcp.tool(annotations={{"idempotentHint": True}})` for PUT endpoints
+- For list endpoints that may return many items, use `_paginated_request()` instead of `_request()`
+- Return `_format_response(result)` for consistent human-readable output
+- All error handling is built into `_request()` via `_handle_api_error()` — do not add try/except around it
 """
 
 
@@ -619,8 +704,8 @@ Use this as a starting template, but REPLACE the auth code with what you found i
    — The server WILL NOT work without this step.
 2. Import check: call terminal with command `cd {output_dir} && .venv/bin/python -c "from {service}_mcp.server import mcp; print('Import OK')"`
    — If this fails, fix the code with str_replace and retry.
-3. Server startup test: call terminal with command `cd {output_dir} && timeout 5 .venv/bin/python -m {service}_mcp.server 2>&1 || true`
-   — A timeout exit means success.
+3. Do NOT attempt to run or start the MCP server. MCP servers use stdio transport
+   and will hang indefinitely waiting for input. The import check above is sufficient.
 
 **Do NOT output your final answer or config JSON until steps 1-2 above have been executed.**
 
@@ -643,6 +728,12 @@ After installing, test the server by making a real HTTP request:
 - If auth doesn't work, try importing the official SDK's signing function instead of reimplementing
 - Include `if __name__ == "__main__": mcp.run()` at the end of server.py
 - No empty stubs or `pass` — every tool must call _request()
+- Use `@mcp.tool(annotations={{"readOnlyHint": True}})` for GET endpoints
+- Use `@mcp.tool(annotations={{"destructiveHint": True}})` for DELETE endpoints
+- Use `@mcp.tool(annotations={{"idempotentHint": True}})` for PUT endpoints
+- For list endpoints that may return many items, use `_paginated_request()` instead of `_request()`
+- Return `_format_response(result)` for consistent human-readable output
+- All error handling is built into `_request()` via `_handle_api_error()` — do not add try/except around it
 """
 
 
