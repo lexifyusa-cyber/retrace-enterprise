@@ -19,6 +19,7 @@ import ResetPassword from './pages/ResetPassword'
 import SetupPage from './pages/SetupPage'
 import UserManagement from './pages/UserManagement'
 import McpBuilder from './pages/McpBuilder'
+import McpExtensions from './pages/McpExtensions'
 import { Loader2 } from 'lucide-react'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -66,6 +67,7 @@ function App() {
         <Route path="settings" element={<Settings />} />
         <Route path="users" element={<UserManagement />} />
         <Route path="mcp-builder" element={<McpBuilder />} />
+        <Route path="extensions" element={<McpExtensions />} />
       </Route>
     </Routes>
   )

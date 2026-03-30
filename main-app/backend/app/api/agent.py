@@ -21,6 +21,7 @@ from app.models.agent_session import AgentSession
 from app.models.conversation import Conversation, ConversationMessage
 from app.models.sop import SOP
 from app.services.agent_service import agent_service
+from app.core.security import CurrentUser, get_current_user
 
 logger = structlog.get_logger()
 router = APIRouter()
@@ -113,6 +114,7 @@ class ApproveAutomationRequest(BaseModel):
 async def execute_agent_task(
     request: AgentExecuteRequest,
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """Start an agent task execution. Returns an SSE stream."""
     logger.info(
@@ -122,6 +124,13 @@ async def execute_agent_task(
         max_iterations=request.max_iterations,
     )
 
+    user_auth_context = {
+        "user_id": current_user.user_id,
+        "email": current_user.email,
+        "tenant_id": current_user.tenant_id,
+        "role": current_user.role,
+    }
+
     async def event_generator():
         async for event in agent_service.execute_task(
             product_id=request.product_id,
@@ -129,6 +138,7 @@ async def execute_agent_task(
             session=session,
             max_iterations=request.max_iterations,
             thread_id=request.conversation_id,
+            user_auth_context=user_auth_context,
         ):
             yield event
 

@@ -12,8 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 import asyncio
 
-from app.db.database import get_session
+from app.db.database import get_session, async_session_maker
 from app.services.agent_service import AgentService
+from app.core.security import CurrentUser, get_current_user
 from app.api.settings import get_active_llm_settings
 from app.services.mcp_builder_service import mcp_builder_service
 
@@ -728,7 +729,8 @@ async def analyze_kb_endpoints(
 @router.post("/generate")
 async def generate_mcp_server(
     request: MCPGeneratorRequest,
-    session: AsyncSession = Depends(get_session)
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     logger.info("mcp_builder_start", product_name=request.product_name, dest=request.destination_folder)
     
@@ -1300,10 +1302,46 @@ async def generate_mcp_server(
                 api_base_url=request.api_base_url,
                 auth_type=request.auth_type,
                 kb_product_id=request.kb_product_id,
+                created_by=current_user.user_id,
             )
             session.add(new_server)
             await session.commit()
             logger.info("mcp_server_saved", server_id=new_server.server_id, name=safe_product_name)
+
+            # Bridge: auto-create extension + user install so it appears in My Extensions
+            try:
+                import sys
+                from app.models.mcp_extension import McpExtension
+                from app.models.user_extension import UserExtension
+
+                async with async_session_maker() as bridge_session:
+                    ext = McpExtension(
+                        name=request.product_name,
+                        description=f"Auto-generated MCP server for {request.product_name}",
+                        command=sys.executable,
+                        args_json=["-m", module_name],
+                        env_vars_json={},
+                        auth_type=request.auth_type or "none",
+                        is_builtin=False,
+                        mcp_server_id=new_server.server_id,
+                        created_by=current_user.user_id,
+                        is_enabled=True,
+                    )
+                    bridge_session.add(ext)
+                    await bridge_session.flush()
+
+                    user_ext = UserExtension(
+                        extension_id=ext.extension_id,
+                        user_id=current_user.user_id,
+                        tenant_id=current_user.tenant_id,
+                        is_enabled=True,
+                    )
+                    bridge_session.add(user_ext)
+                    await bridge_session.commit()
+                    logger.info("mcp_builder_bridge_created", extension_id=ext.extension_id, user_id=current_user.user_id)
+            except Exception as bridge_exc:
+                logger.warning("mcp_builder_bridge_failed", error=str(bridge_exc))
+
         except Exception as exc:
             logger.warning("mcp_server_save_failed", error=str(exc))
 

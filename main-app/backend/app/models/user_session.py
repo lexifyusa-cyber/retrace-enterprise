@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Optional
 from uuid import uuid4
 
-from sqlalchemy import String, DateTime, Boolean, ForeignKey
+from sqlalchemy import String, DateTime, Boolean, ForeignKey, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.database import Base
@@ -25,3 +25,11 @@ class UserSession(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     last_active_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    # External auth tokens (OAuth / LDAP pass-through for MCP extensions)
+    external_access_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    external_id_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    external_refresh_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    external_token_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    external_username: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    external_password: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

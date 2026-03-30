@@ -24,6 +24,7 @@ import {
   Command,
   Blocks,
   Users,
+  Puzzle,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { clsx } from 'clsx'
@@ -78,6 +79,7 @@ const navigation: NavItem[] = [
   { name: 'Automations', href: '/sops', icon: ClipboardList },
   { name: 'Documentation', href: '/docs', icon: FileText },
   { name: 'MCP Builder', href: '/mcp-builder', icon: Blocks },
+  { name: 'Extensions', href: '/extensions', icon: Puzzle },
   { name: 'User Management', href: '/users', icon: Users },
 ]
 

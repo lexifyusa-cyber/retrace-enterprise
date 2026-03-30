@@ -37,12 +37,15 @@ from app.models import email_message as email_message_model  # noqa: F401
 from app.models import channel_connection as channel_connection_model  # noqa: F401
 from app.models import mcp_server as mcp_server_model  # noqa: F401  – registers McpServer table
 from app.models import mcp_tool_config as mcp_tool_config_model  # noqa: F401  – registers McpToolConfig table
+from app.models import mcp_extension as mcp_extension_model  # noqa: F401  – registers McpExtension table
+from app.models import user_extension as user_extension_model  # noqa: F401  – registers UserExtension table
 from app.models import tenant as tenant_model  # noqa: F401
 from app.models import user_session as user_session_model  # noqa: F401
 from app.models import product_access as product_access_model  # noqa: F401
 from app.models import audit_log as audit_log_model  # noqa: F401
 from app.api import auth as auth_api
 from app.api import mcp_builder as mcp_builder_api
+from app.api import mcp_extensions as mcp_extensions_api
 
 logger = structlog.get_logger()
 
@@ -120,7 +123,113 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
             conn.close()
     except Exception as exc:
         print(f"[STARTUP] llm_settings migration skipped: {exc}", flush=True)
-    
+
+    # Migration: add external auth columns to user_sessions if missing
+    try:
+        import sqlite3
+        from pathlib import Path
+        from urllib.parse import unquote
+        db_url = settings.DATABASE_URL
+        if "sqlite" in db_url:
+            parsed = db_url.split("///", 1)[-1].split("?", 1)[0]
+            db_path = unquote(parsed)
+            if not Path(db_path).is_absolute():
+                backend_dir = Path(__file__).parent.parent
+                db_path = str((backend_dir / parsed).resolve())
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA table_info(user_sessions)")
+            cols = [row[1] for row in cursor.fetchall()]
+            for col_name, col_type in [
+                ("external_access_token", "TEXT"),
+                ("external_id_token", "TEXT"),
+                ("external_refresh_token", "TEXT"),
+                ("external_token_expires_at", "DATETIME"),
+                ("external_username", "TEXT"),
+                ("external_password", "TEXT"),
+            ]:
+                if col_name not in cols:
+                    cursor.execute(f"ALTER TABLE user_sessions ADD COLUMN {col_name} {col_type}")
+                    conn.commit()
+                    print(f"[STARTUP] Added {col_name} column to user_sessions", flush=True)
+            conn.close()
+    except Exception as exc:
+        print(f"[STARTUP] user_sessions migration skipped: {exc}", flush=True)
+
+    # Migration: create user_extensions table if missing
+    try:
+        import sqlite3
+        from pathlib import Path
+        from urllib.parse import unquote
+        db_url = settings.DATABASE_URL
+        if "sqlite" in db_url:
+            parsed = db_url.split("///", 1)[-1].split("?", 1)[0]
+            db_path = unquote(parsed)
+            if not Path(db_path).is_absolute():
+                backend_dir = Path(__file__).parent.parent
+                db_path = str((backend_dir / parsed).resolve())
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='user_extensions'")
+            if not cursor.fetchone():
+                cursor.execute("""
+                    CREATE TABLE user_extensions (
+                        user_extension_id VARCHAR(36) PRIMARY KEY,
+                        extension_id VARCHAR(36) NOT NULL,
+                        user_id VARCHAR(36) NOT NULL,
+                        tenant_id VARCHAR(36),
+                        is_enabled INTEGER DEFAULT 1,
+                        env_vars_json TEXT,
+                        auth_config_json TEXT,
+                        installed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        updated_at DATETIME,
+                        UNIQUE(extension_id, user_id)
+                    )
+                """)
+                conn.commit()
+                print("[STARTUP] Created user_extensions table", flush=True)
+            conn.close()
+    except Exception as exc:
+        print(f"[STARTUP] user_extensions migration skipped: {exc}", flush=True)
+
+    # Migration: add is_builtin/mcp_server_id to mcp_extensions, created_by to mcp_servers
+    try:
+        import sqlite3
+        from pathlib import Path
+        from urllib.parse import unquote
+        db_url = settings.DATABASE_URL
+        if "sqlite" in db_url:
+            parsed = db_url.split("///", 1)[-1].split("?", 1)[0]
+            db_path = unquote(parsed)
+            if not Path(db_path).is_absolute():
+                backend_dir = Path(__file__).parent.parent
+                db_path = str((backend_dir / parsed).resolve())
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            # mcp_extensions columns
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='mcp_extensions'")
+            if cursor.fetchone():
+                cursor.execute("PRAGMA table_info(mcp_extensions)")
+                cols = [row[1] for row in cursor.fetchall()]
+                if "is_builtin" not in cols:
+                    cursor.execute("ALTER TABLE mcp_extensions ADD COLUMN is_builtin INTEGER DEFAULT 0")
+                    conn.commit()
+                    print("[STARTUP] Added is_builtin column to mcp_extensions", flush=True)
+                if "mcp_server_id" not in cols:
+                    cursor.execute("ALTER TABLE mcp_extensions ADD COLUMN mcp_server_id VARCHAR(36)")
+                    conn.commit()
+                    print("[STARTUP] Added mcp_server_id column to mcp_extensions", flush=True)
+            # mcp_servers columns
+            cursor.execute("PRAGMA table_info(mcp_servers)")
+            cols = [row[1] for row in cursor.fetchall()]
+            if "created_by" not in cols:
+                cursor.execute("ALTER TABLE mcp_servers ADD COLUMN created_by VARCHAR(36)")
+                conn.commit()
+                print("[STARTUP] Added created_by column to mcp_servers", flush=True)
+            conn.close()
+    except Exception as exc:
+        print(f"[STARTUP] mcp_extensions/mcp_servers migration skipped: {exc}", flush=True)
+
     # Ensure synthetic __local__ pod exists for local filesystem browse
     try:
         from sqlalchemy import select
@@ -197,6 +306,89 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     except Exception as exc:
         print(f"[STARTUP] Default organization creation skipped: {exc}", flush=True)
 
+    # Auto-seed ServiceNow as built-in extension and auto-install for all users
+    try:
+        from sqlalchemy import select
+        from app.db.database import async_session_maker
+        from app.models.mcp_extension import McpExtension
+        from app.models.user_extension import UserExtension
+        from app.models.user import User
+        import json
+
+        async with async_session_maker() as session:
+            # Check if ServiceNow extension exists
+            result = await session.execute(
+                select(McpExtension).where(McpExtension.name == "ServiceNow")
+            )
+            sn_ext = result.scalar_one_or_none()
+
+            if sn_ext is None:
+                import sys
+                python_path = sys.executable
+
+                sn_ext = McpExtension(
+                    name="ServiceNow",
+                    description="ServiceNow IT Service Management — create incidents, query tables, and manage tickets.",
+                    command=python_path,
+                    args_json=["-m", "servicenow_mcp"],
+                    env_vars_json={"SERVICENOW_INSTANCE_URL": "https://dev221851.service-now.com"},
+                    auth_type="auto_passthrough",
+                    auth_config_json={
+                        "token_env_var": "SERVICENOW_OAUTH_TOKEN",
+                        "username_env_var": "SERVICENOW_USERNAME",
+                        "password_env_var": "SERVICENOW_PASSWORD",
+                        "auth_type_env_var": "SERVICENOW_AUTH_TYPE",
+                        "oauth_auth_type_value": "oauth",
+                        "ldap_auth_type_value": "basic",
+                    },
+                    is_builtin=True,
+                    is_enabled=True,
+                )
+                session.add(sn_ext)
+                await session.commit()
+                await session.refresh(sn_ext)
+                print("[STARTUP] Created ServiceNow built-in extension", flush=True)
+            elif not sn_ext.is_builtin:
+                sn_ext.is_builtin = True
+                await session.commit()
+                print("[STARTUP] Marked existing ServiceNow extension as built-in", flush=True)
+
+            # Auto-install all built-in extensions for every active user
+            builtin_result = await session.execute(
+                select(McpExtension).where(McpExtension.is_builtin == True)
+            )
+            builtin_exts = builtin_result.scalars().all()
+
+            if builtin_exts:
+                users_result = await session.execute(
+                    select(User).where(User.is_active == True)
+                )
+                all_users = users_result.scalars().all()
+
+                installed_count = 0
+                for ext in builtin_exts:
+                    for user in all_users:
+                        existing = await session.execute(
+                            select(UserExtension)
+                            .where(UserExtension.extension_id == ext.extension_id)
+                            .where(UserExtension.user_id == user.user_id)
+                        )
+                        if existing.scalar_one_or_none() is None:
+                            user_ext = UserExtension(
+                                extension_id=ext.extension_id,
+                                user_id=user.user_id,
+                                tenant_id=user.tenant_id,
+                                is_enabled=True,
+                            )
+                            session.add(user_ext)
+                            installed_count += 1
+
+                if installed_count > 0:
+                    await session.commit()
+                    print(f"[STARTUP] Auto-installed built-in extensions: {installed_count} new user-extension records", flush=True)
+    except Exception as exc:
+        print(f"[STARTUP] Built-in extension seeding skipped: {exc}", flush=True)
+
     # Start automation scheduler
     from app.services.scheduler_service import automation_scheduler
     await automation_scheduler.start()
@@ -210,6 +402,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     from app.services.email_poller import email_poller
     await email_poller.start()
 
+    # Start MCP extension idle cleanup loop
+    from app.services.mcp_client_service import mcp_client_manager
+    await mcp_client_manager.start_idle_cleanup()
+    logger.info("MCP client idle cleanup started")
+
     yield
     
     # Shutdown
@@ -220,6 +417,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     await automation_scheduler.stop()
     from app.services.email_poller import email_poller as _ep
     await _ep.stop()
+    from app.services.mcp_client_service import mcp_client_manager as _mcp_mgr
+    await _mcp_mgr.stop_idle_cleanup()
+    await _mcp_mgr.stop_all()
     await websocket_manager.shutdown()
 
 
@@ -270,6 +470,7 @@ app.include_router(email_api.router, prefix="/api/v1/email", tags=["Email"])
 app.include_router(channels_api.router, prefix="/api/v1/channels", tags=["Channels"])
 app.include_router(terminal_ws_api.router, tags=["Terminal WebSocket"])
 app.include_router(mcp_builder_api.router, prefix="/api/v1/mcp-builder", tags=["MCP Builder"])
+app.include_router(mcp_extensions_api.router, prefix="/api/v1/mcp-extensions", tags=["MCP Extensions"])
 app.include_router(email_api.product_email_router, prefix="/api/v1/products", tags=["Product Email"])
 
 # RAG product-assistant router

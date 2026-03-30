@@ -34,6 +34,7 @@ class McpServer(Base):
     api_base_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     auth_type: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
     kb_product_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    created_by: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
@@ -52,6 +53,7 @@ class McpServer(Base):
             "api_base_url": self.api_base_url,
             "auth_type": self.auth_type,
             "kb_product_id": self.kb_product_id,
+            "created_by": self.created_by,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }

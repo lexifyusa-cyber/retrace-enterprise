@@ -638,6 +638,140 @@ def _build_mcp_builder_graph(
 
 
 # ---------------------------------------------------------------------------
+# MCP extension tool loading
+# ---------------------------------------------------------------------------
+
+async def _load_mcp_extension_tools(
+    session: AsyncSession,
+    user_auth_context: Optional[dict] = None,
+) -> list:
+    """Load tools from enabled MCP extensions and convert to StructuredTools."""
+    from sqlalchemy import select
+    from app.models.mcp_extension import McpExtension
+    from app.models.user_extension import UserExtension
+    from app.services.mcp_client_service import mcp_client_manager
+    from app.tools.mcp_bridge import build_mcp_tools
+
+    user_id = (user_auth_context or {}).get("user_id")
+    if not user_id:
+        return []
+
+    # Load this user's installed + enabled extensions, joined with catalog
+    result = await session.execute(
+        select(UserExtension, McpExtension)
+        .join(McpExtension, UserExtension.extension_id == McpExtension.extension_id)
+        .where(UserExtension.user_id == user_id)
+        .where(UserExtension.is_enabled == True)
+        .where(McpExtension.is_enabled == True)
+    )
+    rows = result.all()
+    logger.info("mcp_user_extensions_query", user_id=user_id, row_count=len(rows))
+    if not rows:
+        return []
+
+    all_tools = []
+
+    # Fetch user's external auth token if needed (with auto-refresh)
+    user_auth_token = None
+    user_session = None
+    if user_auth_context and user_auth_context.get("user_id"):
+        try:
+            from app.models.user_session import UserSession
+            from datetime import datetime, timedelta
+            sess_result = await session.execute(
+                select(UserSession)
+                .where(UserSession.user_id == user_auth_context["user_id"])
+                .where(UserSession.revoked == False)
+                .order_by(UserSession.last_active_at.desc())
+                .limit(1)
+            )
+            user_session = sess_result.scalar_one_or_none()
+            if user_session and user_session.external_access_token:
+                # Auto-refresh if token expires within 5 minutes
+                needs_refresh = (
+                    user_session.external_token_expires_at
+                    and user_session.external_token_expires_at < datetime.utcnow() + timedelta(minutes=5)
+                    and user_session.external_refresh_token
+                )
+                if needs_refresh:
+                    try:
+                        from app.models.tenant import Tenant
+                        from app.services.auth.azure_ad_auth import refresh_azure_ad_token
+                        tenant_result = await session.execute(
+                            select(Tenant).where(Tenant.tenant_id == user_session.tenant_id)
+                        )
+                        tenant = tenant_result.scalar_one_or_none()
+                        if tenant and tenant.azure_ad_config:
+                            refresh_result = await refresh_azure_ad_token(
+                                user_session.external_refresh_token, tenant.azure_ad_config
+                            )
+                            if "access_token" in refresh_result:
+                                user_session.external_access_token = refresh_result["access_token"]
+                                if refresh_result.get("id_token"):
+                                    user_session.external_id_token = refresh_result["id_token"]
+                                user_session.external_refresh_token = refresh_result.get(
+                                    "refresh_token", user_session.external_refresh_token
+                                )
+                                user_session.external_token_expires_at = (
+                                    datetime.utcnow() + timedelta(seconds=refresh_result.get("expires_in", 3600))
+                                )
+                                await session.commit()
+                                logger.info("azure_ad_token_auto_refreshed", user_id=user_auth_context["user_id"])
+                            else:
+                                logger.warning("azure_ad_token_auto_refresh_failed", error=refresh_result.get("error"))
+                    except Exception as refresh_exc:
+                        logger.warning("azure_ad_token_auto_refresh_error", error=str(refresh_exc))
+                # Prefer ID token for ServiceNow (aud=client_id) over access token (aud=graph)
+                user_auth_token = user_session.external_id_token or user_session.external_access_token
+        except Exception:
+            pass  # No token available — fall through to env-based auth
+
+    # Load LDAP credentials for ldap_passthrough extensions
+    user_auth_credentials = None
+    try:
+        if user_session and user_session.external_username and user_session.external_password:
+            from app.core.encryption import decrypt_value
+            user_auth_credentials = {
+                "username": user_session.external_username,
+                "password": decrypt_value(user_session.external_password),
+            }
+    except Exception:
+        pass  # No LDAP credentials — fall through
+
+    for user_ext, catalog_ext in rows:
+        try:
+            # Merge catalog defaults with user overrides (user wins)
+            merged_env = user_ext.get_merged_env_vars(catalog_ext.get_raw_env_vars())
+            merged_auth = {**(catalog_ext.auth_config_json or {}), **(user_ext.auth_config_json or {})}
+
+            tool_infos = await mcp_client_manager.start_extension(
+                extension_id=catalog_ext.extension_id,
+                extension_name=catalog_ext.name,
+                command=catalog_ext.command,
+                args=catalog_ext.args_json,
+                env_vars=merged_env,
+                auth_type=catalog_ext.auth_type,
+                auth_config=merged_auth,
+                user_auth_token=user_auth_token,
+                user_auth_credentials=user_auth_credentials,
+                user_id=user_id,
+                tenant_id=user_auth_context.get("tenant_id", "") if user_auth_context else "",
+            )
+            ext_tools = build_mcp_tools(
+                mcp_manager=mcp_client_manager,
+                extension_id=catalog_ext.extension_id,
+                extension_name=catalog_ext.name,
+                tool_infos=tool_infos,
+                user_id=user_id,
+            )
+            all_tools.extend(ext_tools)
+        except Exception as e:
+            logger.warning("mcp_extension_load_failed", extension=catalog_ext.name, error=str(e))
+
+    return all_tools
+
+
+# ---------------------------------------------------------------------------
 # Agent service (public API)
 # ---------------------------------------------------------------------------
 
@@ -654,6 +788,7 @@ class AgentService:
         user_platform: Optional[str] = None,
         use_reasoning: bool = False,
         mcp_builder_config: Optional[dict] = None,
+        user_auth_context: Optional[dict] = None,
     ) -> AsyncIterator[str]:
         """Execute an agent task and yield SSE events.
 
@@ -746,27 +881,18 @@ class AgentService:
                 disabled = set(disabled) | {"knowledge_base"}
             tools = [t for t in tools if t.name not in disabled]
 
-            # ── 3b. Load MCP tools from configured servers ────────────
-            mcp_manager = None
-            if not mcp_builder_config:  # skip for MCP builder itself
+            # ── 3b. Load MCP extension tools (per-user, with auth pass-through) ──
+            if not mcp_builder_config:
                 try:
-                    from app.services.mcp_client import get_mcp_tools_async
-                    from app.models.mcp_tool_config import McpToolConfig
                     from app.db.database import async_session_maker
                     async with async_session_maker() as mcp_session:
-                        result = await mcp_session.execute(
-                            select(McpToolConfig).where(McpToolConfig.enabled == True)
-                        )
-                        mcp_configs = [c.to_dict() for c in result.scalars().all()]
-
-                    if mcp_configs:
-                        mcp_tools, mcp_manager = await get_mcp_tools_async(mcp_configs)
-                        # Filter out disabled MCP tools
-                        mcp_tools = [t for t in mcp_tools if t.name not in disabled]
-                        tools.extend(mcp_tools)
-                        logger.info("mcp_tools_loaded", count=len(mcp_tools))
+                        mcp_ext_tools = await _load_mcp_extension_tools(mcp_session, user_auth_context)
+                    if mcp_ext_tools:
+                        mcp_ext_tools = [t for t in mcp_ext_tools if t.name not in disabled]
+                        tools.extend(mcp_ext_tools)
+                        logger.info("mcp_extension_tools_loaded", count=len(mcp_ext_tools))
                 except Exception as e:
-                    logger.warning("mcp_tools_load_failed", error=str(e))
+                    logger.warning("mcp_extension_tools_failed", error=str(e))
 
             tool_desc = get_tool_descriptions(tools)
             tool_names = [t.name for t in tools]
@@ -965,9 +1091,6 @@ class AgentService:
                 logger.warning("agent_session_save_failed")
 
         except Exception as exc:
-            # Cleanup MCP processes on error
-            if 'mcp_manager' in locals() and mcp_manager:
-                await mcp_manager.cleanup()
             logger.error("agent_execution_failed", error=str(exc), exc_info=True)
             yield _sse("agent_error", {"detail": str(exc)})
 
