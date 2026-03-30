@@ -302,7 +302,7 @@ def get_tool_descriptions(tools: list[StructuredTool]) -> str:
     for t in tools:
         lines.append(f"**{t.name}**")
         lines.append(f"  {t.description}")
-        if t.args_schema:
+        if t.args_schema and hasattr(t.args_schema, 'model_fields'):
             fields = t.args_schema.model_fields
             params = ", ".join(
                 f"{k}: {v.annotation.__name__ if hasattr(v.annotation, '__name__') else str(v.annotation)}"

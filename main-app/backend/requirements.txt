@@ -89,3 +89,7 @@ ruff>=0.2.1
 mypy>=1.8.0
 apscheduler>=3.11.0
 pytz>=2024.1
+
+# MCP
+mcp>=1.0.0
+langchain-mcp-adapters>=0.1.0

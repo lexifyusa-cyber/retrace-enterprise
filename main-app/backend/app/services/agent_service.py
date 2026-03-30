@@ -274,11 +274,33 @@ def _build_codeact_graph(
 
     # Map tool names → callable functions for the sandbox
     tools_context: dict[str, Any] = {}
+
+    def _make_sync_mcp_wrapper(t):
+        """Wrap an async MCP tool so it can be called synchronously from exec()."""
+        def sync_wrapper(**kwargs):
+            import asyncio as _aio
+            import concurrent.futures
+            try:
+                loop = _aio.get_running_loop()
+            except RuntimeError:
+                loop = None
+            if loop and loop.is_running():
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    return pool.submit(_aio.run, t.ainvoke(kwargs)).result(timeout=30)
+            else:
+                return _aio.run(t.ainvoke(kwargs))
+        return sync_wrapper
+
     for tool in tools:
-        if isinstance(tool, StructuredTool):
+        if isinstance(tool, StructuredTool) and tool.func is not None:
             tools_context[tool.name] = tool.func
+        elif hasattr(tool, 'ainvoke'):
+            # MCP adapter tools are async-only — wrap for sync sandbox
+            tools_context[getattr(tool, "name", str(tool))] = _make_sync_mcp_wrapper(tool)
+        elif hasattr(tool, 'func') and tool.func is not None:
+            tools_context[getattr(tool, "name", str(tool))] = tool.func
         else:
-            tools_context[getattr(tool, "name", str(tool))] = getattr(tool, "func", tool)
+            tools_context[getattr(tool, "name", str(tool))] = getattr(tool, "run", tool)
 
     # ── call_model node ──────────────────────────────────────────────
     def call_model(state: AgentState):
@@ -725,10 +747,10 @@ class AgentService:
             tools = [t for t in tools if t.name not in disabled]
 
             # ── 3b. Load MCP tools from configured servers ────────────
-            mcp_processes = {}
+            mcp_manager = None
             if not mcp_builder_config:  # skip for MCP builder itself
                 try:
-                    from app.services.mcp_client import get_mcp_tools_for_agent, cleanup_mcp_processes
+                    from app.services.mcp_client import get_mcp_tools_async
                     from app.models.mcp_tool_config import McpToolConfig
                     from app.db.database import async_session_maker
                     async with async_session_maker() as mcp_session:
@@ -738,15 +760,11 @@ class AgentService:
                         mcp_configs = [c.to_dict() for c in result.scalars().all()]
 
                     if mcp_configs:
-                        import asyncio as _aio
-                        loop = _aio.get_event_loop()
-                        mcp_tools, mcp_processes = await loop.run_in_executor(
-                            None, get_mcp_tools_for_agent, mcp_configs
-                        )
+                        mcp_tools, mcp_manager = await get_mcp_tools_async(mcp_configs)
                         # Filter out disabled MCP tools
                         mcp_tools = [t for t in mcp_tools if t.name not in disabled]
                         tools.extend(mcp_tools)
-                        logger.info("mcp_tools_loaded", count=len(mcp_tools), servers=len(mcp_processes))
+                        logger.info("mcp_tools_loaded", count=len(mcp_tools))
                 except Exception as e:
                     logger.warning("mcp_tools_load_failed", error=str(e))
 
@@ -911,10 +929,9 @@ class AgentService:
             timings["execution_ms"] = int((time.time() - t_exec) * 1000)
             timings["total_ms"] = int((time.time() - t0) * 1000)
 
-            # ── 8. Cleanup MCP processes ──────────────────────────────
-            if 'mcp_processes' in locals() and mcp_processes:
-                from app.services.mcp_client import cleanup_mcp_processes
-                cleanup_mcp_processes(mcp_processes)
+            # ── 8. Cleanup MCP connections ─────────────────────────────
+            if 'mcp_manager' in locals() and mcp_manager:
+                await mcp_manager.cleanup()
 
             # ── 9. Done ───────────────────────────────────────────────
             yield _sse("agent_done", {
@@ -949,9 +966,8 @@ class AgentService:
 
         except Exception as exc:
             # Cleanup MCP processes on error
-            if 'mcp_processes' in locals() and mcp_processes:
-                from app.services.mcp_client import cleanup_mcp_processes
-                cleanup_mcp_processes(mcp_processes)
+            if 'mcp_manager' in locals() and mcp_manager:
+                await mcp_manager.cleanup()
             logger.error("agent_execution_failed", error=str(exc), exc_info=True)
             yield _sse("agent_error", {"detail": str(exc)})
 
