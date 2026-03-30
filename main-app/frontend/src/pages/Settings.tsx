@@ -101,6 +101,13 @@ export default function Settings() {
   const [ldapBindDn, setLdapBindDn] = useState('')
   const [ldapBindPassword, setLdapBindPassword] = useState('')
   const [ldapUserLookup, setLdapUserLookup] = useState<'uid' | 'sAMAccountName'>('uid')
+  const [azureClientId, setAzureClientId] = useState('')
+  const [azureClientSecret, setAzureClientSecret] = useState('')
+  const [azureTenantId, setAzureTenantId] = useState('')
+  const [azureRedirectUri, setAzureRedirectUri] = useState(`${window.location.origin}/auth/callback/azure`)
+  const [azureAdditionalScopes, setAzureAdditionalScopes] = useState('')
+  const [azureTestPending, setAzureTestPending] = useState(false)
+  const [ldapTestPending, setLdapTestPending] = useState(false)
   const [authSavePending, setAuthSavePending] = useState(false)
   const [selectedTenantId, setSelectedTenantId] = useState<string | null>(null)
   
@@ -191,6 +198,14 @@ export default function Settings() {
         setLdapBindPassword(lc.bind_password === '********' ? '' : (lc.bind_password || ''))
         const f = lc.user_search_filter || '(uid={username})'
         setLdapUserLookup(f.includes('sAMAccountName') ? 'sAMAccountName' : 'uid')
+      }
+      const ac = tenantAuth.azure_ad_config
+      if (ac) {
+        setAzureClientId(ac.client_id || '')
+        setAzureClientSecret(ac.client_secret === '********' ? '' : (ac.client_secret || ''))
+        setAzureTenantId(ac.tenant_id || '')
+        setAzureRedirectUri(ac.redirect_uri || `${window.location.origin}/auth/callback/azure`)
+        setAzureAdditionalScopes(ac.additional_scopes || '')
       }
     }
   }, [tenantAuth, isGlobalAdmin])
@@ -1264,6 +1279,69 @@ export default function Settings() {
                   </div>
                 </div>
               )}
+              {authMethod === 'azure_ad' && (
+                <div className="space-y-3 p-3 rounded-lg bg-rt-surface/30 border border-rt-border">
+                  <p className="text-xs font-medium text-rt-text-muted">Azure AD (Microsoft Entra ID)</p>
+                  <p className="text-[10px] text-rt-text-muted">
+                    Register an app in <span className="font-medium">Azure Portal &gt; App registrations</span>. Copy the Application (Client) ID, Directory (Tenant) ID, and create a Client Secret under Certificates &amp; secrets.
+                  </p>
+                  <div className="space-y-3">
+                    <div>
+                      <label className="label text-[10px]">Application (Client) ID</label>
+                      <input type="text" className="input text-sm w-full" placeholder="e.g. 00000000-0000-0000-0000-000000000000" value={azureClientId} onChange={(e) => setAzureClientId(e.target.value)} />
+                    </div>
+                    <div>
+                      <label className="label text-[10px]">Client Secret</label>
+                      <input type="password" className="input text-sm w-full" placeholder={tenantAuth?.azure_ad_config?.client_secret ? '••••••••' : 'Enter client secret'} value={azureClientSecret} onChange={(e) => setAzureClientSecret(e.target.value)} />
+                    </div>
+                    <div>
+                      <label className="label text-[10px]">Directory (Tenant) ID</label>
+                      <input type="text" className="input text-sm w-full" placeholder="e.g. 00000000-0000-0000-0000-000000000000" value={azureTenantId} onChange={(e) => setAzureTenantId(e.target.value)} />
+                      <p className="text-[10px] text-rt-text-muted mt-0.5">Use "common" for multi-tenant apps.</p>
+                    </div>
+                    <div>
+                      <label className="label text-[10px]">Redirect URI</label>
+                      <input type="text" className="input text-sm w-full" placeholder={`${window.location.origin}/auth/callback/azure`} value={azureRedirectUri} onChange={(e) => setAzureRedirectUri(e.target.value)} />
+                      <p className="text-[10px] text-rt-text-muted mt-0.5">Must match the redirect URI configured in your Azure app registration.</p>
+                    </div>
+                    <div>
+                      <label className="label text-[10px]">Additional OAuth Scopes</label>
+                      <input type="text" className="input text-sm w-full" placeholder="e.g. api://client-id/servicenow.access" value={azureAdditionalScopes} onChange={(e) => setAzureAdditionalScopes(e.target.value)} />
+                      <p className="text-[10px] text-rt-text-muted mt-0.5">Space-separated scopes for external services (ServiceNow, etc.). Added to the login request.</p>
+                    </div>
+                    <button
+                      disabled={azureTestPending || !azureClientId || !azureTenantId}
+                      onClick={async () => {
+                        setAzureTestPending(true)
+                        try {
+                          const payload: any = {
+                            azure_ad_config: {
+                              client_id: azureClientId,
+                              client_secret: azureClientSecret || '********',
+                              tenant_id: azureTenantId,
+                              redirect_uri: azureRedirectUri,
+                            },
+                          }
+                          if (isGlobalAdmin && selectedTenantId) payload.tenant_id = selectedTenantId
+                          const r = await authApi.post('/tenant/auth/test-azure-ad', payload)
+                          if (r.data?.success) {
+                            toast.success(r.data.message || 'Azure AD connection successful')
+                          } else {
+                            toast.error(r.data?.message || 'Azure AD test failed')
+                          }
+                        } catch (e: any) {
+                          toast.error(e.response?.data?.detail || 'Azure AD connection test failed')
+                        } finally {
+                          setAzureTestPending(false)
+                        }
+                      }}
+                      className="btn-secondary text-xs"
+                    >
+                      {azureTestPending ? 'Testing...' : 'Test Connection'}
+                    </button>
+                  </div>
+                </div>
+              )}
               <div>
                 <label className="label">Max Products per User Admin</label>
                 <input
@@ -1300,6 +1378,15 @@ export default function Settings() {
                         user_search_filter: ldapUserLookup === 'sAMAccountName' ? '(sAMAccountName={username})' : '(uid={username})',
                         email_attribute: 'mail',
                         display_name_attribute: 'cn',
+                      }
+                    }
+                    if (authMethod === 'azure_ad') {
+                      payload.azure_ad_config = {
+                        client_id: azureClientId,
+                        client_secret: azureClientSecret || (tenantAuth?.azure_ad_config?.client_secret === '********' ? '********' : ''),
+                        tenant_id: azureTenantId,
+                        redirect_uri: azureRedirectUri,
+                        additional_scopes: azureAdditionalScopes || '',
                       }
                     }
                     await authApi.patch('/tenant/auth', payload)
