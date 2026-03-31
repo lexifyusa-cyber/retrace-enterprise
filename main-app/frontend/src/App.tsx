@@ -21,8 +21,9 @@ import UserManagement from './pages/UserManagement'
 import McpBuilder from './pages/McpBuilder'
 import McpExtensions from './pages/McpExtensions'
 import { Loader2 } from 'lucide-react'
+import { hasRole } from './utils/roles'
 
-function ProtectedRoute({ children }: { children: React.ReactNode }) {
+function ProtectedRoute({ children, minRole }: { children: React.ReactNode; minRole?: string }) {
   const { isAuthenticated, isLoading, user } = useAuth()
   if (isLoading) {
     return (
@@ -33,6 +34,7 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   }
   if (!isAuthenticated) return <Navigate to="/login" replace />
   if (user?.force_password_change) return <Navigate to="/setup" replace />
+  if (minRole && !hasRole(user?.role, minRole)) return <Navigate to="/dashboard" replace />
   return <>{children}</>
 }
 
@@ -64,10 +66,10 @@ function App() {
         <Route path="agent" element={<Agent />} />
         <Route path="sops" element={<SOPs />} />
         <Route path="docs" element={<Documentation />} />
-        <Route path="settings" element={<Settings />} />
-        <Route path="users" element={<UserManagement />} />
-        <Route path="mcp-builder" element={<McpBuilder />} />
-        <Route path="extensions" element={<McpExtensions />} />
+        <Route path="settings" element={<ProtectedRoute minRole="admin"><Settings /></ProtectedRoute>} />
+        <Route path="users" element={<ProtectedRoute minRole="user_admin"><UserManagement /></ProtectedRoute>} />
+        <Route path="mcp-builder" element={<ProtectedRoute minRole="user_admin"><McpBuilder /></ProtectedRoute>} />
+        <Route path="extensions" element={<ProtectedRoute minRole="user_admin"><McpExtensions /></ProtectedRoute>} />
       </Route>
     </Routes>
   )

@@ -28,6 +28,9 @@ class Tenant(Base):
     azure_ad_config: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     google_config: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
+    # JIT provisioning — when False, SSO/LDAP users must be pre-created in Retrace
+    auto_provision_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+
     # Policies
     mfa_required: Mapped[bool] = mapped_column(Boolean, default=False)
     session_timeout_minutes: Mapped[int] = mapped_column(Integer, default=480)
@@ -48,6 +51,7 @@ class Tenant(Base):
             "status": self.status,
             "auth_method": self.auth_method,
             "ldap_require_ssl": getattr(self, "ldap_require_ssl", False),
+            "auto_provision_enabled": getattr(self, "auto_provision_enabled", False),
             "mfa_required": self.mfa_required,
             "session_timeout_minutes": self.session_timeout_minutes,
             "max_products_per_user_admin": self.max_products_per_user_admin,

@@ -627,6 +627,9 @@ async def login(
                 user = existing_user
                 resolve_reason = "resolved_by_ldap_jit_existing"
             else:
+                if not getattr(tenant, 'auto_provision_enabled', False):
+                    logger.info("ldap_jit_blocked_no_auto_provision", email=email, tenant_id=tenant.tenant_id)
+                    raise HTTPException(status.HTTP_403_FORBIDDEN, "Account not found in Retrace. Contact your administrator for access.")
                 user = User(
                     tenant_id=tenant.tenant_id,
                     email=email,
@@ -2137,6 +2140,7 @@ async def get_tenant_auth(
         "ldap_require_ssl": getattr(tenant, "ldap_require_ssl", False),
         "max_products_per_user_admin": tenant.max_products_per_user_admin,
         "max_managed_users_per_user_admin": getattr(tenant, "max_managed_users_per_user_admin", 50),
+        "auto_provision_enabled": getattr(tenant, "auto_provision_enabled", False),
     }
     if tenant.ldap_config:
         cfg = dict(tenant.ldap_config)
@@ -2210,6 +2214,8 @@ async def update_tenant_auth(
         tenant.max_products_per_user_admin = int(data["max_products_per_user_admin"])
     if "max_managed_users_per_user_admin" in data:
         tenant.max_managed_users_per_user_admin = int(data["max_managed_users_per_user_admin"])
+    if "auto_provision_enabled" in data:
+        tenant.auto_provision_enabled = bool(data["auto_provision_enabled"])
     if "ip_allowlist" in data:
         tenant.ip_allowlist = data["ip_allowlist"] if isinstance(data["ip_allowlist"], list) else None
     if "ip_denylist" in data:
@@ -2517,6 +2523,9 @@ async def login_ldap(
             user_result = await session.execute(select(User).where(User.email == email))
             user = user_result.scalar_one_or_none()
             if not user:
+                if not getattr(tenant, 'auto_provision_enabled', False):
+                    logger.info("ldap_jit_blocked_no_auto_provision", email=email, tenant_id=tenant.tenant_id)
+                    raise HTTPException(status.HTTP_403_FORBIDDEN, "Account not found in Retrace. Contact your administrator for access.")
                 user = User(
                     tenant_id=tenant.tenant_id,
                     email=email,
@@ -2592,6 +2601,9 @@ async def login_azure_ad(
     user_result = await session.execute(select(User).where(User.email == azure_user.email))
     user = user_result.scalar_one_or_none()
     if not user:
+        if not getattr(tenant, 'auto_provision_enabled', False):
+            logger.info("azure_ad_jit_blocked_no_auto_provision", email=azure_user.email, tenant_id=tenant.tenant_id)
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Account not found in Retrace. Contact your administrator for access.")
         user = User(
             tenant_id=tenant.tenant_id,
             email=azure_user.email,
@@ -2668,6 +2680,9 @@ async def login_google(
     user_result = await session.execute(select(User).where(User.email == google_user.email))
     user = user_result.scalar_one_or_none()
     if not user:
+        if not getattr(tenant, 'auto_provision_enabled', False):
+            logger.info("google_jit_blocked_no_auto_provision", email=google_user.email, tenant_id=tenant.tenant_id)
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Account not found in Retrace. Contact your administrator for access.")
         user = User(
             tenant_id=tenant.tenant_id,
             email=google_user.email,
@@ -2764,6 +2779,10 @@ async def remote_login(
             )
             session.add(tenant)
             await session.flush()
+
+        if not getattr(tenant, 'auto_provision_enabled', False):
+            logger.info("supabase_jit_blocked_no_auto_provision", email=email)
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Account not found in Retrace. Contact your administrator for access.")
 
         from uuid import uuid4
         user = User(

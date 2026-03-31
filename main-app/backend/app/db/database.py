@@ -101,6 +101,7 @@ async def _run_migrations() -> None:
         ("tenants", "ip_denylist", "ALTER TABLE tenants ADD COLUMN ip_denylist JSON DEFAULT NULL"),
         ("users", "max_managed_users", "ALTER TABLE users ADD COLUMN max_managed_users INTEGER DEFAULT NULL"),
         ("tenants", "max_managed_users_per_user_admin", "ALTER TABLE tenants ADD COLUMN max_managed_users_per_user_admin INTEGER DEFAULT 50"),
+        ("tenants", "auto_provision_enabled", "ALTER TABLE tenants ADD COLUMN auto_provision_enabled BOOLEAN DEFAULT 0"),
     ]
     async with engine.begin() as conn:
         for table, column, ddl in migrations:

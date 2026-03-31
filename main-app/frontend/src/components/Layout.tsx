@@ -30,6 +30,7 @@ import type { LucideIcon } from 'lucide-react'
 import { clsx } from 'clsx'
 import { useAuth } from '@/context/AuthContext'
 import { agentApi, productApi, AGENT_GENERAL_SCOPE } from '@/utils/api'
+import { hasRole } from '@/utils/roles'
 import ProfilePanel from './ProfilePanel'
 
 function UserMenu({ onOpenProfile }: { onOpenProfile?: () => void }) {
@@ -70,17 +71,19 @@ interface NavItem {
   name: string
   href: string
   icon: LucideIcon
+  /** Minimum role required to see this item. Omit = visible to all. */
+  minRole?: string
 }
 
 const navigation: NavItem[] = [
-  { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
-  { name: 'Products', href: '/products', icon: FolderTree },
-  { name: 'Agent', href: '/agent', icon: Bot },
-  { name: 'Automations', href: '/sops', icon: ClipboardList },
-  { name: 'Documentation', href: '/docs', icon: FileText },
-  { name: 'MCP Builder', href: '/mcp-builder', icon: Blocks },
-  { name: 'Extensions', href: '/extensions', icon: Puzzle },
-  { name: 'User Management', href: '/users', icon: Users },
+  { name: 'Dashboard',       href: '/dashboard',   icon: LayoutDashboard },
+  { name: 'Products',        href: '/products',    icon: FolderTree },
+  { name: 'Agent',           href: '/agent',       icon: Bot },
+  { name: 'Automations',     href: '/sops',        icon: ClipboardList },
+  { name: 'Documentation',   href: '/docs',        icon: FileText },
+  { name: 'MCP Builder',     href: '/mcp-builder', icon: Blocks,  minRole: 'user_admin' },
+  { name: 'Extensions',      href: '/extensions',  icon: Puzzle,  minRole: 'user_admin' },
+  { name: 'User Management', href: '/users',       icon: Users,   minRole: 'user_admin' },
 ]
 
 // ---------------------------------------------------------------------------
@@ -502,6 +505,12 @@ function timeAgo(dateStr: string): string {
 export default function Layout() {
   const [profileOpen, setProfileOpen] = useState(false)
   const [notifOpen, setNotifOpen] = useState(false)
+  const { user } = useAuth()
+  const visibleNav = navigation.filter(item =>
+    !item.minRole || hasRole(user?.role, item.minRole)
+  )
+  const canAccessSettings = hasRole(user?.role, 'admin')
+
   return (
     <div className="flex h-screen bg-rt-bg">
       {/* Sidebar — warm editorial style */}
@@ -513,7 +522,7 @@ export default function Layout() {
 
         {/* Navigation */}
         <nav className="flex-1 space-y-1">
-          {navigation.map((item) => (
+          {visibleNav.map((item) => (
             <NavLink
               key={item.name}
               to={item.href}
@@ -532,22 +541,24 @@ export default function Layout() {
           ))}
         </nav>
 
-        {/* Bottom: Settings + User */}
+        {/* Bottom: Settings (admin only) + User */}
         <div className="space-y-1">
-          <NavLink
-            to="/settings"
-            className={({ isActive }) =>
-              clsx(
-                'flex items-center gap-4 px-4 py-3 text-sm font-medium transition-all duration-200',
-                isActive
-                  ? 'text-rt-primary font-bold bg-rt-primary-fixed/20 border-r-[3px] border-rt-primary-container'
-                  : 'text-rt-text-muted hover:bg-rt-primary-fixed/10 hover:text-rt-text'
-              )
-            }
-          >
-            <Settings className="w-5 h-5" />
-            <span>Settings</span>
-          </NavLink>
+          {canAccessSettings && (
+            <NavLink
+              to="/settings"
+              className={({ isActive }) =>
+                clsx(
+                  'flex items-center gap-4 px-4 py-3 text-sm font-medium transition-all duration-200',
+                  isActive
+                    ? 'text-rt-primary font-bold bg-rt-primary-fixed/20 border-r-[3px] border-rt-primary-container'
+                    : 'text-rt-text-muted hover:bg-rt-primary-fixed/10 hover:text-rt-text'
+                )
+              }
+            >
+              <Settings className="w-5 h-5" />
+              <span>Settings</span>
+            </NavLink>
+          )}
           <UserMenu onOpenProfile={() => setProfileOpen(true)} />
         </div>
       </aside>

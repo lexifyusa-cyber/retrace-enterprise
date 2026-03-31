@@ -9,6 +9,7 @@ import {
 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { useAuth } from '@/context/AuthContext'
+import { isAdmin as checkIsAdmin, assignableRoles } from '@/utils/roles'
 import axios from 'axios'
 import UserDetailDrawer from '@/components/UserDetailDrawer'
 
@@ -106,8 +107,11 @@ export default function UserManagement() {
   const [inviteTimezone, setInviteTimezone] = useState('')
   const [inviteEmployeeId, setInviteEmployeeId] = useState('')
 
-  const isAdmin = currentUser?.role === 'zero_admin' || currentUser?.role === 'admin' || currentUser?.role === 'super_admin' || currentUser?.role === 'tenant_admin'
-  const isZeroAdmin = currentUser?.role === 'zero_admin'
+  const isAdmin = checkIsAdmin(currentUser?.role)
+  const roleOptions = useMemo(
+    () => ROLE_OPTIONS.filter(r => assignableRoles(currentUser?.role).includes(r.value)),
+    [currentUser?.role]
+  )
 
   const { data: usersResponse, isLoading, refetch, isFetching, dataUpdatedAt } = useQuery({
     queryKey: ['auth', 'users', search, roleFilter, statusFilter, authFilter, sortBy, sortDir, page, perPage],
@@ -694,7 +698,7 @@ export default function UserManagement() {
                         Role <span className="text-red-400">*</span>
                       </label>
                       <div className="grid grid-cols-3 gap-2">
-                        {ROLE_OPTIONS.filter(r => isAdmin || r.value !== 'admin').map((r) => (
+                        {roleOptions.map((r) => (
                           <label
                             key={r.value}
                             className={`flex flex-col items-center gap-1.5 p-3 rounded-lg border cursor-pointer transition-all text-center ${

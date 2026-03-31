@@ -8,6 +8,7 @@ import {
 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import axios from 'axios'
+import { isAdmin as checkIsAdmin } from '@/utils/roles'
 
 const api = axios.create({ baseURL: '/api/v1/auth' })
 api.interceptors.request.use((config) => {
@@ -86,7 +87,7 @@ export default function UserDetailDrawer({ userId, onClose, currentUser }: Props
   const { data: tenantAuth } = useQuery({
     queryKey: ['auth', 'tenant'],
     queryFn: async () => (await api.get('/tenant/auth')).data,
-    enabled: !!userId && (currentUser?.role === 'zero_admin' || currentUser?.role === 'admin'),
+    enabled: !!userId && checkIsAdmin(currentUser?.role),
   })
 
   const resetPasswordMutation = useMutation({
@@ -150,7 +151,7 @@ export default function UserDetailDrawer({ userId, onClose, currentUser }: Props
   const user = userData
   const isOpen = !!userId
 
-  const isAdminRole = currentUser?.role === 'zero_admin' || currentUser?.role === 'admin'
+  const isAdminRole = checkIsAdmin(currentUser?.role)
   const isSelf = userId === currentUser?.user_id
   const canManage = isAdminRole && !isSelf
 

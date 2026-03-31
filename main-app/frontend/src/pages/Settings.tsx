@@ -108,6 +108,7 @@ export default function Settings() {
   const [azureAdditionalScopes, setAzureAdditionalScopes] = useState('')
   const [azureTestPending, setAzureTestPending] = useState(false)
   const [ldapTestPending, setLdapTestPending] = useState(false)
+  const [autoProvisionEnabled, setAutoProvisionEnabled] = useState(false)
   const [authSavePending, setAuthSavePending] = useState(false)
   const [selectedTenantId, setSelectedTenantId] = useState<string | null>(null)
   
@@ -188,6 +189,7 @@ export default function Settings() {
       setAuthMethod(tenantAuth.auth_method || 'email')
       setTenantDomain(tenantAuth.domain || '')
       setMaxProductsPerUserAdmin(tenantAuth.max_products_per_user_admin ?? 10)
+      setAutoProvisionEnabled(!!tenantAuth.auto_provision_enabled)
       const lc = tenantAuth.ldap_config
       if (lc) {
         setLdapHost(lc.host || '')
@@ -1391,6 +1393,27 @@ export default function Settings() {
                   Limits how many products a User Admin can create. Admins are unlimited.
                 </p>
               </div>
+              {authMethod !== 'email' && (
+              <div className="flex items-start gap-3 mt-2">
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={autoProvisionEnabled}
+                  onClick={() => setAutoProvisionEnabled(!autoProvisionEnabled)}
+                  className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${autoProvisionEnabled ? 'bg-rt-primary' : 'bg-rt-border'}`}
+                >
+                  <span className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${autoProvisionEnabled ? 'translate-x-4' : 'translate-x-0'}`} />
+                </button>
+                <div>
+                  <label className="label cursor-pointer" onClick={() => setAutoProvisionEnabled(!autoProvisionEnabled)}>
+                    Auto-provision new users on SSO/LDAP login
+                  </label>
+                  <p className="text-[10px] text-rt-text-muted mt-0.5">
+                    When enabled, users who authenticate via {authMethod === 'azure_ad' ? 'Azure AD' : authMethod === 'google' ? 'Google' : 'LDAP'} will be automatically created in Retrace with the "User" role. When disabled, users must be pre-created by an admin before they can log in.
+                  </p>
+                </div>
+              </div>
+              )}
               <button
                 disabled={authSavePending || (isGlobalAdmin && !selectedTenantId)}
                 onClick={async () => {
@@ -1399,6 +1422,7 @@ export default function Settings() {
                     const payload: any = {
                       auth_method: authMethod,
                       max_products_per_user_admin: maxProductsPerUserAdmin,
+                      auto_provision_enabled: autoProvisionEnabled,
                     }
                     if (authMethod === 'ldap') payload.domain = tenantDomain || undefined
                     if (isGlobalAdmin && selectedTenantId) payload.tenant_id = selectedTenantId
