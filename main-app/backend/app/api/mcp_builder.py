@@ -1314,12 +1314,17 @@ async def generate_mcp_server(
                 from app.models.mcp_extension import McpExtension
                 from app.models.user_extension import UserExtension
 
+                # Use the MCP server's own venv Python (created by uv sync)
+                # so the subprocess can find the installed module
+                venv_python = os.path.join(dest, ".venv", "bin", "python")
+                mcp_command = venv_python if os.path.exists(venv_python) else sys.executable
+
                 async with async_session_maker() as bridge_session:
                     ext = McpExtension(
                         name=request.product_name,
                         description=f"Auto-generated MCP server for {request.product_name}",
-                        command=sys.executable,
-                        args_json=["-m", module_name],
+                        command=mcp_command,
+                        args_json=["-m", f"{module_name}.server"],
                         env_vars_json={},
                         auth_type=request.auth_type or "none",
                         is_builtin=False,
