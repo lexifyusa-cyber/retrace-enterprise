@@ -53,6 +53,11 @@ export default function Agent() {
   // Terminal panel state
   const [showTerminal, setShowTerminal] = useState(false)
 
+  // Pre-start MCP extensions in background on page load (reduces first-message latency)
+  useEffect(() => {
+    agentApi.warmupMcp()
+  }, [])
+
   const { data: products = [] } = useQuery({
     queryKey: ['products'],
     queryFn: () => productApi.list(),
@@ -273,7 +278,7 @@ export default function Agent() {
     try {
       const response = await fetch('/api/v1/agent/execute', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('rt_access_token') || ''}` },
         body: JSON.stringify({
           product_id: selectedProductId || null,
           task: currentTask,
@@ -384,7 +389,7 @@ export default function Agent() {
     try {
       const response = await fetch('/api/v1/agent/create-sop', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('rt_access_token') || ''}` },
         body: JSON.stringify({ product_id: selectedProductId || null, goal, messages: saveable, conversation_id: activeConversationId || undefined }),
       })
       if (!response.ok) {
@@ -452,7 +457,7 @@ export default function Agent() {
   const handleEditSOP = useCallback(async (sopId: string, editInstructions: string): Promise<{ sop_markdown: string; title: string }> => {
     const response = await fetch('/api/v1/agent/edit-sop', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('rt_access_token') || ''}` },
       body: JSON.stringify({ sop_id: sopId, edit_instructions: editInstructions }),
     })
     if (!response.ok) throw new Error(await response.text())
@@ -515,7 +520,7 @@ export default function Agent() {
     try {
       const response = await fetch('/api/v1/agent/create-doc', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('rt_access_token') || ''}` },
         body: JSON.stringify({ product_id: selectedProductId || null, goal, messages: saveable, conversation_id: activeConversationId || undefined }),
       })
       if (!response.ok) {
@@ -583,7 +588,7 @@ export default function Agent() {
   const handleEditDoc = useCallback(async (docId: string, editInstructions: string): Promise<{ doc_markdown: string; title: string }> => {
     const response = await fetch('/api/v1/agent/edit-doc', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('rt_access_token') || ''}` },
       body: JSON.stringify({ doc_id: docId, edit_instructions: editInstructions }),
     })
     if (!response.ok) throw new Error(await response.text())

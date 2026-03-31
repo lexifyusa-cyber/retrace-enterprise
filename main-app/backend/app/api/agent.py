@@ -246,6 +246,98 @@ async def list_agent_tools(
 
 
 # ---------------------------------------------------------------------------
+# MCP Extension warmup
+# ---------------------------------------------------------------------------
+
+@router.post("/warmup-mcp")
+async def warmup_mcp(
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Pre-start MCP extensions so they're ready when the user sends a task.
+
+    Fires a background task and returns immediately.
+    The warm-up is best-effort — failures are logged but don't affect the user.
+    """
+    user_auth_context = {
+        "user_id": current_user.user_id,
+        "email": current_user.email,
+        "tenant_id": current_user.tenant_id,
+        "role": current_user.role,
+    }
+    asyncio.create_task(_warmup_mcp_background(user_auth_context))
+    return {"status": "warming_up"}
+
+
+async def _warmup_mcp_background(user_auth_context: dict) -> None:
+    """Background task to pre-start MCP extensions for a user."""
+    user_id = user_auth_context.get("user_id", "")
+    try:
+        from sqlalchemy import select as sa_select
+        from app.models.mcp_extension import McpExtension
+        from app.models.user_extension import UserExtension
+        from app.models.user_session import UserSession
+        from app.services.mcp_client_service import mcp_client_manager
+
+        async with async_session_maker() as session:
+            result = await session.execute(
+                sa_select(UserExtension, McpExtension)
+                .join(McpExtension, UserExtension.extension_id == McpExtension.extension_id)
+                .where(UserExtension.user_id == user_id)
+                .where(UserExtension.is_enabled == True)
+                .where(McpExtension.is_enabled == True)
+            )
+            rows = result.all()
+            if not rows:
+                return
+
+            # Get user's external auth token (for oauth_passthrough extensions)
+            user_auth_token = None
+            sess_result = await session.execute(
+                sa_select(UserSession)
+                .where(UserSession.user_id == user_id)
+                .where(UserSession.revoked == False)
+                .order_by(UserSession.last_active_at.desc())
+                .limit(1)
+            )
+            user_session = sess_result.scalar_one_or_none()
+            if user_session:
+                user_auth_token = user_session.external_id_token or user_session.external_access_token
+
+            # Load LDAP credentials for ldap_passthrough extensions
+            user_auth_credentials = None
+            if user_session and user_session.external_username and user_session.external_password:
+                from app.core.encryption import decrypt_value
+                user_auth_credentials = {
+                    "username": user_session.external_username,
+                    "password": decrypt_value(user_session.external_password),
+                }
+
+            for user_ext, catalog_ext in rows:
+                try:
+                    merged_env = user_ext.get_merged_env_vars(catalog_ext.get_raw_env_vars())
+                    merged_auth = {**(catalog_ext.auth_config_json or {}), **(user_ext.auth_config_json or {})}
+                    await mcp_client_manager.start_extension(
+                        extension_id=catalog_ext.extension_id,
+                        extension_name=catalog_ext.name,
+                        command=catalog_ext.command,
+                        args=catalog_ext.args_json,
+                        env_vars=merged_env,
+                        auth_type=catalog_ext.auth_type,
+                        auth_config=merged_auth,
+                        user_auth_token=user_auth_token or "",
+                        user_auth_credentials=user_auth_credentials,
+                        user_id=user_id,
+                        tenant_id=user_auth_context.get("tenant_id", ""),
+                    )
+                except Exception as e:
+                    logger.warning("mcp_warmup_extension_failed", extension=catalog_ext.name, error=str(e))
+
+        logger.info("mcp_warmup_complete", user_id=user_id, extensions=len(rows))
+    except Exception as e:
+        logger.warning("mcp_warmup_failed", error=str(e), user_id=user_id)
+
+
+# ---------------------------------------------------------------------------
 # Conversations — persistent per-product chat threads
 # ---------------------------------------------------------------------------
 

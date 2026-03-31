@@ -408,6 +408,7 @@ async def _create_session_and_tokens(
     user: User,
     request: Request,
     session: AsyncSession,
+    external_tokens: Optional[dict] = None,
 ) -> dict:
     if user.mfa_enabled and user.mfa_secret_encrypted and not user.force_password_change:
         mfa_token = create_mfa_pending_token(_build_token_payload(user))
@@ -429,6 +430,17 @@ async def _create_session_and_tokens(
         user_agent=request.headers.get("user-agent", "")[:512],
         expires_at=datetime.utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
     )
+    # Store external IdP tokens for MCP extension auth pass-through (Azure AD, etc.)
+    if external_tokens:
+        user_session.external_access_token = external_tokens.get("access_token")
+        user_session.external_id_token = external_tokens.get("id_token")
+        user_session.external_refresh_token = external_tokens.get("refresh_token")
+        user_session.external_token_expires_at = external_tokens.get("expires_at")
+        # Store LDAP credentials (password encrypted) for MCP Basic Auth pass-through
+        if external_tokens.get("ldap_username"):
+            from app.core.encryption import encrypt_value
+            user_session.external_username = external_tokens["ldap_username"]
+            user_session.external_password = encrypt_value(external_tokens["ldap_password"])
     session.add(user_session)
 
     user.last_login_at = datetime.utcnow()
@@ -683,7 +695,11 @@ async def login(
                          tenant_id=user.tenant_id,
                          details={"provider": "ldap", "resolve": resolve_reason})
         logger.info("unified_login_ldap_success", user_id=user.user_id, email=user.email)
-        return await _create_session_and_tokens(user, request, session)
+        external_tokens = {
+            "ldap_username": user.username or ident,
+            "ldap_password": data.password,
+        }
+        return await _create_session_and_tokens(user, request, session, external_tokens=external_tokens)
 
     # --- Local (email/password) auth ---
     if not user.hashed_password or not verify_password(data.password, user.hashed_password):
@@ -745,7 +761,22 @@ async def refresh_token(
     # Revoke old session, create new one (rotation)
     user_session.revoked = True
 
-    return await _create_session_and_tokens(user, request, session)
+    # Carry forward external IdP tokens from old session
+    external_tokens = None
+    if user_session.external_access_token:
+        external_tokens = {
+            "access_token": user_session.external_access_token,
+            "id_token": getattr(user_session, "external_id_token", None),
+            "refresh_token": user_session.external_refresh_token,
+            "expires_at": user_session.external_token_expires_at,
+        }
+    if user_session.external_username:
+        external_tokens = external_tokens or {}
+        external_tokens["ldap_username"] = user_session.external_username
+        from app.core.encryption import decrypt_value
+        external_tokens["ldap_password"] = decrypt_value(user_session.external_password)
+
+    return await _create_session_and_tokens(user, request, session, external_tokens=external_tokens)
 
 
 # ── Logout ────────────────────────────────────────────────────────────
@@ -766,6 +797,15 @@ async def logout(
     )
     for s in result.scalars().all():
         s.revoked = True
+
+    # Stop any running MCP extension subprocesses for this user
+    try:
+        from app.services.mcp_client_service import mcp_client_manager
+        stopped = await mcp_client_manager.stop_user_connections(current_user.user_id)
+        if stopped:
+            logger.info("mcp_connections_stopped_on_logout", user_id=current_user.user_id, count=stopped)
+    except Exception as e:
+        logger.warning("mcp_cleanup_on_logout_failed", error=str(e))
 
     await _log_audit(session, "logout", request, actor_id=current_user.user_id,
                      actor_email=current_user.email, tenant_id=current_user.tenant_id)
@@ -2229,11 +2269,18 @@ async def test_ldap(
     session: AsyncSession = Depends(get_session),
 ):
     """Test LDAP connectivity using the provided configuration."""
+    target_tenant_id = await _resolve_tenant_id(session, current_user, data)
+    tenant = await session.get(Tenant, target_tenant_id)
     ldap_config = data.get("ldap_config", {})
     if not ldap_config or not isinstance(ldap_config, dict):
         raise HTTPException(400, "ldap_config is required")
     if not ldap_config.get("host"):
         raise HTTPException(400, "LDAP host is required")
+
+    # If bind_password is masked, use the real one from stored config
+    if ldap_config.get("bind_password") in (None, "", "********"):
+        if tenant and tenant.ldap_config and tenant.ldap_config.get("bind_password"):
+            ldap_config = {**ldap_config, "bind_password": tenant.ldap_config["bind_password"]}
 
     from app.services.auth.ldap_auth import test_ldap_connection
     result = await test_ldap_connection(ldap_config, raw_password=True)
@@ -2260,35 +2307,13 @@ async def test_azure_ad(
     if not azure_config:
         raise HTTPException(400, "Azure AD config is not set")
 
-    client_id = azure_config.get("client_id", "")
-    client_secret = azure_config.get("client_secret", "")
-    az_tenant_id = azure_config.get("tenant_id", "common")
-
-    if not client_id:
-        raise HTTPException(400, "client_id is required")
-    if not client_secret or client_secret == "********":
+    # If client_secret is masked, use the real one from stored config
+    if azure_config.get("client_secret") in (None, "", "********"):
         if tenant.azure_ad_config and tenant.azure_ad_config.get("client_secret"):
-            client_secret = tenant.azure_ad_config["client_secret"]
-        else:
-            raise HTTPException(400, "client_secret is required")
+            azure_config = {**azure_config, "client_secret": tenant.azure_ad_config["client_secret"]}
 
-    import httpx
-    token_url = f"https://login.microsoftonline.com/{az_tenant_id}/oauth2/v2.0/token"
-    try:
-        async with httpx.AsyncClient(timeout=15) as http:
-            resp = await http.post(token_url, data={
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "scope": "https://graph.microsoft.com/.default",
-                "grant_type": "client_credentials",
-            })
-        if resp.status_code == 200:
-            return {"success": True, "message": "Azure AD credentials validated successfully."}
-        body = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
-        error_desc = body.get("error_description", resp.text[:200])
-        return {"success": False, "message": f"Azure AD returned {resp.status_code}: {error_desc}"}
-    except Exception as exc:
-        raise HTTPException(400, f"Azure AD connection test failed: {exc}")
+    from app.services.auth.azure_ad_auth import test_azure_ad_connection
+    return await test_azure_ad_connection(azure_config)
 
 
 # ── Product Access ────────────────────────────────────────────────────
@@ -2524,7 +2549,15 @@ async def login_ldap(
                      tenant_id=tenant.tenant_id,
                      details={"provider": provider})
 
-    return await _create_session_and_tokens(user, request, session)
+    # Build external tokens for LDAP credential pass-through
+    external_tokens = None
+    if provider == "ldap":
+        external_tokens = {
+            "ldap_username": user.username or data.username,
+            "ldap_password": data.password,
+        }
+
+    return await _create_session_and_tokens(user, request, session, external_tokens=external_tokens)
 
 
 # ── Enterprise Auth: Azure AD ────────────────────────────────────────
@@ -2582,7 +2615,16 @@ async def login_azure_ad(
                      actor_email=azure_user.email, tenant_id=tenant.tenant_id,
                      details={"provider": "azure_ad"})
 
-    return await _create_session_and_tokens(user, request, session)
+    # Capture Azure AD tokens for MCP extension auth pass-through
+    from datetime import timedelta
+    external_tokens = {
+        "access_token": azure_user.access_token,
+        "id_token": azure_user.id_token,
+        "refresh_token": azure_user.refresh_token,
+        "expires_at": datetime.utcnow() + timedelta(seconds=azure_user.expires_in) if azure_user.expires_in else None,
+    }
+
+    return await _create_session_and_tokens(user, request, session, external_tokens=external_tokens)
 
 
 @router.get("/azure-ad/authorize")

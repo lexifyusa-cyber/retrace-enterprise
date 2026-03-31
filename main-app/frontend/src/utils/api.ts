@@ -246,6 +246,11 @@ export const agentApi = {
   /** Returns the SSE endpoint URL (caller uses fetch + EventSource pattern) */
   getExecuteUrl: () => '/api/v1/agent/execute',
 
+  /** Pre-start MCP extensions in the background (fire-and-forget). */
+  warmupMcp: async (): Promise<void> => {
+    await api.post('/agent/warmup-mcp').catch(() => {})
+  },
+
   listSessions: async (productId?: string): Promise<AgentSession[]> => {
     const response = await api.get('/agent/sessions', { params: { product_id: productId } })
     return response.data

@@ -1276,6 +1276,41 @@ export default function Settings() {
                         <option value="sAMAccountName">sAMAccountName (Active Directory)</option>
                       </select>
                     </div>
+                    <div className="pt-1">
+                      <button
+                        disabled={ldapTestPending || !ldapHost || !ldapBaseDn || !ldapBindDn}
+                        onClick={async () => {
+                          setLdapTestPending(true)
+                          try {
+                            const payload: any = {
+                              ldap_config: {
+                                host: ldapHost,
+                                port: ldapPort,
+                                use_ssl: ldapUseSsl,
+                                base_dn: ldapBaseDn,
+                                bind_dn: ldapBindDn,
+                                bind_password: ldapBindPassword || '********',
+                                user_lookup_attr: ldapUserLookup,
+                              },
+                            }
+                            if (isGlobalAdmin && selectedTenantId) payload.tenant_id = selectedTenantId
+                            const r = await authApi.post('/tenant/auth/test-ldap', payload)
+                            if (r.data?.success) {
+                              toast.success(r.data.message || 'LDAP connection successful')
+                            } else {
+                              toast.error(r.data?.message || 'LDAP test failed')
+                            }
+                          } catch (e: any) {
+                            toast.error(e.response?.data?.detail || 'LDAP connection test failed')
+                          } finally {
+                            setLdapTestPending(false)
+                          }
+                        }}
+                        className="btn-secondary text-xs"
+                      >
+                        {ldapTestPending ? 'Testing...' : 'Test Connection'}
+                      </button>
+                    </div>
                   </div>
                 </div>
               )}
