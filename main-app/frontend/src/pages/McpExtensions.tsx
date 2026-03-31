@@ -5,10 +5,12 @@ import {
   Puzzle, X, Loader2, Check, AlertCircle, Trash2, Settings,
   Zap, Eye, EyeOff,
   Server, UserCheck, Wrench,
-  Store, Package, ShieldCheck, Download, Hammer,
+  Store, Package, ShieldCheck, Download, Hammer, Plus, Globe,
 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import axios from 'axios'
+import { useAuth } from '@/context/AuthContext'
+import { isAdmin } from '@/utils/roles'
 
 const api = axios.create({ baseURL: '/api/v1/mcp-extensions' })
 api.interceptors.request.use((config) => {
@@ -131,9 +133,11 @@ export default function McpExtensions() {
 // ═══════════════════════════════════════════════════════════════════
 function MyExtensionsTab() {
   const queryClient = useQueryClient()
+  const { user } = useAuth()
   const [testResults, setTestResults] = useState<Record<string, { status: string; tools?: DiscoveredTool[]; error?: string }>>({})
   const [verifyResults, setVerifyResults] = useState<Record<string, { has_access: boolean; message: string }>>({})
   const [editingExt, setEditingExt] = useState<UserExtensionItem | null>(null)
+  const [showAddExternal, setShowAddExternal] = useState(false)
 
   const { data, isLoading } = useQuery({
     queryKey: ['my-extensions'],
@@ -217,6 +221,19 @@ function MyExtensionsTab() {
 
   return (
     <>
+      {/* Header row with Add External button for admins */}
+      {isAdmin(user?.role) && (
+        <div className="flex justify-end mb-4">
+          <button
+            onClick={() => setShowAddExternal(true)}
+            className="flex items-center gap-2 px-3 py-1.5 bg-rt-primary/10 hover:bg-rt-primary/20 text-rt-primary border border-rt-primary/20 rounded-lg text-sm font-medium transition-colors"
+          >
+            <Plus className="w-4 h-4" />
+            Add External MCP
+          </button>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4">
         {extensions.map((ext) => (
           <MyExtensionCard
@@ -246,6 +263,16 @@ function MyExtensionsTab() {
             onSaved={() => {
               setEditingExt(null)
               queryClient.invalidateQueries({ queryKey: ['my-extensions'] })
+            }}
+          />
+        )}
+        {showAddExternal && (
+          <AddExternalExtensionDialog
+            onClose={() => setShowAddExternal(false)}
+            onSaved={() => {
+              setShowAddExternal(false)
+              queryClient.invalidateQueries({ queryKey: ['my-extensions'] })
+              queryClient.invalidateQueries({ queryKey: ['catalog'] })
             }}
           />
         )}
@@ -303,7 +330,12 @@ function MyExtensionCard({
             )}
             {catalog.mcp_server_id && !catalog.is_builtin && (
               <span className="px-1.5 py-0.5 rounded-full text-[9px] font-medium bg-violet-500/10 text-violet-400 border border-violet-500/20 whitespace-nowrap flex items-center gap-0.5">
-                <Hammer className="w-2.5 h-2.5" /> Custom Build
+                <Hammer className="w-2.5 h-2.5" /> MCP Builder
+              </span>
+            )}
+            {!catalog.is_builtin && !catalog.mcp_server_id && (
+              <span className="px-1.5 py-0.5 rounded-full text-[9px] font-medium bg-sky-500/10 text-sky-400 border border-sky-500/20 whitespace-nowrap flex items-center gap-0.5">
+                <Globe className="w-2.5 h-2.5" /> External
               </span>
             )}
           </div>
@@ -567,6 +599,212 @@ function EditUserExtensionDialog({
               </button>
             </>
           )}
+        </div>
+      </motion.div>
+    </motion.div>
+  )
+}
+
+
+// ── Add External Extension Dialog ───────────────────────────────────
+function AddExternalExtensionDialog({
+  onClose,
+  onSaved,
+}: {
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const [name, setName] = useState('')
+  const [description, setDescription] = useState('')
+  const [command, setCommand] = useState('')
+  const [args, setArgs] = useState('')
+  const [authType, setAuthType] = useState('none')
+  const [envVars, setEnvVars] = useState<EnvVar[]>([{ key: '', value: '' }])
+  const [saving, setSaving] = useState(false)
+  const [showSecrets, setShowSecrets] = useState(false)
+
+  const addEnvVar = () => setEnvVars([...envVars, { key: '', value: '' }])
+  const removeEnvVar = (idx: number) => setEnvVars(envVars.filter((_, i) => i !== idx))
+  const updateEnvVar = (idx: number, field: 'key' | 'value', val: string) => {
+    const updated = [...envVars]
+    updated[idx] = { ...updated[idx], [field]: val }
+    setEnvVars(updated)
+  }
+
+  const handleSave = async () => {
+    if (!name.trim()) { toast.error('Name is required'); return }
+    if (!command.trim()) { toast.error('Command is required'); return }
+
+    setSaving(true)
+    try {
+      const envObj: Record<string, string> = {}
+      for (const ev of envVars) {
+        if (ev.key.trim()) envObj[ev.key.trim()] = ev.value
+      }
+
+      // Parse args: split by spaces respecting quoted strings
+      const parsedArgs = args.trim()
+        ? args.trim().match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? []
+        : []
+
+      await api.post('', {
+        name: name.trim(),
+        description: description.trim() || null,
+        command: command.trim(),
+        args_json: parsedArgs.length > 0 ? parsedArgs : null,
+        env_vars_json: Object.keys(envObj).length > 0 ? envObj : null,
+        auth_type: authType,
+        is_enabled: true,
+      })
+      toast.success('External MCP added and installed')
+      onSaved()
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail
+      if (err?.response?.status === 409) {
+        toast.error(detail || 'This server already exists in the catalog')
+      } else {
+        toast.error(detail || 'Failed to add extension')
+      }
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.95, opacity: 0 }}
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-xl max-h-[90vh] overflow-y-auto bg-rt-surface border border-rt-border rounded-2xl shadow-2xl"
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between p-5 border-b border-rt-border">
+          <div className="flex items-center gap-2">
+            <Globe className="w-5 h-5 text-sky-400" />
+            <h2 className="text-lg font-semibold">Add External MCP Server</h2>
+          </div>
+          <button onClick={onClose} className="text-rt-text-muted hover:text-rt-text">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Info banner */}
+        <div className="mx-5 mt-4 bg-sky-500/5 border border-sky-500/15 rounded-lg p-3">
+          <div className="flex items-start gap-2">
+            <Globe className="w-4 h-4 text-sky-400 mt-0.5 shrink-0" />
+            <p className="text-[11px] text-rt-text-muted">
+              For externally built MCP servers only (e.g. <span className="font-mono text-rt-text">npx @modelcontextprotocol/server-github</span>).
+              Servers built with <span className="font-medium text-rt-text">MCP Builder</span> are added automatically — no need to add them here.
+            </p>
+          </div>
+        </div>
+
+        <div className="p-5 space-y-4">
+          {/* Name */}
+          <div>
+            <label className="text-xs font-medium text-rt-text-muted block mb-1">Name <span className="text-red-400">*</span></label>
+            <input
+              value={name} onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. GitHub MCP"
+              className="w-full px-3 py-2 bg-rt-bg border border-rt-border rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-rt-primary"
+            />
+          </div>
+
+          {/* Description */}
+          <div>
+            <label className="text-xs font-medium text-rt-text-muted block mb-1">Description</label>
+            <input
+              value={description} onChange={(e) => setDescription(e.target.value)}
+              placeholder="Optional description"
+              className="w-full px-3 py-2 bg-rt-bg border border-rt-border rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-rt-primary"
+            />
+          </div>
+
+          {/* Command */}
+          <div>
+            <label className="text-xs font-medium text-rt-text-muted block mb-1">Command <span className="text-red-400">*</span></label>
+            <input
+              value={command} onChange={(e) => setCommand(e.target.value)}
+              placeholder="e.g. npx or /usr/local/bin/python3"
+              className="w-full px-3 py-2 bg-rt-bg border border-rt-border rounded-lg text-sm font-mono focus:outline-none focus:ring-1 focus:ring-rt-primary"
+            />
+          </div>
+
+          {/* Args */}
+          <div>
+            <label className="text-xs font-medium text-rt-text-muted block mb-1">Arguments</label>
+            <input
+              value={args} onChange={(e) => setArgs(e.target.value)}
+              placeholder="e.g. @modelcontextprotocol/server-github or -m mypackage.server"
+              className="w-full px-3 py-2 bg-rt-bg border border-rt-border rounded-lg text-sm font-mono focus:outline-none focus:ring-1 focus:ring-rt-primary"
+            />
+            <p className="text-[10px] text-rt-text-muted/60 mt-1">Space-separated. Quoted strings supported.</p>
+          </div>
+
+          {/* Auth type */}
+          <div>
+            <label className="text-xs font-medium text-rt-text-muted block mb-1">Auth Type</label>
+            <select
+              value={authType} onChange={(e) => setAuthType(e.target.value)}
+              className="w-full px-3 py-2 bg-rt-bg border border-rt-border rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-rt-primary"
+            >
+              {Object.entries(AUTH_LABELS).map(([v, l]) => (
+                <option key={v} value={v}>{l}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* Env vars */}
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-xs font-medium text-rt-text-muted">Environment Variables</label>
+              <div className="flex items-center gap-2">
+                <button onClick={() => setShowSecrets(!showSecrets)}
+                  className="text-[10px] text-rt-text-muted hover:text-rt-text flex items-center gap-1">
+                  {showSecrets ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                  {showSecrets ? 'Hide' : 'Show'} values
+                </button>
+                <button onClick={addEnvVar} className="text-[10px] text-rt-primary hover:text-rt-primary/80">+ Add</button>
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              {envVars.map((ev, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <input
+                    value={ev.key} onChange={(e) => updateEnvVar(i, 'key', e.target.value)}
+                    placeholder="KEY"
+                    className="flex-1 px-2 py-1.5 bg-rt-bg border border-rt-border rounded text-xs font-mono focus:outline-none focus:ring-1 focus:ring-rt-primary"
+                  />
+                  <input
+                    value={ev.value} onChange={(e) => updateEnvVar(i, 'value', e.target.value)}
+                    placeholder="value" type={showSecrets ? 'text' : 'password'}
+                    className="flex-1 px-2 py-1.5 bg-rt-bg border border-rt-border rounded text-xs font-mono focus:outline-none focus:ring-1 focus:ring-rt-primary"
+                  />
+                  {envVars.length > 1 && (
+                    <button onClick={() => removeEnvVar(i)} className="text-rt-text-muted hover:text-red-400">
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center justify-end gap-3 p-5 border-t border-rt-border">
+          <button onClick={onClose} className="px-4 py-2 text-sm text-rt-text-muted hover:text-rt-text">Cancel</button>
+          <button
+            onClick={handleSave} disabled={saving}
+            className="flex items-center gap-2 px-4 py-2 bg-rt-primary text-white rounded-lg hover:bg-rt-primary/90 text-sm font-medium disabled:opacity-50"
+          >
+            {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+            Add Extension
+          </button>
         </div>
       </motion.div>
     </motion.div>

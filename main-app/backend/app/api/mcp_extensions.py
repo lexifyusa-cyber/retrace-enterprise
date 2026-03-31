@@ -328,6 +328,16 @@ async def create_extension(
     session: AsyncSession = Depends(get_session),
 ):
     """Create a new MCP extension configuration."""
+    # Duplicate check: reject if an extension with the same command already exists
+    dup_result = await session.execute(
+        select(McpExtension).where(McpExtension.command == body.command)
+    )
+    if dup_result.scalar_one_or_none():
+        raise HTTPException(
+            status_code=409,
+            detail="An extension with this command already exists. MCP Builder servers are added automatically — check your installed extensions.",
+        )
+
     ext = McpExtension(
         tenant_id=current_user.tenant_id,
         name=body.name,
@@ -341,8 +351,20 @@ async def create_extension(
         created_by=current_user.user_id,
     )
     session.add(ext)
+    await session.flush()  # Get extension_id before commit
+
+    # Auto-install for the creator so they see it immediately in My Extensions
+    user_ext = UserExtension(
+        extension_id=ext.extension_id,
+        user_id=current_user.user_id,
+        tenant_id=current_user.tenant_id,
+        is_enabled=True,
+    )
+    session.add(user_ext)
+
     await session.commit()
     await session.refresh(ext)
+    logger.info("external_extension_created", extension_id=ext.extension_id, name=ext.name, created_by=current_user.user_id)
     return ext.to_dict()
 
 
