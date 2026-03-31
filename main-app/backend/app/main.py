@@ -219,6 +219,55 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
                     cursor.execute("ALTER TABLE mcp_extensions ADD COLUMN mcp_server_id VARCHAR(36)")
                     conn.commit()
                     print("[STARTUP] Added mcp_server_id column to mcp_extensions", flush=True)
+                if "transport" not in cols:
+                    cursor.execute("ALTER TABLE mcp_extensions ADD COLUMN transport VARCHAR(20) DEFAULT 'stdio'")
+                    conn.commit()
+                    print("[STARTUP] Added transport column to mcp_extensions", flush=True)
+                if "url" not in cols:
+                    cursor.execute("ALTER TABLE mcp_extensions ADD COLUMN url TEXT")
+                    conn.commit()
+                    print("[STARTUP] Added url column to mcp_extensions", flush=True)
+                # SQLite doesn't support ALTER COLUMN — recreate table to make command nullable
+                # Detect by checking if command has a NOT NULL constraint (notnull=1 in PRAGMA)
+                cursor.execute("PRAGMA table_info(mcp_extensions)")
+                col_info = {row[1]: row for row in cursor.fetchall()}
+                command_notnull = col_info.get("command", (None,)*4 + (0,))[3]  # index 3 is notnull
+                if command_notnull:
+                    print("[STARTUP] Recreating mcp_extensions table to make command nullable...", flush=True)
+                    cursor.execute("PRAGMA foreign_keys=OFF")
+                    cursor.executescript("""
+                        CREATE TABLE mcp_extensions_new (
+                            extension_id VARCHAR(36) NOT NULL PRIMARY KEY,
+                            tenant_id VARCHAR(36),
+                            name VARCHAR(100) NOT NULL,
+                            description TEXT,
+                            transport VARCHAR(20) DEFAULT 'stdio',
+                            url TEXT,
+                            command VARCHAR(500),
+                            args_json JSON,
+                            env_vars_json JSON,
+                            auth_type VARCHAR(30) DEFAULT 'none',
+                            auth_config_json JSON,
+                            is_enabled INTEGER DEFAULT 1,
+                            is_builtin INTEGER DEFAULT 0,
+                            auto_install INTEGER DEFAULT 0,
+                            mcp_server_id VARCHAR(36),
+                            created_by VARCHAR(36),
+                            created_at DATETIME,
+                            updated_at DATETIME
+                        );
+                        INSERT INTO mcp_extensions_new
+                            SELECT extension_id, tenant_id, name, description,
+                                   COALESCE(transport, 'stdio'), url, command, args_json, env_vars_json,
+                                   auth_type, auth_config_json, is_enabled, is_builtin,
+                                   COALESCE(auto_install, 0), mcp_server_id, created_by, created_at, updated_at
+                            FROM mcp_extensions;
+                        DROP TABLE mcp_extensions;
+                        ALTER TABLE mcp_extensions_new RENAME TO mcp_extensions;
+                    """)
+                    cursor.execute("PRAGMA foreign_keys=ON")
+                    conn.commit()
+                    print("[STARTUP] mcp_extensions table recreated with nullable command", flush=True)
             # mcp_servers columns
             cursor.execute("PRAGMA table_info(mcp_servers)")
             cols = [row[1] for row in cursor.fetchall()]

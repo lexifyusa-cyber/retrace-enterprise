@@ -757,6 +757,8 @@ async def _load_mcp_extension_tools(
             tool_infos = await mcp_client_manager.start_extension(
                 extension_id=catalog_ext.extension_id,
                 extension_name=catalog_ext.name,
+                transport=getattr(catalog_ext, "transport", "stdio") or "stdio",
+                url=getattr(catalog_ext, "url", None),
                 command=catalog_ext.command,
                 args=catalog_ext.args_json,
                 env_vars=merged_env,

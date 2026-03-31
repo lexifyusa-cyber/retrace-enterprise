@@ -27,10 +27,14 @@ class McpExtension(Base):
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
-    # How to spawn the MCP server subprocess
-    command: Mapped[str] = mapped_column(String(500), nullable=False)  # e.g. "python"
+    # Transport — stdio (subprocess) or http (remote HTTP/SSE endpoint)
+    transport: Mapped[str] = mapped_column(String(20), default="stdio")  # stdio | http
+    url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # for HTTP transport
+
+    # How to spawn the MCP server subprocess (stdio transport only)
+    command: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)  # e.g. "python"
     args_json: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)  # e.g. ["-m", "servicenow_mcp"]
-    env_vars_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)  # env vars passed to subprocess
+    env_vars_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)  # env vars (stdio) or HTTP headers (http)
 
     # Authentication configuration
     auth_type: Mapped[str] = mapped_column(
@@ -55,6 +59,8 @@ class McpExtension(Base):
             "tenant_id": self.tenant_id,
             "name": self.name,
             "description": self.description,
+            "transport": getattr(self, "transport", "stdio") or "stdio",
+            "url": self.url,
             "command": self.command,
             "args_json": self.args_json,
             "env_vars_json": self._mask_env_secrets(),

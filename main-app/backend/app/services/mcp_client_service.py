@@ -1,14 +1,15 @@
 """
-MCP Client Manager — spawns and manages external MCP server subprocesses.
+MCP Client Manager — spawns and manages external MCP server connections.
 
-Uses the official MCP Python SDK client (StdioClientTransport) to:
-  1. Spawn MCP servers as subprocesses via stdio
-  2. Discover available tools via tools/list
-  3. Route tool calls via tools/call
-  4. Manage lifecycle (start, health check, shutdown)
-  5. Inject user auth tokens for OAuth pass-through
-  6. Idle timeout — auto-cleanup after inactivity
-  7. Connection limits — per-tenant and global caps with LRU eviction
+Uses the official MCP Python SDK client to:
+  1. Spawn MCP servers as subprocesses via stdio transport
+  2. Connect to remote MCP servers via HTTP/SSE transport (Streamable HTTP or SSE)
+  3. Discover available tools via tools/list
+  4. Route tool calls via tools/call
+  5. Manage lifecycle (start, health check, shutdown)
+  6. Inject user auth tokens for OAuth pass-through
+  7. Idle timeout — auto-cleanup after inactivity
+  8. Connection limits — per-tenant and global caps with LRU eviction
 """
 
 from __future__ import annotations
@@ -17,12 +18,15 @@ import asyncio
 import json
 import os
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
 import structlog
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.sse import sse_client
 from mcp.types import Tool as McpTool
 
 logger = structlog.get_logger()
@@ -44,7 +48,7 @@ class McpToolInfo:
 
 @dataclass
 class McpConnection:
-    """A live connection to an MCP server subprocess."""
+    """A live connection to an MCP server (stdio subprocess or HTTP endpoint)."""
     extension_id: str
     extension_name: str
     session: ClientSession
@@ -52,10 +56,12 @@ class McpConnection:
     started_at: float = field(default_factory=time.time)
     last_activity: float = field(default_factory=time.time)
     tenant_id: str = ""
-    _context_manager: Any = None  # holds the stdio_client context
+    _context_manager: Any = None  # holds the transport context manager
     _session_context: Any = None  # holds the session context
     # Reconnection config — stored so we can restart without caller re-supplying
-    command: str = ""
+    transport: str = "stdio"       # "stdio" or "http"
+    url: str = ""                  # for HTTP transport
+    command: str = ""              # for stdio transport
     args: list[str] = field(default_factory=list)
     env_vars: dict[str, str] = field(default_factory=dict)
     auth_type: str = "none"
@@ -86,7 +92,7 @@ class McpClientManager:
         self,
         extension_id: str,
         extension_name: str,
-        command: str,
+        command: str | None = None,
         args: list[str] | None = None,
         env_vars: dict[str, str] | None = None,
         auth_type: str = "none",
@@ -95,9 +101,12 @@ class McpClientManager:
         user_auth_credentials: dict | None = None,
         user_id: str = "__shared__",
         tenant_id: str = "",
+        transport: str = "stdio",
+        url: str | None = None,
     ) -> list[McpToolInfo]:
-        """Start an MCP server subprocess and discover its tools.
+        """Start an MCP server connection and discover its tools.
 
+        Supports stdio (subprocess) and http (Streamable HTTP / SSE) transports.
         If a connection already exists for this extension+user, return cached tools.
         Enforces global and per-tenant connection limits with LRU eviction.
         """
@@ -133,68 +142,108 @@ class McpClientManager:
                     if not evicted:
                         raise RuntimeError(f"MCP connection limit reached for tenant {tenant_id}")
 
-        # Build environment for the subprocess
-        env = dict(os.environ)
-        if env_vars:
-            env.update(env_vars)
-
-        # Inject auth token if OAuth pass-through
-        if auth_type == "oauth_passthrough" and auth_config:
-            if not user_auth_token:
-                raise RuntimeError(
-                    f"Your Azure AD session has expired or is missing. "
-                    f"Please sign out and sign in again with Azure AD to use {extension_name}."
-                )
-            token_env_var = auth_config.get("token_env_var", "OAUTH_TOKEN")
-            env[token_env_var] = user_auth_token
-
-        # Inject LDAP credentials if ldap_passthrough
-        if auth_type == "ldap_passthrough" and auth_config:
-            if not user_auth_credentials:
-                raise RuntimeError(
-                    f"Your LDAP session has expired or is missing. "
-                    f"Please sign out and sign in again to use {extension_name}."
-                )
-            username_env_var = auth_config.get("username_env_var", "AUTH_USERNAME")
-            password_env_var = auth_config.get("password_env_var", "AUTH_PASSWORD")
-            env[username_env_var] = user_auth_credentials["username"]
-            env[password_env_var] = user_auth_credentials["password"]
-
-        # Auto pass-through: detect user's auth method and inject accordingly
-        if auth_type == "auto_passthrough" and auth_config:
-            auth_type_env_var = auth_config.get("auth_type_env_var", "")
-            if user_auth_token:
-                # User logged in via Azure AD → OAuth token pass-through
-                token_env_var = auth_config.get("token_env_var", "OAUTH_TOKEN")
-                env[token_env_var] = user_auth_token
-                if auth_type_env_var:
-                    env[auth_type_env_var] = auth_config.get("oauth_auth_type_value", "bearer")
-                logger.info("auto_passthrough_oauth", extension=extension_name)
-            elif user_auth_credentials:
-                # User logged in via LDAP → credential pass-through
-                username_env_var = auth_config.get("username_env_var", "AUTH_USERNAME")
-                password_env_var = auth_config.get("password_env_var", "AUTH_PASSWORD")
-                env[username_env_var] = user_auth_credentials["username"]
-                env[password_env_var] = user_auth_credentials["password"]
-                if auth_type_env_var:
-                    env[auth_type_env_var] = auth_config.get("ldap_auth_type_value", "basic")
-                logger.info("auto_passthrough_ldap", extension=extension_name)
-            else:
-                raise RuntimeError(
-                    f"No authentication credentials found. "
-                    f"Please sign out and sign in again (via Azure AD or LDAP) to use {extension_name}."
-                )
-
-        server_params = StdioServerParameters(
-            command=command,
-            args=args or [],
-            env=env,
-        )
-
         try:
-            # Start the MCP server subprocess
-            ctx = stdio_client(server_params)
-            read_stream, write_stream = await ctx.__aenter__()
+            if transport == "http":
+                # ── HTTP / SSE transport ──────────────────────────────
+                if not url:
+                    raise ValueError("url is required for HTTP transport")
+
+                # For HTTP MCPs, env_vars_json entries are passed as HTTP headers
+                # (e.g. { "Authorization": "Bearer token" })
+                headers: dict[str, str] = {}
+                if env_vars:
+                    headers.update(env_vars)
+
+                # Inject stored OAuth token (from user_extension.auth_config_json)
+                if auth_config:
+                    stored_token = auth_config.get("oauth_access_token")
+                    if stored_token:
+                        token_type = auth_config.get("oauth_token_type", "Bearer")
+                        headers["Authorization"] = f"{token_type} {stored_token}"
+
+                # Auto-inject OAuth token if passthrough auth configured
+                if auth_type in ("oauth_passthrough", "auto_passthrough") and user_auth_token and auth_config:
+                    header_name = auth_config.get("header", "Authorization")
+                    prefix = auth_config.get("prefix", "Bearer")
+                    headers[header_name] = f"{prefix} {user_auth_token}".strip()
+
+                # Use stored OAuth token if available (from user_ext.auth_config_json)
+                stored_oauth_token = (auth_config or {}).get("oauth_access_token")
+                if stored_oauth_token and "Authorization" not in headers:
+                    token_type = (auth_config or {}).get("oauth_token_type", "Bearer")
+                    headers["Authorization"] = f"{token_type} {stored_oauth_token}"
+
+                # Choose transport: SSE for legacy /sse endpoints, Streamable HTTP for everything else
+                if url.rstrip("/").endswith("/sse"):
+                    ctx = sse_client(url, headers=headers or None)
+                else:
+                    ctx = streamablehttp_client(url, headers=headers or None)
+
+                raw = await ctx.__aenter__()
+                # streamablehttp_client returns (read, write, get_session_id) — 3-tuple
+                # sse_client returns (read, write) — 2-tuple
+                read_stream, write_stream = raw[0], raw[1]
+
+                logger.info("mcp_http_transport_connecting", extension=extension_name, url=url)
+
+            else:
+                # ── stdio transport (subprocess) ──────────────────────
+                if not command:
+                    raise ValueError("command is required for stdio transport")
+
+                # Build subprocess environment
+                env = dict(os.environ)
+                if env_vars:
+                    env.update(env_vars)
+
+                # Inject OAuth token if pass-through
+                if auth_type == "oauth_passthrough" and auth_config:
+                    if not user_auth_token:
+                        raise RuntimeError(
+                            f"Your Azure AD session has expired or is missing. "
+                            f"Please sign out and sign in again with Azure AD to use {extension_name}."
+                        )
+                    token_env_var = auth_config.get("token_env_var", "OAUTH_TOKEN")
+                    env[token_env_var] = user_auth_token
+
+                # Inject LDAP credentials if ldap_passthrough
+                if auth_type == "ldap_passthrough" and auth_config:
+                    if not user_auth_credentials:
+                        raise RuntimeError(
+                            f"Your LDAP session has expired or is missing. "
+                            f"Please sign out and sign in again to use {extension_name}."
+                        )
+                    username_env_var = auth_config.get("username_env_var", "AUTH_USERNAME")
+                    password_env_var = auth_config.get("password_env_var", "AUTH_PASSWORD")
+                    env[username_env_var] = user_auth_credentials["username"]
+                    env[password_env_var] = user_auth_credentials["password"]
+
+                # Auto pass-through: detect user's auth method
+                if auth_type == "auto_passthrough" and auth_config:
+                    auth_type_env_var = auth_config.get("auth_type_env_var", "")
+                    if user_auth_token:
+                        token_env_var = auth_config.get("token_env_var", "OAUTH_TOKEN")
+                        env[token_env_var] = user_auth_token
+                        if auth_type_env_var:
+                            env[auth_type_env_var] = auth_config.get("oauth_auth_type_value", "bearer")
+                        logger.info("auto_passthrough_oauth", extension=extension_name)
+                    elif user_auth_credentials:
+                        username_env_var = auth_config.get("username_env_var", "AUTH_USERNAME")
+                        password_env_var = auth_config.get("password_env_var", "AUTH_PASSWORD")
+                        env[username_env_var] = user_auth_credentials["username"]
+                        env[password_env_var] = user_auth_credentials["password"]
+                        if auth_type_env_var:
+                            env[auth_type_env_var] = auth_config.get("ldap_auth_type_value", "basic")
+                        logger.info("auto_passthrough_ldap", extension=extension_name)
+                    else:
+                        raise RuntimeError(
+                            f"No authentication credentials found. "
+                            f"Please sign out and sign in again (via Azure AD or LDAP) to use {extension_name}."
+                        )
+
+                server_params = StdioServerParameters(command=command, args=args or [], env=env)
+                ctx = stdio_client(server_params)
+                read_stream, write_stream = await ctx.__aenter__()
 
             session = ClientSession(read_stream, write_stream)
             session_ctx = session
@@ -220,7 +269,9 @@ class McpClientManager:
                 tenant_id=tenant_id,
                 _context_manager=ctx,
                 _session_context=session_ctx,
-                command=command,
+                transport=transport,
+                url=url or "",
+                command=command or "",
                 args=args or [],
                 env_vars=env_vars or {},
                 auth_type=auth_type,
@@ -235,12 +286,13 @@ class McpClientManager:
             logger.info(
                 "mcp_extension_started",
                 extension=extension_name,
+                transport=transport,
                 tools=[t.name for t in tool_infos],
             )
             return tool_infos
 
         except Exception as e:
-            logger.error("mcp_extension_start_failed", extension=extension_name, error=str(e))
+            logger.error("mcp_extension_start_failed", extension=extension_name, transport=transport, error=str(e))
             raise
 
     async def reconnect_extension(
@@ -257,6 +309,8 @@ class McpClientManager:
         # Save config before stopping
         saved = {
             "extension_name": conn.extension_name,
+            "transport": conn.transport,
+            "url": conn.url,
             "command": conn.command,
             "args": conn.args,
             "env_vars": conn.env_vars,
@@ -272,6 +326,8 @@ class McpClientManager:
         return await self.start_extension(
             extension_id=extension_id,
             extension_name=saved["extension_name"],
+            transport=saved["transport"],
+            url=saved["url"],
             command=saved["command"],
             args=saved["args"],
             env_vars=saved["env_vars"],
@@ -483,46 +539,63 @@ class McpClientManager:
 
     async def test_connection(
         self,
-        command: str,
+        command: str | None = None,
         args: list[str] | None = None,
         env_vars: dict[str, str] | None = None,
+        transport: str = "stdio",
+        url: str | None = None,
+        auth_config: dict | None = None,
     ) -> dict[str, Any]:
-        """Test an MCP server connection — start, list tools, then shut down.
+        """Test an MCP server connection — connect, list tools, then shut down.
 
+        Supports both stdio and HTTP transports.
         Returns a dict with status and discovered tools (or error).
         """
-        env = dict(os.environ)
-        if env_vars:
-            env.update(env_vars)
-
-        server_params = StdioServerParameters(
-            command=command,
-            args=args or [],
-            env=env,
-        )
-
         try:
-            async with stdio_client(server_params) as (read_stream, write_stream):
-                async with ClientSession(read_stream, write_stream) as session:
-                    await session.initialize()
-                    tools_result = await session.list_tools()
-                    tool_infos = [
-                        {
-                            "name": t.name,
-                            "description": t.description or "",
-                        }
-                        for t in tools_result.tools
-                    ]
-                    return {
-                        "status": "ok",
-                        "tools": tool_infos,
-                        "tool_count": len(tool_infos),
-                    }
+            if transport == "http":
+                if not url:
+                    return {"status": "error", "error": "url is required for HTTP transport"}
+                headers: dict[str, str] = dict(env_vars or {})
+                # Inject stored OAuth token if available
+                stored_oauth_token = (auth_config or {}).get("oauth_access_token")
+                if stored_oauth_token and "Authorization" not in headers:
+                    token_type = (auth_config or {}).get("oauth_token_type", "Bearer")
+                    headers["Authorization"] = f"{token_type} {stored_oauth_token}"
+                if url.rstrip("/").endswith("/sse"):
+                    ctx = sse_client(url, headers=headers or None)
+                else:
+                    ctx = streamablehttp_client(url, headers=headers or None)
+                async with ctx as raw:
+                    read_stream, write_stream = raw[0], raw[1]
+                    async with ClientSession(read_stream, write_stream) as session:
+                        await session.initialize()
+                        tools_result = await session.list_tools()
+                        tool_infos = [{"name": t.name, "description": t.description or ""} for t in tools_result.tools]
+                        return {"status": "ok", "tools": tool_infos, "tool_count": len(tool_infos)}
+            else:
+                if not command:
+                    return {"status": "error", "error": "command is required for stdio transport"}
+                env = dict(os.environ)
+                if env_vars:
+                    env.update(env_vars)
+                server_params = StdioServerParameters(command=command, args=args or [], env=env)
+                async with stdio_client(server_params) as (read_stream, write_stream):
+                    async with ClientSession(read_stream, write_stream) as session:
+                        await session.initialize()
+                        tools_result = await session.list_tools()
+                        tool_infos = [{"name": t.name, "description": t.description or ""} for t in tools_result.tools]
+                        return {"status": "ok", "tools": tool_infos, "tool_count": len(tool_infos)}
         except Exception as e:
-            return {
-                "status": "error",
-                "error": str(e),
-            }
+            if transport == "http" and url:
+                try:
+                    import httpx as _httpx
+                    async with _httpx.AsyncClient(timeout=8) as probe:
+                        r = await probe.get(url)
+                        if r.status_code in (401, 403) and ("Bearer" in r.headers.get("WWW-Authenticate", "") or r.status_code == 401):
+                            return {"status": "needs_oauth", "needs_oauth": True, "error": "Authentication required"}
+                except Exception:
+                    pass
+            return {"status": "error", "error": str(e)}
 
 
 # Singleton instance

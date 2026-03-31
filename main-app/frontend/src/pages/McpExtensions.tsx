@@ -5,7 +5,7 @@ import {
   Puzzle, X, Loader2, Check, AlertCircle, Trash2, Settings,
   Zap, Eye, EyeOff,
   Server, UserCheck, Wrench,
-  Store, Package, ShieldCheck, Download, Hammer, Plus, Globe,
+  Store, Package, ShieldCheck, Download, Hammer, Plus, Globe, Link,
 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import axios from 'axios'
@@ -25,7 +25,9 @@ interface McpExtension {
   tenant_id: string | null
   name: string
   description: string | null
-  command: string
+  transport: 'stdio' | 'http'
+  url: string | null
+  command: string | null
   args_json: string[] | null
   env_vars_json: Record<string, string> | null
   auth_type: string
@@ -134,10 +136,44 @@ export default function McpExtensions() {
 function MyExtensionsTab() {
   const queryClient = useQueryClient()
   const { user } = useAuth()
-  const [testResults, setTestResults] = useState<Record<string, { status: string; tools?: DiscoveredTool[]; error?: string }>>({})
+  const [testResults, setTestResults] = useState<Record<string, { status: string; tools?: DiscoveredTool[]; error?: string; needs_oauth?: boolean }>>({})
   const [verifyResults, setVerifyResults] = useState<Record<string, { has_access: boolean; message: string }>>({})
   const [editingExt, setEditingExt] = useState<UserExtensionItem | null>(null)
   const [showAddExternal, setShowAddExternal] = useState(false)
+  const [connectingExt, setConnectingExt] = useState<string | null>(null)
+
+  const handleConnect = async (ext: UserExtensionItem) => {
+    setConnectingExt(ext.user_extension_id)
+    try {
+      const resp = await api.post(`/my-extensions/${ext.user_extension_id}/oauth/initiate`)
+      const { auth_url } = resp.data
+
+      const popup = window.open(auth_url, 'mcp_oauth', 'width=600,height=700,scrollbars=yes')
+
+      const handleMessage = (event: MessageEvent) => {
+        if (event.data?.type === 'mcp_oauth_success') {
+          window.removeEventListener('message', handleMessage)
+          queryClient.invalidateQueries({ queryKey: ['my-extensions'] })
+          toast.success('Connected! Run Test to verify.')
+          setConnectingExt(null)
+        }
+      }
+      window.addEventListener('message', handleMessage)
+
+      // Fallback: if popup closes without message
+      const checkClosed = setInterval(() => {
+        if (popup?.closed) {
+          clearInterval(checkClosed)
+          window.removeEventListener('message', handleMessage)
+          setConnectingExt(null)
+          queryClient.invalidateQueries({ queryKey: ['my-extensions'] })
+        }
+      }, 500)
+    } catch (err: any) {
+      toast.error(err?.response?.data?.detail || 'Failed to start OAuth flow')
+      setConnectingExt(null)
+    }
+  }
 
   const { data, isLoading } = useQuery({
     queryKey: ['my-extensions'],
@@ -178,6 +214,7 @@ function MyExtensionsTab() {
     onSuccess: ({ id, result }) => {
       setTestResults((prev) => ({ ...prev, [id]: result }))
       if (result.status === 'ok') toast.success(`Connected! Found ${result.tool_count} tools`)
+      else if (result.status === 'needs_oauth') toast('Authentication required — click Connect to authorize', { icon: '🔗' })
       else toast.error(`Connection failed: ${result.error}`)
     },
     onError: () => toast.error('Test connection failed'),
@@ -246,10 +283,12 @@ function MyExtensionsTab() {
             onTest={() => testMutation.mutate(ext.user_extension_id)}
             onVerifyAccess={() => verifyMutation.mutate(ext.user_extension_id)}
             onEdit={() => setEditingExt(ext)}
+            onConnect={() => handleConnect(ext)}
             testResult={testResults[ext.user_extension_id]}
             verifyResult={verifyResults[ext.user_extension_id]}
             isTesting={testMutation.isPending && testMutation.variables === ext.user_extension_id}
             isVerifying={verifyMutation.isPending && verifyMutation.variables === ext.user_extension_id}
+            isConnecting={connectingExt === ext.user_extension_id}
           />
         ))}
       </div>
@@ -290,10 +329,12 @@ function MyExtensionCard({
   onTest,
   onVerifyAccess,
   onEdit,
+  onConnect,
   testResult,
   verifyResult,
   isTesting,
   isVerifying,
+  isConnecting,
 }: {
   ext: UserExtensionItem
   onToggleEnabled: (enabled: boolean) => void
@@ -301,10 +342,12 @@ function MyExtensionCard({
   onTest: () => void
   onVerifyAccess: () => void
   onEdit: () => void
-  testResult?: { status: string; tools?: DiscoveredTool[]; error?: string }
+  onConnect: () => void
+  testResult?: { status: string; tools?: DiscoveredTool[]; error?: string; needs_oauth?: boolean }
   verifyResult?: { has_access: boolean; message: string }
   isTesting: boolean
   isVerifying: boolean
+  isConnecting: boolean
 }) {
   const catalog = ext.catalog
   const authLabel = AUTH_LABELS[catalog.auth_type] || catalog.auth_type
@@ -333,7 +376,12 @@ function MyExtensionCard({
                 <Hammer className="w-2.5 h-2.5" /> MCP Builder
               </span>
             )}
-            {!catalog.is_builtin && !catalog.mcp_server_id && (
+            {!catalog.is_builtin && !catalog.mcp_server_id && catalog.transport === 'http' && (
+              <span className="px-1.5 py-0.5 rounded-full text-[9px] font-medium bg-sky-500/10 text-sky-400 border border-sky-500/20 whitespace-nowrap flex items-center gap-0.5">
+                <Globe className="w-2.5 h-2.5" /> HTTP
+              </span>
+            )}
+            {!catalog.is_builtin && !catalog.mcp_server_id && catalog.transport !== 'http' && (
               <span className="px-1.5 py-0.5 rounded-full text-[9px] font-medium bg-sky-500/10 text-sky-400 border border-sky-500/20 whitespace-nowrap flex items-center gap-0.5">
                 <Globe className="w-2.5 h-2.5" /> External
               </span>
@@ -356,7 +404,9 @@ function MyExtensionCard({
 
         <div className="flex items-center gap-2 mb-3">
           <code className="text-[11px] bg-rt-bg/50 px-2 py-1 rounded text-rt-text-muted truncate flex-1">
-            {catalog.command} {(catalog.args_json || []).join(' ')}
+            {catalog.transport === 'http'
+              ? catalog.url
+              : `${catalog.command ?? ''} ${(catalog.args_json || []).join(' ')}`.trim()}
           </code>
           <span className="text-[10px] px-1.5 py-0.5 rounded bg-rt-bg/50 text-rt-text-muted border border-rt-border/50">
             {authLabel}
@@ -364,12 +414,19 @@ function MyExtensionCard({
         </div>
 
         {/* Actions */}
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 flex-wrap">
           <button onClick={onTest} disabled={isTesting}
             className="flex items-center gap-1 px-2 py-1 text-xs rounded hover:bg-rt-primary/10 text-rt-primary transition-colors disabled:opacity-50">
             {isTesting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
             Test
           </button>
+          {(testResult?.status === 'needs_oauth' || testResult?.needs_oauth) && (
+            <button onClick={onConnect} disabled={isConnecting}
+              className="flex items-center gap-1 px-2 py-1 text-xs rounded bg-sky-500/10 hover:bg-sky-500/20 text-sky-400 border border-sky-500/20 transition-colors disabled:opacity-50">
+              {isConnecting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Link className="w-3 h-3" />}
+              Connect
+            </button>
+          )}
           {PASSTHROUGH_TYPES.includes(catalog.auth_type) && (
             <button onClick={onVerifyAccess} disabled={isVerifying}
               className="flex items-center gap-1 px-2 py-1 text-xs rounded hover:bg-emerald-500/10 text-emerald-400 transition-colors disabled:opacity-50">
@@ -393,7 +450,11 @@ function MyExtensionCard({
       {/* Test results */}
       {testResult && (
         <div className={`border-t px-4 py-3 ${
-          testResult.status === 'ok' ? 'border-emerald-500/20 bg-emerald-500/5' : 'border-red-500/20 bg-red-500/5'
+          testResult.status === 'ok'
+            ? 'border-emerald-500/20 bg-emerald-500/5'
+            : testResult.status === 'needs_oauth'
+            ? 'border-sky-500/20 bg-sky-500/5'
+            : 'border-red-500/20 bg-red-500/5'
         }`}>
           {testResult.status === 'ok' ? (
             <div>
@@ -410,6 +471,10 @@ function MyExtensionCard({
                   ))}
                 </div>
               )}
+            </div>
+          ) : testResult.status === 'needs_oauth' ? (
+            <div className="flex items-center gap-1 text-xs text-sky-400">
+              <Link className="w-3 h-3" /> Authentication required — click Connect to authorize
             </div>
           ) : (
             <div className="flex items-center gap-1 text-xs text-red-400">
@@ -607,6 +672,18 @@ function EditUserExtensionDialog({
 
 
 // ── Add External Extension Dialog ───────────────────────────────────
+const PLACEHOLDER_JSON = `{
+  "command": "npx",
+  "args": ["-y", "@modelcontextprotocol/server-github"],
+  "env": {
+    "GITHUB_TOKEN": ""
+  }
+}`
+
+type ParsedServer =
+  | { transport: 'stdio'; command: string; args?: string[]; env?: Record<string, string> }
+  | { transport: 'http'; url: string; env?: Record<string, string> }
+
 function AddExternalExtensionDialog({
   onClose,
   onSaved,
@@ -615,53 +692,73 @@ function AddExternalExtensionDialog({
   onSaved: () => void
 }) {
   const [name, setName] = useState('')
-  const [description, setDescription] = useState('')
-  const [command, setCommand] = useState('')
-  const [args, setArgs] = useState('')
-  const [authType, setAuthType] = useState('none')
-  const [envVars, setEnvVars] = useState<EnvVar[]>([{ key: '', value: '' }])
+  const [jsonText, setJsonText] = useState('')
+  const [parseError, setParseError] = useState<string | null>(null)
+  const [parsed, setParsed] = useState<ParsedServer | null>(null)
   const [saving, setSaving] = useState(false)
-  const [showSecrets, setShowSecrets] = useState(false)
 
-  const addEnvVar = () => setEnvVars([...envVars, { key: '', value: '' }])
-  const removeEnvVar = (idx: number) => setEnvVars(envVars.filter((_, i) => i !== idx))
-  const updateEnvVar = (idx: number, field: 'key' | 'value', val: string) => {
-    const updated = [...envVars]
-    updated[idx] = { ...updated[idx], [field]: val }
-    setEnvVars(updated)
+  const handleJsonChange = (val: string) => {
+    setJsonText(val)
+    setParseError(null)
+    setParsed(null)
+    if (!val.trim()) return
+    try {
+      const obj = JSON.parse(val)
+
+      // Unwrap mcpServers block: { "mcpServers": { "name": { ... } } }
+      let srv = obj
+      let extractedName = ''
+      if (obj.mcpServers && typeof obj.mcpServers === 'object') {
+        const keys = Object.keys(obj.mcpServers)
+        if (keys.length === 0) { setParseError('No servers found in mcpServers block'); return }
+        if (keys.length > 1) { setParseError('Paste one server at a time'); return }
+        extractedName = keys[0]
+        srv = obj.mcpServers[extractedName]
+        if (!name && extractedName) setName(extractedName)
+      }
+
+      // HTTP transport: { type: "http", url: "..." } or { url: "..." }
+      if (srv.type === 'http' || (srv.url && !srv.command)) {
+        if (!srv.url) { setParseError('Missing "url" field for HTTP transport'); return }
+        setParsed({ transport: 'http', url: srv.url, env: srv.env })
+        return
+      }
+
+      // stdio transport: { command, args, env }
+      if (!srv.command) { setParseError('Missing "command" field'); return }
+      setParsed({ transport: 'stdio', command: srv.command, args: srv.args, env: srv.env })
+    } catch {
+      setParseError('Invalid JSON')
+    }
   }
 
   const handleSave = async () => {
     if (!name.trim()) { toast.error('Name is required'); return }
-    if (!command.trim()) { toast.error('Command is required'); return }
+    if (!parsed) { toast.error('Paste a valid MCP server JSON first'); return }
 
     setSaving(true)
     try {
-      const envObj: Record<string, string> = {}
-      for (const ev of envVars) {
-        if (ev.key.trim()) envObj[ev.key.trim()] = ev.value
+      const payload: Record<string, any> = {
+        name: name.trim(),
+        transport: parsed.transport,
+        auth_type: 'none',
+        is_enabled: true,
+        env_vars_json: parsed.env && Object.keys(parsed.env).length > 0 ? parsed.env : null,
+      }
+      if (parsed.transport === 'http') {
+        payload.url = parsed.url
+      } else {
+        payload.command = parsed.command
+        payload.args_json = parsed.args && parsed.args.length > 0 ? parsed.args : null
       }
 
-      // Parse args: split by spaces respecting quoted strings
-      const parsedArgs = args.trim()
-        ? args.trim().match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? []
-        : []
-
-      await api.post('', {
-        name: name.trim(),
-        description: description.trim() || null,
-        command: command.trim(),
-        args_json: parsedArgs.length > 0 ? parsedArgs : null,
-        env_vars_json: Object.keys(envObj).length > 0 ? envObj : null,
-        auth_type: authType,
-        is_enabled: true,
-      })
+      await api.post('', payload)
       toast.success('External MCP added and installed')
       onSaved()
     } catch (err: any) {
       const detail = err?.response?.data?.detail
       if (err?.response?.status === 409) {
-        toast.error(detail || 'This server already exists in the catalog')
+        toast.error('This server is already in the catalog — check your extensions')
       } else {
         toast.error(detail || 'Failed to add extension')
       }
@@ -679,7 +776,7 @@ function AddExternalExtensionDialog({
       <motion.div
         initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.95, opacity: 0 }}
         onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-xl max-h-[90vh] overflow-y-auto bg-rt-surface border border-rt-border rounded-2xl shadow-2xl"
+        className="w-full max-w-lg bg-rt-surface border border-rt-border rounded-2xl shadow-2xl"
       >
         {/* Header */}
         <div className="flex items-center justify-between p-5 border-b border-rt-border">
@@ -692,21 +789,12 @@ function AddExternalExtensionDialog({
           </button>
         </div>
 
-        {/* Info banner */}
-        <div className="mx-5 mt-4 bg-sky-500/5 border border-sky-500/15 rounded-lg p-3">
-          <div className="flex items-start gap-2">
-            <Globe className="w-4 h-4 text-sky-400 mt-0.5 shrink-0" />
-            <p className="text-[11px] text-rt-text-muted">
-              For externally built MCP servers only (e.g. <span className="font-mono text-rt-text">npx @modelcontextprotocol/server-github</span>).
-              Servers built with <span className="font-medium text-rt-text">MCP Builder</span> are added automatically — no need to add them here.
-            </p>
-          </div>
-        </div>
-
         <div className="p-5 space-y-4">
           {/* Name */}
           <div>
-            <label className="text-xs font-medium text-rt-text-muted block mb-1">Name <span className="text-red-400">*</span></label>
+            <label className="text-xs font-medium text-rt-text-muted block mb-1">
+              Name <span className="text-red-400">*</span>
+            </label>
             <input
               value={name} onChange={(e) => setName(e.target.value)}
               placeholder="e.g. GitHub MCP"
@@ -714,84 +802,48 @@ function AddExternalExtensionDialog({
             />
           </div>
 
-          {/* Description */}
+          {/* JSON paste */}
           <div>
-            <label className="text-xs font-medium text-rt-text-muted block mb-1">Description</label>
-            <input
-              value={description} onChange={(e) => setDescription(e.target.value)}
-              placeholder="Optional description"
-              className="w-full px-3 py-2 bg-rt-bg border border-rt-border rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-rt-primary"
+            <label className="text-xs font-medium text-rt-text-muted block mb-1">
+              Paste MCP Server JSON <span className="text-red-400">*</span>
+            </label>
+            <textarea
+              value={jsonText}
+              onChange={(e) => handleJsonChange(e.target.value)}
+              placeholder={PLACEHOLDER_JSON}
+              rows={8}
+              className={`w-full px-3 py-2 bg-rt-bg border rounded-lg text-xs font-mono resize-none focus:outline-none focus:ring-1 focus:ring-rt-primary ${
+                parseError ? 'border-red-500/50' : parsed ? 'border-emerald-500/50' : 'border-rt-border'
+              }`}
             />
-          </div>
-
-          {/* Command */}
-          <div>
-            <label className="text-xs font-medium text-rt-text-muted block mb-1">Command <span className="text-red-400">*</span></label>
-            <input
-              value={command} onChange={(e) => setCommand(e.target.value)}
-              placeholder="e.g. npx or /usr/local/bin/python3"
-              className="w-full px-3 py-2 bg-rt-bg border border-rt-border rounded-lg text-sm font-mono focus:outline-none focus:ring-1 focus:ring-rt-primary"
-            />
-          </div>
-
-          {/* Args */}
-          <div>
-            <label className="text-xs font-medium text-rt-text-muted block mb-1">Arguments</label>
-            <input
-              value={args} onChange={(e) => setArgs(e.target.value)}
-              placeholder="e.g. @modelcontextprotocol/server-github or -m mypackage.server"
-              className="w-full px-3 py-2 bg-rt-bg border border-rt-border rounded-lg text-sm font-mono focus:outline-none focus:ring-1 focus:ring-rt-primary"
-            />
-            <p className="text-[10px] text-rt-text-muted/60 mt-1">Space-separated. Quoted strings supported.</p>
-          </div>
-
-          {/* Auth type */}
-          <div>
-            <label className="text-xs font-medium text-rt-text-muted block mb-1">Auth Type</label>
-            <select
-              value={authType} onChange={(e) => setAuthType(e.target.value)}
-              className="w-full px-3 py-2 bg-rt-bg border border-rt-border rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-rt-primary"
-            >
-              {Object.entries(AUTH_LABELS).map(([v, l]) => (
-                <option key={v} value={v}>{l}</option>
-              ))}
-            </select>
-          </div>
-
-          {/* Env vars */}
-          <div>
-            <div className="flex items-center justify-between mb-1">
-              <label className="text-xs font-medium text-rt-text-muted">Environment Variables</label>
-              <div className="flex items-center gap-2">
-                <button onClick={() => setShowSecrets(!showSecrets)}
-                  className="text-[10px] text-rt-text-muted hover:text-rt-text flex items-center gap-1">
-                  {showSecrets ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
-                  {showSecrets ? 'Hide' : 'Show'} values
-                </button>
-                <button onClick={addEnvVar} className="text-[10px] text-rt-primary hover:text-rt-primary/80">+ Add</button>
+            {/* Validation feedback */}
+            {parseError && (
+              <div className="flex items-center gap-1 mt-1 text-xs text-red-400">
+                <AlertCircle className="w-3 h-3" /> {parseError}
               </div>
-            </div>
-            <div className="space-y-1.5">
-              {envVars.map((ev, i) => (
-                <div key={i} className="flex items-center gap-2">
-                  <input
-                    value={ev.key} onChange={(e) => updateEnvVar(i, 'key', e.target.value)}
-                    placeholder="KEY"
-                    className="flex-1 px-2 py-1.5 bg-rt-bg border border-rt-border rounded text-xs font-mono focus:outline-none focus:ring-1 focus:ring-rt-primary"
-                  />
-                  <input
-                    value={ev.value} onChange={(e) => updateEnvVar(i, 'value', e.target.value)}
-                    placeholder="value" type={showSecrets ? 'text' : 'password'}
-                    className="flex-1 px-2 py-1.5 bg-rt-bg border border-rt-border rounded text-xs font-mono focus:outline-none focus:ring-1 focus:ring-rt-primary"
-                  />
-                  {envVars.length > 1 && (
-                    <button onClick={() => removeEnvVar(i)} className="text-rt-text-muted hover:text-red-400">
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  )}
-                </div>
-              ))}
-            </div>
+            )}
+            {parsed && (
+              <div className="flex items-center gap-1 mt-1 text-xs text-emerald-400 flex-wrap">
+                <Check className="w-3 h-3 shrink-0" />
+                {parsed.transport === 'http' ? (
+                  <>
+                    <span className="px-1 py-0.5 rounded bg-sky-500/10 text-sky-400 text-[10px] border border-sky-500/20">HTTP</span>
+                    <span className="font-mono truncate max-w-xs">{parsed.url}</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="font-mono">{parsed.command}</span>
+                    {parsed.args && <span className="text-rt-text-muted">{parsed.args.join(' ')}</span>}
+                  </>
+                )}
+                {parsed.env && Object.keys(parsed.env).length > 0 && (
+                  <span className="text-rt-text-muted">· {Object.keys(parsed.env).length} env var{Object.keys(parsed.env).length > 1 ? 's' : ''}</span>
+                )}
+              </div>
+            )}
+            <p className="text-[10px] text-rt-text-muted/50 mt-1">
+              Supports Claude Desktop format — single server <span className="font-mono">{'{ command, args, env }'}</span> or full <span className="font-mono">{'{ "mcpServers": { "name": {...} } }'}</span> block.
+            </p>
           </div>
         </div>
 
@@ -799,7 +851,7 @@ function AddExternalExtensionDialog({
         <div className="flex items-center justify-end gap-3 p-5 border-t border-rt-border">
           <button onClick={onClose} className="px-4 py-2 text-sm text-rt-text-muted hover:text-rt-text">Cancel</button>
           <button
-            onClick={handleSave} disabled={saving}
+            onClick={handleSave} disabled={saving || !parsed}
             className="flex items-center gap-2 px-4 py-2 bg-rt-primary text-white rounded-lg hover:bg-rt-primary/90 text-sm font-medium disabled:opacity-50"
           >
             {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}

@@ -5,12 +5,16 @@ Admin-only endpoints for configuring external MCP servers that the
 ReTrace agent can use (like Claude Desktop's MCP server settings).
 """
 
+import secrets
+import time
 from datetime import datetime
 from typing import Optional
+from urllib.parse import urlencode
 
 import httpx
 import structlog
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,7 +37,9 @@ router = APIRouter()
 class CreateExtensionRequest(BaseModel):
     name: str
     description: Optional[str] = None
-    command: str
+    transport: str = "stdio"          # "stdio" or "http"
+    url: Optional[str] = None         # required when transport="http"
+    command: Optional[str] = None     # required when transport="stdio"
     args_json: Optional[list[str]] = None
     env_vars_json: Optional[dict[str, str]] = None
     auth_type: str = "none"
@@ -145,10 +151,14 @@ async def test_my_extension(
     catalog_ext = await _get_extension(user_ext.extension_id, session)
 
     merged_env = user_ext.get_merged_env_vars(catalog_ext.get_raw_env_vars())
+    merged_auth = {**(catalog_ext.auth_config_json or {}), **(user_ext.auth_config_json or {})}
     result = await mcp_client_manager.test_connection(
+        transport=getattr(catalog_ext, "transport", "stdio") or "stdio",
+        url=catalog_ext.url,
         command=catalog_ext.command,
         args=catalog_ext.args_json,
         env_vars=merged_env,
+        auth_config=merged_auth,
     )
     return result
 
@@ -258,6 +268,205 @@ async def delete_extension(
     }
 
 
+@router.post("/my-extensions/{user_extension_id}/oauth/initiate")
+async def initiate_oauth_flow(
+    user_extension_id: str,
+    request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Initiate OAuth 2.0 PKCE flow for an HTTP MCP extension.
+
+    Discovers the OAuth server, optionally registers a client dynamically,
+    and returns the authorization URL to redirect the user to.
+    """
+    from app.services.mcp_oauth_service import (
+        discover_oauth_server,
+        generate_pkce,
+        register_oauth_client,
+        store_pending_flow,
+    )
+
+    user_ext = await _get_user_extension(user_extension_id, current_user.user_id, session)
+    catalog_ext = await _get_extension(user_ext.extension_id, session)
+
+    transport = getattr(catalog_ext, "transport", "stdio") or "stdio"
+    if transport != "http" or not catalog_ext.url:
+        raise HTTPException(400, "OAuth is only supported for HTTP transport extensions.")
+
+    server_metadata = await discover_oauth_server(catalog_ext.url)
+    if server_metadata is None:
+        raise HTTPException(
+            400,
+            "Could not discover OAuth server for this MCP. It may not support the standard OAuth discovery protocol.",
+        )
+
+    authorization_endpoint = server_metadata.get("authorization_endpoint")
+    token_endpoint = server_metadata.get("token_endpoint")
+    registration_endpoint = server_metadata.get("registration_endpoint")
+
+    if not authorization_endpoint or not token_endpoint:
+        raise HTTPException(400, "OAuth server metadata is missing authorization_endpoint or token_endpoint.")
+
+    redirect_uri = str(request.base_url).rstrip("/") + "/api/v1/mcp-extensions/oauth/callback"
+
+    client_id: str | None = None
+    client_secret: str | None = None
+
+    if registration_endpoint:
+        reg_result = await register_oauth_client(registration_endpoint, redirect_uri)
+        if reg_result is None:
+            raise HTTPException(500, "Failed to register OAuth client with the MCP server.")
+        client_id = reg_result.get("client_id")
+        client_secret = reg_result.get("client_secret")
+
+    if not client_id:
+        raise HTTPException(500, "OAuth client registration did not return a client_id.")
+
+    code_verifier, code_challenge = generate_pkce()
+    state = secrets.token_urlsafe(32)
+
+    params: dict[str, str] = {
+        "response_type": "code",
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "state": state,
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
+    }
+
+    scopes_supported = server_metadata.get("scopes_supported")
+    if scopes_supported:
+        params["scope"] = " ".join(scopes_supported) if isinstance(scopes_supported, list) else scopes_supported
+
+    auth_url = f"{authorization_endpoint}?{urlencode(params)}"
+
+    store_pending_flow(state, {
+        "user_extension_id": user_extension_id,
+        "user_id": current_user.user_id,
+        "extension_id": catalog_ext.extension_id,
+        "token_endpoint": token_endpoint,
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "code_verifier": code_verifier,
+        "redirect_uri": redirect_uri,
+    })
+
+    logger.info("oauth_flow_initiated", user_extension_id=user_extension_id, user_id=current_user.user_id)
+    return {"auth_url": auth_url, "state": state}
+
+
+@router.get("/oauth/callback")
+async def oauth_callback(
+    code: str = Query(None),
+    state: str = Query(None),
+    error: str = Query(None),
+    session: AsyncSession = Depends(get_session),
+):
+    """OAuth 2.0 callback — exchanges the authorization code for tokens
+    and stores them in the user's extension auth_config_json.
+    """
+    from app.services.mcp_oauth_service import exchange_code_for_token, get_pending_flow
+
+    if error:
+        return HTMLResponse(
+            f"""<html><head><title>Authorization Failed</title></head><body>
+<p style="font-family:sans-serif;text-align:center;margin-top:80px;color:#f87171">
+  <strong>Authorization failed:</strong> {error}<br>You can close this window.
+</p>
+</body></html>""",
+            status_code=400,
+        )
+
+    if not state:
+        return HTMLResponse(
+            """<html><head><title>Authorization Failed</title></head><body>
+<p style="font-family:sans-serif;text-align:center;margin-top:80px;color:#f87171">
+  <strong>Missing state parameter.</strong><br>You can close this window.
+</p>
+</body></html>""",
+            status_code=400,
+        )
+
+    flow = get_pending_flow(state)
+    if flow is None:
+        return HTMLResponse(
+            """<html><head><title>Authorization Failed</title></head><body>
+<p style="font-family:sans-serif;text-align:center;margin-top:80px;color:#f87171">
+  <strong>Invalid or expired authorization session.</strong><br>Please try connecting again.
+</p>
+</body></html>""",
+            status_code=400,
+        )
+
+    token_data = await exchange_code_for_token(
+        token_endpoint=flow["token_endpoint"],
+        code=code,
+        code_verifier=flow["code_verifier"],
+        client_id=flow["client_id"],
+        redirect_uri=flow["redirect_uri"],
+        client_secret=flow.get("client_secret"),
+    )
+
+    if token_data is None:
+        return HTMLResponse(
+            """<html><head><title>Authorization Failed</title></head><body>
+<p style="font-family:sans-serif;text-align:center;margin-top:80px;color:#f87171">
+  <strong>Failed to exchange authorization code for tokens.</strong><br>You can close this window.
+</p>
+</body></html>""",
+            status_code=500,
+        )
+
+    # Load the UserExtension and store the tokens
+    result = await session.execute(
+        select(UserExtension)
+        .where(UserExtension.user_extension_id == flow["user_extension_id"])
+        .where(UserExtension.user_id == flow["user_id"])
+    )
+    user_ext = result.scalar_one_or_none()
+    if not user_ext:
+        return HTMLResponse(
+            """<html><head><title>Authorization Failed</title></head><body>
+<p style="font-family:sans-serif;text-align:center;margin-top:80px;color:#f87171">
+  <strong>Extension not found.</strong><br>You can close this window.
+</p>
+</body></html>""",
+            status_code=400,
+        )
+
+    existing_auth = dict(user_ext.auth_config_json or {})
+    existing_auth.update({
+        "oauth_access_token": token_data.get("access_token"),
+        "oauth_refresh_token": token_data.get("refresh_token"),
+        "oauth_token_type": token_data.get("token_type", "Bearer"),
+        "oauth_expires_in": token_data.get("expires_in"),
+        "oauth_granted_at": int(time.time()),
+    })
+    user_ext.auth_config_json = existing_auth
+    user_ext.updated_at = datetime.utcnow()
+    await session.commit()
+
+    user_extension_id = flow["user_extension_id"]
+    logger.info("oauth_token_stored", user_extension_id=user_extension_id, user_id=flow["user_id"])
+
+    return HTMLResponse(
+        f"""<html><head><title>Authorization Successful</title></head><body>
+<p style="font-family:sans-serif;text-align:center;margin-top:80px">
+  <strong>Authorization successful!</strong><br>You can close this window.
+</p>
+<script>
+  try {{
+    window.opener && window.opener.postMessage(
+      {{ type: 'mcp_oauth_success', user_extension_id: '{user_extension_id}' }}, '*'
+    );
+  }} catch(e) {{}}
+  setTimeout(() => window.close(), 1500);
+</script>
+</body></html>"""
+    )
+
+
 @router.post("/{extension_id}/install")
 async def install_extension(
     extension_id: str,
@@ -328,10 +537,23 @@ async def create_extension(
     session: AsyncSession = Depends(get_session),
 ):
     """Create a new MCP extension configuration."""
-    # Duplicate check: reject if an extension with the same command already exists
-    dup_result = await session.execute(
-        select(McpExtension).where(McpExtension.command == body.command)
-    )
+    # Validate transport-specific required fields
+    if body.transport == "http":
+        if not body.url:
+            raise HTTPException(400, "url is required for HTTP transport")
+    else:
+        if not body.command:
+            raise HTTPException(400, "command is required for stdio transport")
+
+    # Duplicate check: reject if an extension with the same command/url already exists
+    if body.transport == "http":
+        dup_result = await session.execute(
+            select(McpExtension).where(McpExtension.url == body.url)
+        )
+    else:
+        dup_result = await session.execute(
+            select(McpExtension).where(McpExtension.command == body.command)
+        )
     if dup_result.scalar_one_or_none():
         raise HTTPException(
             status_code=409,
@@ -342,6 +564,8 @@ async def create_extension(
         tenant_id=current_user.tenant_id,
         name=body.name,
         description=body.description,
+        transport=body.transport,
+        url=body.url,
         command=body.command,
         args_json=body.args_json,
         env_vars_json=body.env_vars_json,
@@ -446,6 +670,8 @@ async def test_extension(
     """
     ext = await _get_extension(extension_id, session)
     result = await mcp_client_manager.test_connection(
+        transport=getattr(ext, "transport", "stdio") or "stdio",
+        url=ext.url,
         command=ext.command,
         args=ext.args_json,
         env_vars=ext.get_raw_env_vars(),
@@ -472,6 +698,8 @@ async def get_extension_tools(
         tools = await mcp_client_manager.start_extension(
             extension_id=ext.extension_id,
             extension_name=ext.name,
+            transport=getattr(ext, "transport", "stdio") or "stdio",
+            url=ext.url,
             command=ext.command,
             args=ext.args_json,
             env_vars=ext.get_raw_env_vars(),
