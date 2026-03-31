@@ -355,7 +355,7 @@ function MyExtensionCard({
   return (
     <motion.div
       layout
-      className={`rounded-xl border transition-colors ${
+      className={`rounded-xl border transition-colors overflow-hidden ${
         ext.is_enabled
           ? 'border-rt-border bg-rt-surface'
           : 'border-rt-border/50 bg-rt-surface/50 opacity-60'
@@ -414,15 +414,15 @@ function MyExtensionCard({
         </div>
 
         {/* Actions */}
-        <div className="flex items-center gap-1 flex-wrap">
+        <div className="flex items-center gap-1">
           <button onClick={onTest} disabled={isTesting}
             className="flex items-center gap-1 px-2 py-1 text-xs rounded hover:bg-rt-primary/10 text-rt-primary transition-colors disabled:opacity-50">
             {isTesting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
             Test
           </button>
-          {(testResult?.status === 'needs_oauth' || testResult?.needs_oauth) && (
+          {((catalog.transport === 'http' && !ext.auth_config_json?.oauth_access_token) || testResult?.status === 'needs_oauth') && (
             <button onClick={onConnect} disabled={isConnecting}
-              className="flex items-center gap-1 px-2 py-1 text-xs rounded bg-sky-500/10 hover:bg-sky-500/20 text-sky-400 border border-sky-500/20 transition-colors disabled:opacity-50">
+              className="flex items-center gap-1 px-2 py-1 text-xs rounded hover:bg-sky-500/10 text-sky-400 transition-colors disabled:opacity-50">
               {isConnecting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Link className="w-3 h-3" />}
               Connect
             </button>
@@ -447,9 +447,19 @@ function MyExtensionCard({
         </div>
       </div>
 
+
+      {/* OAuth hint for unconnected HTTP extensions */}
+      {catalog.transport === 'http' && !ext.auth_config_json?.oauth_access_token && !testResult && (
+        <div className="border-t border-rt-border/50 px-4 py-2 rounded-b-xl">
+          <div className="flex items-center gap-1 text-xs text-rt-text-muted">
+            <Link className="w-3 h-3 flex-shrink-0" /> Click Connect to authorize this extension
+          </div>
+        </div>
+      )}
+
       {/* Test results */}
       {testResult && (
-        <div className={`border-t px-4 py-3 ${
+        <div className={`border-t px-4 py-3 rounded-b-xl ${
           testResult.status === 'ok'
             ? 'border-emerald-500/20 bg-emerald-500/5'
             : testResult.status === 'needs_oauth'
@@ -474,7 +484,7 @@ function MyExtensionCard({
             </div>
           ) : testResult.status === 'needs_oauth' ? (
             <div className="flex items-center gap-1 text-xs text-sky-400">
-              <Link className="w-3 h-3" /> Authentication required — click Connect to authorize
+              <Link className="w-3 h-3" /> Needs authorization — click Connect to authenticate
             </div>
           ) : (
             <div className="flex items-center gap-1 text-xs text-red-400">
@@ -486,7 +496,7 @@ function MyExtensionCard({
 
       {/* Verify access result */}
       {verifyResult && (
-        <div className={`border-t px-4 py-3 ${
+        <div className={`border-t px-4 py-3 rounded-b-xl ${
           verifyResult.has_access ? 'border-emerald-500/20 bg-emerald-500/5' : 'border-amber-500/20 bg-amber-500/5'
         }`}>
           <div className={`flex items-center gap-1 text-xs ${
