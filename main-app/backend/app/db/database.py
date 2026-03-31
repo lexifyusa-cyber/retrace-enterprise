@@ -102,6 +102,7 @@ async def _run_migrations() -> None:
         ("users", "max_managed_users", "ALTER TABLE users ADD COLUMN max_managed_users INTEGER DEFAULT NULL"),
         ("tenants", "max_managed_users_per_user_admin", "ALTER TABLE tenants ADD COLUMN max_managed_users_per_user_admin INTEGER DEFAULT 50"),
         ("tenants", "auto_provision_enabled", "ALTER TABLE tenants ADD COLUMN auto_provision_enabled BOOLEAN DEFAULT 0"),
+        ("mcp_extensions", "auto_install", "ALTER TABLE mcp_extensions ADD COLUMN auto_install BOOLEAN DEFAULT 0"),
     ]
     async with engine.begin() as conn:
         for table, column, ddl in migrations:
@@ -109,6 +110,11 @@ async def _run_migrations() -> None:
             cols = {row[1] for row in result.fetchall()}
             if column not in cols:
                 await conn.execute(text(ddl))
+
+        # Set auto_install=True for the ServiceNow built-in extension
+        await conn.execute(text(
+            "UPDATE mcp_extensions SET auto_install = 1 WHERE is_builtin = 1 AND name = 'ServiceNow'"
+        ))
 
         # Make product_id nullable on tables that previously required it
         nullable_migrations = [

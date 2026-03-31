@@ -50,6 +50,7 @@ class UpdateExtensionRequest(BaseModel):
     auth_type: Optional[str] = None
     auth_config_json: Optional[dict] = None
     is_enabled: Optional[bool] = None
+    auto_install: Optional[bool] = None
 
 
 class InstallExtensionRequest(BaseModel):
@@ -74,6 +75,9 @@ async def list_catalog(
     session: AsyncSession = Depends(get_session),
 ):
     """List published extensions available for users to install."""
+    await _ensure_auto_install_extensions_provisioned(
+        session, current_user.user_id, current_user.tenant_id
+    )
     stmt = select(McpExtension).where(McpExtension.is_enabled == True)
     if current_user.tenant_id:
         stmt = stmt.where(
@@ -106,6 +110,9 @@ async def list_my_extensions(
     session: AsyncSession = Depends(get_session),
 ):
     """List the current user's installed extensions."""
+    await _ensure_auto_install_extensions_provisioned(
+        session, current_user.user_id, current_user.tenant_id
+    )
     stmt = (
         select(UserExtension, McpExtension)
         .join(McpExtension, UserExtension.extension_id == McpExtension.extension_id)
@@ -622,3 +629,49 @@ async def _get_extension(extension_id: str, session: AsyncSession) -> McpExtensi
     if not ext:
         raise HTTPException(status_code=404, detail="MCP extension not found")
     return ext
+
+
+async def _ensure_auto_install_extensions_provisioned(
+    session: AsyncSession,
+    user_id: str,
+    tenant_id: Optional[str],
+) -> None:
+    """Idempotent: create a UserExtension record for every auto_install=True
+    extension this user does not yet have.  Admin-controlled per extension —
+    only extensions explicitly flagged auto_install=True are pushed to all users."""
+    stmt = select(McpExtension).where(
+        McpExtension.auto_install == True,
+        McpExtension.is_enabled == True,
+    )
+    if tenant_id:
+        stmt = stmt.where(
+            (McpExtension.tenant_id == tenant_id)
+            | (McpExtension.tenant_id.is_(None))
+        )
+    else:
+        stmt = stmt.where(McpExtension.tenant_id.is_(None))
+
+    result = await session.execute(stmt)
+    auto_exts = result.scalars().all()
+    if not auto_exts:
+        return
+
+    existing_result = await session.execute(
+        select(UserExtension.extension_id)
+        .where(UserExtension.user_id == user_id)
+        .where(UserExtension.extension_id.in_([e.extension_id for e in auto_exts]))
+    )
+    already_installed = {row[0] for row in existing_result.all()}
+
+    for ext in auto_exts:
+        if ext.extension_id not in already_installed:
+            session.add(UserExtension(
+                extension_id=ext.extension_id,
+                user_id=user_id,
+                tenant_id=tenant_id,
+                is_enabled=True,
+            ))
+            logger.info("auto_install_extension_provisioned",
+                        extension_id=ext.extension_id, user_id=user_id)
+
+    await session.flush()

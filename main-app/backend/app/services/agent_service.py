@@ -656,6 +656,16 @@ async def _load_mcp_extension_tools(
     if not user_id:
         return []
 
+    # Auto-provision any auto_install=True extensions this user doesn't have yet
+    tenant_id = (user_auth_context or {}).get("tenant_id") or None
+    try:
+        from app.api.mcp_extensions import _ensure_auto_install_extensions_provisioned
+        await _ensure_auto_install_extensions_provisioned(session, user_id, tenant_id)
+        await session.commit()  # persist before the main SELECT reads them back
+    except Exception as e:
+        logger.warning("auto_install_provision_skipped", error=str(e))
+        await session.rollback()
+
     # Load this user's installed + enabled extensions, joined with catalog
     result = await session.execute(
         select(UserExtension, McpExtension)

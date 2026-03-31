@@ -42,6 +42,8 @@ class McpExtension(Base):
 
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     is_builtin: Mapped[bool] = mapped_column(Boolean, default=False)
+    # When True, this extension is automatically installed for every user (admin-controlled)
+    auto_install: Mapped[bool] = mapped_column(Boolean, default=False)
     mcp_server_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)  # links to McpServer if built via MCP Builder
     created_by: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -60,6 +62,7 @@ class McpExtension(Base):
             "auth_config_json": self.auth_config_json,
             "is_enabled": self.is_enabled,
             "is_builtin": self.is_builtin,
+            "auto_install": getattr(self, "auto_install", False),
             "mcp_server_id": self.mcp_server_id,
             "created_by": self.created_by,
             "created_at": self.created_at.isoformat() if self.created_at else None,
