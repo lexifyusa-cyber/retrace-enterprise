@@ -185,7 +185,7 @@ export default function McpBuilder() {
       setIsGenerating(true)
       setGenerationPhase('Resuming generation...')
       setCurrentStep(3)
-      const token = localStorage.getItem('token')
+      const token = localStorage.getItem('rt_access_token')
 
       const poll = setInterval(async () => {
         try {
@@ -299,7 +299,7 @@ export default function McpBuilder() {
 
   const fetchServers = useCallback(async () => {
     try {
-      const token = localStorage.getItem('token')
+      const token = localStorage.getItem('rt_access_token')
       const res = await fetch('/api/v1/mcp-builder/servers', {
         headers: { 'Authorization': `Bearer ${token}` }
       })
@@ -330,7 +330,7 @@ export default function McpBuilder() {
   useEffect(() => {
     async function fetchProducts() {
       try {
-        const token = localStorage.getItem('token')
+        const token = localStorage.getItem('rt_access_token')
         const res = await fetch('/api/v1/products', {
           headers: { 'Authorization': `Bearer ${token}` }
         })
@@ -392,7 +392,7 @@ export default function McpBuilder() {
       phaseTimer = setTimeout(() => setAnalyzePhase('Crawling linked documentation pages...'), 3000)
     }
 
-    const token = localStorage.getItem('token')
+    const token = localStorage.getItem('rt_access_token')
     const effectiveDocsText = uploadedFile ? uploadedFile.text : apiDocsText
 
     // Build the analysis promise and store it module-level so it survives unmount
@@ -526,7 +526,7 @@ export default function McpBuilder() {
     sessionStorage.setItem(GEN_SESSION_KEY, JSON.stringify({ serverName: safeName, startedAt: Date.now() }))
 
     try {
-      const token = localStorage.getItem('token')
+      const token = localStorage.getItem('rt_access_token')
 
       const payload: any = {
         product_name: prodName,
@@ -897,7 +897,7 @@ export default function McpBuilder() {
                                 e.stopPropagation()
                                 if (togglingServer === srv.server_id) return
                                 setTogglingServer(srv.server_id)
-                                const token = localStorage.getItem('token')
+                                const token = localStorage.getItem('rt_access_token')
                                 const action = srv.status === 'running' ? 'stop' : 'start'
                                 try {
                                   await fetch(`/api/v1/mcp-builder/servers/${srv.server_id}/${action}`, {
@@ -1216,7 +1216,7 @@ export default function McpBuilder() {
                                         if (binaryTypes.includes(ext)) {
                                           setIsUploadingFile(true);
                                           try {
-                                            const token = localStorage.getItem('token');
+                                            const token = localStorage.getItem('rt_access_token');
                                             const formData = new FormData();
                                             formData.append('file', file);
                                             const resp = await fetch('/api/v1/mcp-builder/upload-docs', {
@@ -1929,7 +1929,7 @@ export default function McpBuilder() {
               <div className="flex flex-col gap-2">
                 <button
                   onClick={async () => {
-                    const token = localStorage.getItem('token')
+                    const token = localStorage.getItem('rt_access_token')
                     await fetch(`/api/v1/mcp-builder/servers/${deleteConfirm.server_id}?delete_files=true`, {
                       method: 'DELETE',
                       headers: { 'Authorization': `Bearer ${token}` }
@@ -1943,7 +1943,7 @@ export default function McpBuilder() {
                 </button>
                 <button
                   onClick={async () => {
-                    const token = localStorage.getItem('token')
+                    const token = localStorage.getItem('rt_access_token')
                     await fetch(`/api/v1/mcp-builder/servers/${deleteConfirm.server_id}`, {
                       method: 'DELETE',
                       headers: { 'Authorization': `Bearer ${token}` }
