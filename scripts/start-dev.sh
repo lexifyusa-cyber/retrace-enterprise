@@ -149,6 +149,10 @@ pip install --upgrade pip setuptools wheel
 echo "Installing Python dependencies..."
 pip install -q -r requirements.txt
 
+# Install local ServiceNow MCP server package
+echo "Installing ServiceNow MCP server..."
+pip install -q -e "$PROJECT_ROOT/servicenow-mcp-server/"
+
 if [ ! -f ".env" ]; then
     cp .env.example .env
     echo "⚠️  Created .env file. Please configure your API keys!"

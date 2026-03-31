@@ -92,3 +92,6 @@ pytz>=2024.1
 
 # MCP
 mcp>=1.0.0
+
+# ServiceNow MCP Server (local package — must be installed separately)
+# pip install -e ../../servicenow-mcp-server/
