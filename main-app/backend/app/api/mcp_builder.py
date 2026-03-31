@@ -319,8 +319,49 @@ async def delete_mcp_server(
             logger.warning("delete_mcp_server_unsafe_path", path=str(folder_path),
                            reason="Path parent is not 'mcp-servers/', refusing to delete")
 
+    # Also clean up linked MCP extension and all user installs
+    extensions_deleted = 0
+    user_installs_deleted = 0
+    try:
+        from app.models.mcp_extension import McpExtension
+        from app.models.user_extension import UserExtension
+        from app.services.mcp_client_service import mcp_client_manager
+
+        ext_result = await session.execute(
+            select(McpExtension).where(McpExtension.mcp_server_id == server_id)
+        )
+        linked_extensions = ext_result.scalars().all()
+
+        for ext in linked_extensions:
+            # Stop any running MCP connections for this extension
+            if mcp_client_manager.is_running(ext.extension_id):
+                await mcp_client_manager.stop_extension(ext.extension_id)
+
+            # Delete all user installs for this extension
+            ue_result = await session.execute(
+                select(UserExtension).where(UserExtension.extension_id == ext.extension_id)
+            )
+            for ue in ue_result.scalars().all():
+                await session.delete(ue)
+                user_installs_deleted += 1
+
+            await session.delete(ext)
+            extensions_deleted += 1
+
+        if extensions_deleted:
+            logger.info("mcp_server_delete_cascade", server_id=server_id,
+                        extensions=extensions_deleted, user_installs=user_installs_deleted)
+    except Exception as cascade_err:
+        logger.warning("mcp_server_delete_cascade_failed", error=str(cascade_err))
+
     await session.delete(srv)
-    return {"status": "deleted", "server_id": server_id, "files_deleted": files_deleted}
+    return {
+        "status": "deleted",
+        "server_id": server_id,
+        "files_deleted": files_deleted,
+        "extensions_deleted": extensions_deleted,
+        "user_installs_deleted": user_installs_deleted,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1319,13 +1360,36 @@ async def generate_mcp_server(
                 venv_python = os.path.join(dest, ".venv", "bin", "python")
                 mcp_command = venv_python if os.path.exists(venv_python) else sys.executable
 
+                # Extract expected env var names from generated server.py
+                # so the Edit dialog shows pre-filled field names for the user
+                expected_env_vars = {}
+                try:
+                    import re as _re
+                    server_py_path = os.path.join(dest, "src", module_name, "server.py")
+                    if os.path.isfile(server_py_path):
+                        with open(server_py_path, "r") as f:
+                            server_code = f.read()
+                        # Match os.getenv("KEY"), os.getenv("KEY", default), os.environ["KEY"], os.environ.get("KEY")
+                        env_patterns = [
+                            r'os\.getenv\(\s*["\']([A-Z_][A-Z0-9_]*)["\']',
+                            r'os\.environ\[\s*["\']([A-Z_][A-Z0-9_]*)["\']',
+                            r'os\.environ\.get\(\s*["\']([A-Z_][A-Z0-9_]*)["\']',
+                        ]
+                        for pattern in env_patterns:
+                            for match in _re.finditer(pattern, server_code):
+                                var_name = match.group(1)
+                                expected_env_vars[var_name] = ""
+                        logger.info("mcp_bridge_env_vars_extracted", count=len(expected_env_vars), vars=list(expected_env_vars.keys()))
+                except Exception as env_err:
+                    logger.warning("mcp_bridge_env_vars_extract_failed", error=str(env_err))
+
                 async with async_session_maker() as bridge_session:
                     ext = McpExtension(
                         name=request.product_name,
                         description=f"Auto-generated MCP server for {request.product_name}",
                         command=mcp_command,
                         args_json=["-m", f"{module_name}.server"],
-                        env_vars_json={},
+                        env_vars_json=expected_env_vars if expected_env_vars else {},
                         auth_type=request.auth_type or "none",
                         is_builtin=False,
                         mcp_server_id=new_server.server_id,

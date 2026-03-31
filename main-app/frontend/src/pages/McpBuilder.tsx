@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { FolderTree, Blocks, AlertCircle, Copy, CheckCircle2, ChevronDown, ChevronUp, Wand2, Search, Terminal, Globe, Upload, Trash2, Circle, Loader2, ChevronLeft, ChevronRight, Zap, Server, Clock, Check, FileCode, Folder, File, FolderOpen, Play, Square, RotateCcw } from 'lucide-react'
+import { FolderTree, Blocks, AlertCircle, Copy, CheckCircle2, ChevronDown, ChevronUp, Wand2, Search, Terminal, Globe, Upload, Circle, Loader2, ChevronLeft, ChevronRight, Zap, Server, Clock, Check, FileCode, Folder, File, FolderOpen, RotateCcw } from 'lucide-react'
 import { localFilesApi } from '../utils/api'
 import type { FileEntry } from '../types'
 
@@ -142,10 +142,8 @@ export default function McpBuilder() {
   const [browseRootPath, setBrowseRootPath] = useState<string | null>(null)
 
   // Delete confirmation
-  const [deleteConfirm, setDeleteConfirm] = useState<McpServerEntry | null>(null)
 
   // Server start/stop toggling
-  const [togglingServer, setTogglingServer] = useState<string | null>(null)
 
   // Full reset – used by refresh icon and Build Another
   const resetAll = useCallback(() => {
@@ -857,20 +855,9 @@ export default function McpBuilder() {
                       >
                         <div className="flex items-start justify-between mb-3">
                           <div className="flex items-center gap-2 min-w-0">
-                            <Circle className={`w-2.5 h-2.5 flex-shrink-0 ${
-                              srv.status === 'running' ? 'fill-emerald-400 text-emerald-400' :
-                              srv.status === 'error' ? 'fill-red-400 text-red-400' :
-                              'fill-gray-400 text-gray-400'
-                            }`} />
+                            <Circle className="w-2.5 h-2.5 flex-shrink-0 fill-emerald-400 text-emerald-400" />
                             <span className="text-sm font-medium text-rt-text-strong truncate">{srv.name}</span>
                           </div>
-                          <span className={`text-[10px] px-1.5 py-0.5 rounded flex-shrink-0 ${
-                            srv.status === 'running' ? 'bg-emerald-500/10 text-emerald-400' :
-                            srv.status === 'error' ? 'bg-red-500/10 text-red-400' :
-                            'bg-gray-500/10 text-gray-400'
-                          }`}>
-                            {srv.status}
-                          </span>
                         </div>
                         <div className="space-y-1.5 mb-3">
                           <p className="text-xs text-rt-text-muted truncate">{srv.product_name}</p>
@@ -891,41 +878,6 @@ export default function McpBuilder() {
                             {new Date(srv.created_at).toLocaleDateString()}
                           </span>
                           <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                            {/* Play / Stop toggle */}
-                            <button
-                              onClick={async (e) => {
-                                e.stopPropagation()
-                                if (togglingServer === srv.server_id) return
-                                setTogglingServer(srv.server_id)
-                                const token = localStorage.getItem('rt_access_token')
-                                const action = srv.status === 'running' ? 'stop' : 'start'
-                                try {
-                                  await fetch(`/api/v1/mcp-builder/servers/${srv.server_id}/${action}`, {
-                                    method: 'POST',
-                                    headers: { 'Authorization': `Bearer ${token}` }
-                                  })
-                                } catch {}
-                                // Wait a moment for process to start/stop before refreshing
-                                setTimeout(() => {
-                                  fetchServers()
-                                  setTogglingServer(null)
-                                }, 1000)
-                              }}
-                              className={`p-1 rounded transition-colors ${
-                                srv.status === 'running'
-                                  ? 'hover:bg-red-500/10 text-rt-text-muted hover:text-red-400'
-                                  : 'hover:bg-emerald-500/10 text-rt-text-muted hover:text-emerald-400'
-                              }`}
-                              title={srv.status === 'running' ? 'Stop server' : 'Start server'}
-                            >
-                              {togglingServer === srv.server_id ? (
-                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                              ) : srv.status === 'running' ? (
-                                <Square className="w-3.5 h-3.5" />
-                              ) : (
-                                <Play className="w-3.5 h-3.5" />
-                              )}
-                            </button>
                             <button
                               onClick={async (e) => {
                                 e.stopPropagation()
@@ -954,16 +906,6 @@ export default function McpBuilder() {
                               title="Browse files"
                             >
                               <FolderOpen className="w-3.5 h-3.5" />
-                            </button>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                setDeleteConfirm(srv)
-                              }}
-                              className="p-1 rounded hover:bg-red-500/10 text-rt-text-muted hover:text-red-400 transition-colors"
-                              title="Delete server"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
                             </button>
                           </div>
                         </div>
@@ -1902,70 +1844,6 @@ export default function McpBuilder() {
       </div>
 
       {/* Delete Confirmation Modal */}
-      <AnimatePresence>
-        {deleteConfirm && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4"
-            onClick={() => setDeleteConfirm(null)}
-          >
-            <motion.div
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-rt-surface border border-rt-border rounded-xl p-6 w-full max-w-md shadow-xl"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <h3 className="text-lg font-medium text-rt-text-strong mb-2">Delete MCP Server</h3>
-              <p className="text-sm text-rt-text-muted mb-1">
-                Are you sure you want to delete <span className="font-medium text-rt-text-strong">{deleteConfirm.name}</span>?
-              </p>
-              <p className="text-xs text-rt-text-muted/70 font-mono mb-5 bg-rt-bg px-3 py-1.5 rounded-lg border border-rt-border/50">
-                {deleteConfirm.destination_folder}
-              </p>
-
-              <div className="flex flex-col gap-2">
-                <button
-                  onClick={async () => {
-                    const token = localStorage.getItem('rt_access_token')
-                    await fetch(`/api/v1/mcp-builder/servers/${deleteConfirm.server_id}?delete_files=true`, {
-                      method: 'DELETE',
-                      headers: { 'Authorization': `Bearer ${token}` }
-                    })
-                    setDeleteConfirm(null)
-                    fetchServers()
-                  }}
-                  className="w-full px-4 py-2.5 bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/20 rounded-lg text-sm font-medium transition-all"
-                >
-                  Delete server and all generated files
-                </button>
-                <button
-                  onClick={async () => {
-                    const token = localStorage.getItem('rt_access_token')
-                    await fetch(`/api/v1/mcp-builder/servers/${deleteConfirm.server_id}`, {
-                      method: 'DELETE',
-                      headers: { 'Authorization': `Bearer ${token}` }
-                    })
-                    setDeleteConfirm(null)
-                    fetchServers()
-                  }}
-                  className="w-full px-4 py-2.5 bg-rt-bg hover:bg-rt-border/30 text-rt-text-muted border border-rt-border rounded-lg text-sm font-medium transition-all"
-                >
-                  Remove from list only (keep files)
-                </button>
-                <button
-                  onClick={() => setDeleteConfirm(null)}
-                  className="w-full px-4 py-2.5 text-rt-text-muted text-sm hover:text-rt-text-strong transition-colors"
-                >
-                  Cancel
-                </button>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
     </div>
   )
 }

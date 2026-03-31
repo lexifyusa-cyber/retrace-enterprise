@@ -156,14 +156,14 @@ function MyExtensionsTab() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['my-extensions'] }),
   })
 
-  const uninstallMutation = useMutation({
+  const deleteMutation = useMutation({
     mutationFn: async (id: string) => { await api.delete(`/my-extensions/${id}`) },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['my-extensions'] })
       queryClient.invalidateQueries({ queryKey: ['catalog'] })
-      toast.success('Extension uninstalled')
+      toast.success('Extension deleted')
     },
-    onError: () => toast.error('Failed to uninstall'),
+    onError: () => toast.error('Failed to delete'),
   })
 
   const testMutation = useMutation({
@@ -223,8 +223,8 @@ function MyExtensionsTab() {
             key={ext.user_extension_id}
             ext={ext}
             onToggleEnabled={(enabled) => toggleMutation.mutate({ id: ext.user_extension_id, enabled })}
-            onUninstall={() => {
-              if (confirm(`Uninstall "${ext.catalog.name}"?`)) uninstallMutation.mutate(ext.user_extension_id)
+            onDelete={() => {
+              if (confirm(`Delete "${ext.catalog.name}"? This will remove the extension, server registry, and code files from disk.`)) deleteMutation.mutate(ext.user_extension_id)
             }}
             onTest={() => testMutation.mutate(ext.user_extension_id)}
             onVerifyAccess={() => verifyMutation.mutate(ext.user_extension_id)}
@@ -259,7 +259,7 @@ function MyExtensionsTab() {
 function MyExtensionCard({
   ext,
   onToggleEnabled,
-  onUninstall,
+  onDelete,
   onTest,
   onVerifyAccess,
   onEdit,
@@ -270,7 +270,7 @@ function MyExtensionCard({
 }: {
   ext: UserExtensionItem
   onToggleEnabled: (enabled: boolean) => void
-  onUninstall: () => void
+  onDelete: () => void
   onTest: () => void
   onVerifyAccess: () => void
   onEdit: () => void
@@ -350,9 +350,9 @@ function MyExtensionCard({
             <Settings className="w-3 h-3" /> {PASSTHROUGH_TYPES.includes(catalog.auth_type) ? 'Details' : 'Edit'}
           </button>
           {!catalog.is_builtin && (
-            <button onClick={onUninstall}
+            <button onClick={onDelete}
               className="flex items-center gap-1 px-2 py-1 text-xs rounded hover:bg-red-500/10 text-red-400 transition-colors">
-              <Trash2 className="w-3 h-3" /> Uninstall
+              <Trash2 className="w-3 h-3" /> Delete
             </button>
           )}
         </div>

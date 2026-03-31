@@ -184,26 +184,78 @@ async def update_my_extension(
 
 
 @router.delete("/my-extensions/{user_extension_id}")
-async def uninstall_extension(
+async def delete_extension(
     user_extension_id: str,
     current_user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    """Uninstall an extension from the current user's account."""
+    """Delete an extension — removes user install, catalog entry, server registry, and code files."""
     user_ext = await _get_user_extension(user_extension_id, current_user.user_id, session)
 
-    # Block uninstall of built-in extensions
+    # Block deletion of built-in extensions
     catalog_ext = await _get_extension(user_ext.extension_id, session)
     if catalog_ext.is_builtin:
-        raise HTTPException(400, "Cannot uninstall built-in extensions.")
+        raise HTTPException(400, "Cannot delete built-in extensions.")
 
+    # Stop any running MCP connections
     if mcp_client_manager.is_running(user_ext.extension_id, current_user.user_id):
         await mcp_client_manager.stop_extension(user_ext.extension_id, current_user.user_id)
 
-    await session.delete(user_ext)
+    files_deleted = False
+    server_deleted = False
+
+    # If this is a Custom Build (has mcp_server_id), delete the server + code files
+    if catalog_ext.mcp_server_id:
+        try:
+            from app.models.mcp_server import McpServer
+            srv_result = await session.execute(
+                select(McpServer).where(McpServer.server_id == catalog_ext.mcp_server_id)
+            )
+            srv = srv_result.scalar_one_or_none()
+            if srv:
+                # Delete code files from disk
+                if srv.destination_folder:
+                    import shutil
+                    from pathlib import Path
+                    folder = srv.destination_folder
+                    if folder.startswith("~/") or folder.startswith("~\\"):
+                        folder = str(Path.home() / folder[2:])
+                    folder_path = Path(folder).resolve()
+
+                    is_safe = (folder_path.parent.name == "mcp-servers"
+                               and len(folder_path.parts) >= 3
+                               and folder_path.name != "mcp-servers")
+                    if is_safe and folder_path.is_dir():
+                        shutil.rmtree(folder_path, ignore_errors=True)
+                        files_deleted = True
+
+                await session.delete(srv)
+                server_deleted = True
+        except Exception as srv_err:
+            logger.warning("extension_delete_server_failed", error=str(srv_err))
+
+    # Delete all user installs for this extension (not just current user)
+    all_installs = await session.execute(
+        select(UserExtension).where(UserExtension.extension_id == catalog_ext.extension_id)
+    )
+    for ue in all_installs.scalars().all():
+        await session.delete(ue)
+
+    # Delete the catalog entry
+    await session.delete(catalog_ext)
     await session.commit()
-    logger.info("user_extension_uninstalled", extension_id=user_ext.extension_id, user_id=current_user.user_id)
-    return {"status": "uninstalled", "user_extension_id": user_extension_id}
+
+    logger.info("extension_fully_deleted",
+                extension_id=catalog_ext.extension_id,
+                name=catalog_ext.name,
+                server_deleted=server_deleted,
+                files_deleted=files_deleted)
+    return {
+        "status": "deleted",
+        "extension_id": catalog_ext.extension_id,
+        "server_deleted": server_deleted,
+        "files_deleted": files_deleted,
+    }
 
 
 @router.post("/{extension_id}/install")
