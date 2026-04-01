@@ -29,6 +29,7 @@ class Conversation(Base):
         nullable=True,
         index=True,
     )
+    user_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
     title: Mapped[str] = mapped_column(String(255), nullable=False, default="New conversation")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
@@ -47,6 +48,7 @@ class Conversation(Base):
         d = {
             "conversation_id": self.conversation_id,
             "product_id": self.product_id,
+            "user_id": self.user_id,
             "title": self.title,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,

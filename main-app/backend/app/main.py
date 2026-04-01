@@ -279,6 +279,25 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     except Exception as exc:
         print(f"[STARTUP] mcp_extensions/mcp_servers migration skipped: {exc}", flush=True)
 
+    # ── Add user_id to conversations table ──
+    try:
+        import sqlite3 as _sqlite3
+        from pathlib import Path as _Path
+        _db_url = settings.DATABASE_URL
+        _parsed = _db_url.split("///", 1)[-1].split("?", 1)[0]
+        _db_path = _parsed if _Path(_parsed).is_absolute() else str((_Path(__file__).parent.parent / _parsed).resolve())
+        with _sqlite3.connect(_db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA table_info(conversations)")
+            cols = [row[1] for row in cursor.fetchall()]
+            if cols and "user_id" not in cols:
+                cursor.execute("ALTER TABLE conversations ADD COLUMN user_id VARCHAR(36)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS ix_conversations_user_id ON conversations(user_id)")
+                conn.commit()
+                print("[STARTUP] Added user_id column to conversations", flush=True)
+    except Exception as exc:
+        print(f"[STARTUP] conversations migration skipped: {exc}", flush=True)
+
     # Ensure synthetic __local__ pod exists for local filesystem browse
     try:
         from sqlalchemy import select

@@ -345,11 +345,13 @@ async def _warmup_mcp_background(user_auth_context: dict) -> None:
 async def list_conversations(
     product_id: Optional[str] = Query(None),
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
-    """List conversations, optionally filtered by product. product_id=__none__ returns product-less conversations."""
+    """List conversations for the current user, optionally filtered by product."""
     q = (
         select(Conversation)
         .options(selectinload(Conversation.messages))
+        .where(Conversation.user_id == current_user.user_id)
         .order_by(Conversation.updated_at.desc())
     )
     if product_id == "__none__":
@@ -365,11 +367,13 @@ async def list_conversations(
 async def create_conversation(
     data: ConversationCreateRequest,
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
-    """Create a new conversation for a product."""
+    """Create a new conversation for a product, owned by the current user."""
     convo = Conversation(
         conversation_id=str(uuid4()),
         product_id=data.product_id,
+        user_id=current_user.user_id,
         title=data.title,
     )
     session.add(convo)
@@ -447,11 +451,12 @@ async def delete_conversation(
 async def delete_all_conversations(
     product_id: Optional[str] = Query(None),
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
-    """Delete all conversations for a product (or product-less ones if product_id=__none__)."""
+    """Delete all conversations for the current user, optionally filtered by product."""
     from app.services.pty_manager import pty_manager
 
-    q = select(Conversation)
+    q = select(Conversation).where(Conversation.user_id == current_user.user_id)
     if product_id == "__none__":
         q = q.where(Conversation.product_id.is_(None))
     elif product_id:
