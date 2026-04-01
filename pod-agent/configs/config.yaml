@@ -6,6 +6,9 @@ pod:
   id: ""
   # Human-readable name for this POD
   name: "Development POD"
+  # Filesystem sandbox root — the agent can only access this directory and below.
+  # Defaults to "." (the directory the agent is run from).
+  root_dir: "."
 
 main_app:
   # WebSocket URL of the main application

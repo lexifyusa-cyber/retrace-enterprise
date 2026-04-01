@@ -68,7 +68,7 @@ export const podApi = {
     return response.data
   },
   
-  browse: async (podId: string, path: string = '/', recursive: boolean = false): Promise<DirectoryListing> => {
+  browse: async (podId: string, path: string = '.', recursive: boolean = false): Promise<DirectoryListing> => {
     const response = await api.post(`/pods/${podId}/browse`, null, {
       params: { path, recursive }
     })

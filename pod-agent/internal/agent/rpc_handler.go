@@ -2,7 +2,7 @@ package agent
 
 import (
 	"fmt"
-	"io/ioutil"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,125 +39,165 @@ func (h *RPCHandler) Handle(method string, params map[string]interface{}) (inter
 	}
 }
 
-// listDirectory lists contents of a directory.
+// root returns the sandboxed filesystem root.
+func (h *RPCHandler) root() *os.Root {
+	return h.agent.fsRoot
+}
+
+// normalizePath converts an incoming path to a relative path safe for os.Root.
+// Absolute paths are rejected; empty or "." maps to the root itself.
+func normalizePath(path string) (string, error) {
+	if path == "" || path == "." || path == "/" {
+		return ".", nil
+	}
+	// Strip leading "/" so paths sent by the server become relative.
+	path = strings.TrimPrefix(path, "/")
+	if path == "" {
+		return ".", nil
+	}
+	cleaned := filepath.Clean(path)
+	if filepath.IsAbs(cleaned) {
+		return "", fmt.Errorf("absolute paths are not allowed: %s", path)
+	}
+	if !filepath.IsLocal(cleaned) {
+		return "", fmt.Errorf("path escapes root directory: %s", path)
+	}
+	return cleaned, nil
+}
+
+// listDirectory lists contents of a directory within the sandbox.
 func (h *RPCHandler) listDirectory(params map[string]interface{}) (interface{}, error) {
-	path, _ := params["path"].(string)
+	rawPath, _ := params["path"].(string)
 	recursive, _ := params["recursive"].(bool)
 	filters, _ := params["filters"].(map[string]interface{})
 
-	if path == "" {
-		path = "/"
-	}
-
-	// Security: Ensure path is absolute and exists
-	absPath, err := filepath.Abs(path)
+	relPath, err := normalizePath(rawPath)
 	if err != nil {
-		return nil, fmt.Errorf("invalid path: %w", err)
+		return nil, err
 	}
 
-	info, err := os.Stat(absPath)
+	info, err := h.root().Stat(relPath)
 	if err != nil {
 		return nil, fmt.Errorf("path not found: %w", err)
 	}
-
 	if !info.IsDir() {
 		return nil, fmt.Errorf("path is not a directory")
 	}
 
-	// Get include/exclude patterns
-	includePatterns := []string{}
-	excludePatterns := []string{}
+	includePatterns := extractPatterns(filters, "include")
+	excludePatterns := extractPatterns(filters, "exclude")
 
-	if filters != nil {
-		if inc, ok := filters["include"].([]interface{}); ok {
-			for _, p := range inc {
-				if s, ok := p.(string); ok {
-					includePatterns = append(includePatterns, s)
-				}
-			}
-		}
-		if exc, ok := filters["exclude"].([]interface{}); ok {
-			for _, p := range exc {
-				if s, ok := p.(string); ok {
-					excludePatterns = append(excludePatterns, s)
-				}
-			}
-		}
-	}
-
-	// List directory
 	files := []map[string]interface{}{}
 	totalSize := int64(0)
 
-	walkFunc := func(filePath string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil // Skip files with errors
-		}
-
-		// Skip hidden files
-		if strings.HasPrefix(info.Name(), ".") {
-			if info.IsDir() {
-				return filepath.SkipDir
+	if recursive {
+		err = fs.WalkDir(h.root().FS(), relPath, func(entryPath string, d fs.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return nil
 			}
-			return nil
-		}
+			if entryPath == relPath {
+				return nil
+			}
 
-		// Apply exclude patterns
-		for _, pattern := range excludePatterns {
-			matched, _ := filepath.Match(pattern, info.Name())
-			if matched {
-				if info.IsDir() {
-					return filepath.SkipDir
+			name := d.Name()
+			if strings.HasPrefix(name, ".") {
+				if d.IsDir() {
+					return fs.SkipDir
 				}
 				return nil
 			}
-		}
-
-		// Apply include patterns (only for files)
-		if !info.IsDir() && len(includePatterns) > 0 {
-			matched := false
-			for _, pattern := range includePatterns {
-				if m, _ := filepath.Match(pattern, info.Name()); m {
-					matched = true
-					break
+			if matchesAny(name, excludePatterns) {
+				if d.IsDir() {
+					return fs.SkipDir
 				}
-			}
-			if !matched {
 				return nil
 			}
-		}
+			if !d.IsDir() && len(includePatterns) > 0 && !matchesAny(name, includePatterns) {
+				return nil
+			}
 
-		relPath, _ := filepath.Rel(absPath, filePath)
-		if relPath == "." {
+			entryRelPath, _ := filepath.Rel(relPath, entryPath)
+			entryInfo, infoErr := d.Info()
+			if infoErr != nil {
+				return nil
+			}
+
+			fileType := "file"
+			if d.IsDir() {
+				fileType = "directory"
+			}
+
+			files = append(files, map[string]interface{}{
+				"name":     name,
+				"path":     entryPath,
+				"rel_path": entryRelPath,
+				"type":     fileType,
+				"size":     entryInfo.Size(),
+				"modified": entryInfo.ModTime().Format("2006-01-02T15:04:05Z"),
+			})
+
+			if !d.IsDir() {
+				totalSize += entryInfo.Size()
+			}
 			return nil
-		}
-
-		fileType := "file"
-		if info.IsDir() {
-			fileType = "directory"
-		}
-
-		files = append(files, map[string]interface{}{
-			"name":     info.Name(),
-			"path":     filePath,
-			"rel_path": relPath,
-			"type":     fileType,
-			"size":     info.Size(),
-			"modified": info.ModTime().Format("2006-01-02T15:04:05Z"),
 		})
+	} else {
+		f, openErr := h.root().Open(relPath)
+		if openErr != nil {
+			return nil, fmt.Errorf("failed to open directory: %w", openErr)
+		}
+		defer f.Close()
 
-		if !info.IsDir() {
-			totalSize += info.Size()
+		entries, readErr := f.ReadDir(-1)
+		if readErr != nil {
+			return nil, fmt.Errorf("failed to read directory: %w", readErr)
 		}
 
-		if !recursive && info.IsDir() && filePath != absPath {
-			return filepath.SkipDir
-		}
+		for _, d := range entries {
+			name := d.Name()
+			if strings.HasPrefix(name, ".") {
+				continue
+			}
+			if matchesAny(name, excludePatterns) {
+				continue
+			}
+			if !d.IsDir() && len(includePatterns) > 0 && !matchesAny(name, includePatterns) {
+				continue
+			}
 
-		return nil
+			entryInfo, infoErr := d.Info()
+			if infoErr != nil {
+				continue
+			}
+
+			entryPath := relPath
+			if entryPath == "." {
+				entryPath = name
+			} else {
+				entryPath = entryPath + "/" + name
+			}
+
+			fileType := "file"
+			if d.IsDir() {
+				fileType = "directory"
+			}
+
+			files = append(files, map[string]interface{}{
+				"name":     name,
+				"path":     entryPath,
+				"rel_path": name,
+				"type":     fileType,
+				"size":     entryInfo.Size(),
+				"modified": entryInfo.ModTime().Format("2006-01-02T15:04:05Z"),
+			})
+
+			if !d.IsDir() {
+				totalSize += entryInfo.Size()
+			}
+		}
 	}
 
-	if err := filepath.Walk(absPath, walkFunc); err != nil {
+	if err != nil {
 		return nil, fmt.Errorf("error walking directory: %w", err)
 	}
 
@@ -168,31 +208,28 @@ func (h *RPCHandler) listDirectory(params map[string]interface{}) (interface{}, 
 	}, nil
 }
 
-// readFile reads the contents of a file.
+// readFile reads the contents of a file within the sandbox.
 func (h *RPCHandler) readFile(params map[string]interface{}) (interface{}, error) {
-	path, _ := params["path"].(string)
+	rawPath, _ := params["path"].(string)
 
-	if path == "" {
+	if rawPath == "" {
 		return nil, fmt.Errorf("path is required")
 	}
 
-	// Security: Ensure path is absolute
-	absPath, err := filepath.Abs(path)
+	relPath, err := normalizePath(rawPath)
 	if err != nil {
-		return nil, fmt.Errorf("invalid path: %w", err)
+		return nil, err
 	}
 
-	info, err := os.Stat(absPath)
+	info, err := h.root().Stat(relPath)
 	if err != nil {
 		return nil, fmt.Errorf("file not found: %w", err)
 	}
-
 	if info.IsDir() {
 		return nil, fmt.Errorf("path is a directory, not a file")
 	}
 
-	// Read file
-	content, err := ioutil.ReadFile(absPath)
+	content, err := h.root().ReadFile(relPath)
 	if err != nil {
 		return nil, fmt.Errorf("error reading file: %w", err)
 	}
@@ -200,7 +237,7 @@ func (h *RPCHandler) readFile(params map[string]interface{}) (interface{}, error
 	return map[string]interface{}{
 		"content": string(content),
 		"size":    info.Size(),
-		"path":    absPath,
+		"path":    relPath,
 	}, nil
 }
 
@@ -218,15 +255,19 @@ func (h *RPCHandler) startTraining(params map[string]interface{}) (interface{}, 
 		zap.String("namespace", namespace),
 	)
 
-	// Convert folder paths
 	paths := []string{}
 	for _, p := range folderPaths {
 		if s, ok := p.(string); ok {
-			paths = append(paths, s)
+			rel, err := normalizePath(s)
+			if err != nil {
+				h.agent.logger.Warn("Skipping invalid training path",
+					zap.String("path", s), zap.Error(err))
+				continue
+			}
+			paths = append(paths, rel)
 		}
 	}
 
-	// Start training in background
 	go h.runTraining(jobID, groupID, namespace, groupType, paths)
 
 	return map[string]interface{}{
@@ -235,13 +276,14 @@ func (h *RPCHandler) startTraining(params map[string]interface{}) (interface{}, 
 	}, nil
 }
 
-// runTraining runs the actual training process.
+// runTraining runs the actual training process using the sandboxed FS.
 func (h *RPCHandler) runTraining(jobID, groupID, namespace, groupType string, paths []string) {
-	// Count total files
+	rootFS := h.root().FS()
+
 	totalFiles := 0
 	for _, path := range paths {
-		filepath.Walk(path, func(_ string, info os.FileInfo, _ error) error {
-			if info != nil && !info.IsDir() {
+		fs.WalkDir(rootFS, path, func(_ string, d fs.DirEntry, _ error) error {
+			if d != nil && !d.IsDir() {
 				totalFiles++
 			}
 			return nil
@@ -252,20 +294,17 @@ func (h *RPCHandler) runTraining(jobID, groupID, namespace, groupType string, pa
 	chunksCreated := 0
 	entitiesExtracted := 0
 
-	// Process each path
 	for _, path := range paths {
-		filepath.Walk(path, func(filePath string, info os.FileInfo, err error) error {
-			if err != nil || info.IsDir() {
+		fs.WalkDir(rootFS, path, func(filePath string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
 				return nil
 			}
 
-			// Skip hidden files
-			if strings.HasPrefix(info.Name(), ".") {
+			if strings.HasPrefix(d.Name(), ".") {
 				return nil
 			}
 
-			// Process file based on type
-			ext := strings.ToLower(filepath.Ext(info.Name()))
+			ext := strings.ToLower(filepath.Ext(d.Name()))
 
 			switch groupType {
 			case "code":
@@ -280,14 +319,12 @@ func (h *RPCHandler) runTraining(jobID, groupID, namespace, groupType string, pa
 					chunksCreated += chunks
 				}
 			default:
-				// Generic processing
 				chunks := h.processGenericFile(filePath, namespace)
 				chunksCreated += chunks
 			}
 
 			processed++
 
-			// Send progress update
 			h.agent.wsClient.Send(&communication.Message{
 				Event: "training_progress",
 				Data: map[string]interface{}{
@@ -309,7 +346,6 @@ func (h *RPCHandler) runTraining(jobID, groupID, namespace, groupType string, pa
 		zap.Int("chunks_created", chunksCreated),
 	)
 
-	// Send completion
 	h.agent.wsClient.Send(&communication.Message{
 		Event: "training_progress",
 		Data: map[string]interface{}{
@@ -326,18 +362,16 @@ func (h *RPCHandler) runTraining(jobID, groupID, namespace, groupType string, pa
 	})
 }
 
-// processCodeFile processes a code file.
+// processCodeFile reads and chunks a code file via the sandbox.
 func (h *RPCHandler) processCodeFile(path, namespace string) (chunks int, entities int) {
-	content, err := ioutil.ReadFile(path)
+	content, err := h.root().ReadFile(path)
 	if err != nil {
 		return 0, 0
 	}
 
-	// Simple chunking by lines (in production, use AST parsing)
 	text := string(content)
 	lines := strings.Split(text, "\n")
 
-	// Create chunks of ~50 lines
 	chunkSize := 50
 	for i := 0; i < len(lines); i += chunkSize {
 		end := i + chunkSize
@@ -347,7 +381,6 @@ func (h *RPCHandler) processCodeFile(path, namespace string) (chunks int, entiti
 
 		chunkText := strings.Join(lines[i:end], "\n")
 
-		// Store in vector DB
 		h.agent.storage.StoreChunk(namespace, path, i, chunkText, map[string]interface{}{
 			"type":       "code",
 			"file_path":  path,
@@ -358,8 +391,6 @@ func (h *RPCHandler) processCodeFile(path, namespace string) (chunks int, entiti
 		chunks++
 	}
 
-	// Extract simple entities (functions/classes)
-	// In production, use proper AST parsing
 	for _, line := range lines {
 		if strings.HasPrefix(strings.TrimSpace(line), "def ") ||
 			strings.HasPrefix(strings.TrimSpace(line), "class ") ||
@@ -372,22 +403,20 @@ func (h *RPCHandler) processCodeFile(path, namespace string) (chunks int, entiti
 	return chunks, entities
 }
 
-// processDocFile processes a documentation file.
+// processDocFile reads and chunks a documentation file via the sandbox.
 func (h *RPCHandler) processDocFile(path, namespace string) int {
-	content, err := ioutil.ReadFile(path)
+	content, err := h.root().ReadFile(path)
 	if err != nil {
 		return 0
 	}
 
 	text := string(content)
-
-	// Simple chunking by paragraphs
 	paragraphs := strings.Split(text, "\n\n")
 	chunks := 0
 
 	for i, para := range paragraphs {
 		para = strings.TrimSpace(para)
-		if len(para) < 50 { // Skip very short paragraphs
+		if len(para) < 50 {
 			continue
 		}
 
@@ -403,16 +432,15 @@ func (h *RPCHandler) processDocFile(path, namespace string) int {
 	return chunks
 }
 
-// processGenericFile processes a generic file.
+// processGenericFile reads and chunks a generic file via the sandbox.
 func (h *RPCHandler) processGenericFile(path, namespace string) int {
-	content, err := ioutil.ReadFile(path)
+	content, err := h.root().ReadFile(path)
 	if err != nil {
 		return 0
 	}
 
 	text := string(content)
 
-	// Store as single chunk if small
 	if len(text) < 5000 {
 		h.agent.storage.StoreChunk(namespace, path, 0, text, map[string]interface{}{
 			"type":      "other",
@@ -421,7 +449,6 @@ func (h *RPCHandler) processGenericFile(path, namespace string) int {
 		return 1
 	}
 
-	// Otherwise, chunk by size
 	chunkSize := 2000
 	chunks := 0
 
@@ -452,7 +479,6 @@ func (h *RPCHandler) vectorSearch(params map[string]interface{}) (interface{}, e
 		topK = int(k)
 	}
 
-	// Convert embedding to float slice
 	vec := make([]float32, len(embedding))
 	for i, v := range embedding {
 		if f, ok := v.(float64); ok {
@@ -460,7 +486,6 @@ func (h *RPCHandler) vectorSearch(params map[string]interface{}) (interface{}, e
 		}
 	}
 
-	// Search storage
 	results := h.agent.storage.VectorSearch(namespace, vec, topK)
 
 	return map[string]interface{}{
@@ -473,7 +498,6 @@ func (h *RPCHandler) graphQuery(params map[string]interface{}) (interface{}, err
 	entities, _ := params["entities"].([]interface{})
 	namespace, _ := params["namespace_filter"].(string)
 
-	// Convert entities
 	entityNames := []string{}
 	for _, e := range entities {
 		if s, ok := e.(string); ok {
@@ -481,7 +505,6 @@ func (h *RPCHandler) graphQuery(params map[string]interface{}) (interface{}, err
 		}
 	}
 
-	// Query graph
 	results := h.agent.storage.GraphQuery(namespace, entityNames)
 
 	return map[string]interface{}{
@@ -489,7 +512,33 @@ func (h *RPCHandler) graphQuery(params map[string]interface{}) (interface{}, err
 	}, nil
 }
 
-// Helper functions
+// --- helpers ---
+
+func extractPatterns(filters map[string]interface{}, key string) []string {
+	if filters == nil {
+		return nil
+	}
+	raw, ok := filters[key].([]interface{})
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(raw))
+	for _, v := range raw {
+		if s, ok := v.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func matchesAny(name string, patterns []string) bool {
+	for _, p := range patterns {
+		if matched, _ := filepath.Match(p, name); matched {
+			return true
+		}
+	}
+	return false
+}
 
 func isCodeFile(ext string) bool {
 	codeExts := map[string]bool{

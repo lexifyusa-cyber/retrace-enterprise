@@ -217,11 +217,11 @@ async def download_pod_installer(
 @router.post("/{pod_id}/browse")
 async def browse_pod_filesystem(
     pod_id: str,
-    path: str = "/",
+    path: str = ".",
     recursive: bool = False,
     session: AsyncSession = Depends(get_session)
 ):
-    """Browse the filesystem on a POD machine."""
+    """Browse the filesystem on a POD machine (sandboxed to agent root directory)."""
     # Verify POD exists
     result = await session.execute(
         select(Pod).where(Pod.pod_id == pod_id)

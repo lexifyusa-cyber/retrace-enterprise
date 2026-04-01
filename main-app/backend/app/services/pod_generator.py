@@ -44,6 +44,7 @@ async def generate_pod_installer(
         "pod": {
             "id": pod_id,
             "name": pod_name,
+            "root_dir": ".",
         },
         "main_app": {
             "url": f"ws://localhost:{settings.WEBSOCKET_PORT}",

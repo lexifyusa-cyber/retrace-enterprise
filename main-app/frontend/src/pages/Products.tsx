@@ -1843,10 +1843,11 @@ function FileBrowserModal({
   onConfirm: (paths: string[]) => void
   onClose: () => void
 }) {
-  const [currentPath, setCurrentPath] = useState('/')
+  const isLocal = podId === '__local__'
+  const initialPath = isLocal ? '/' : '.'
+  const [currentPath, setCurrentPath] = useState(initialPath)
   const [selected, setSelected] = useState<Set<string>>(new Set(selectedPaths))
   
-  const isLocal = podId === '__local__'
   const { data: directory, isLoading } = useQuery({
     queryKey: isLocal ? ['local-browse', currentPath] : ['pod-browse', podId, currentPath],
     queryFn: () =>
@@ -1856,7 +1857,10 @@ function FileBrowserModal({
     enabled: !!podId,
   })
   
-  const pathParts = currentPath.split('/').filter(Boolean)
+  const isRoot = isLocal ? currentPath === '/' : (currentPath === '.' || currentPath === '')
+  const pathParts = isLocal
+    ? currentPath.split('/').filter(Boolean)
+    : (currentPath === '.' ? [] : currentPath.split('/').filter(Boolean))
   
   const togglePath = (path: string) => {
     const newSelected = new Set(selected)
@@ -1891,18 +1895,21 @@ function FileBrowserModal({
         
         <div className="flex items-center gap-1 text-sm mb-4 overflow-x-auto bg-rt-surface rounded-lg px-3 py-2">
           <button
-            onClick={() => setCurrentPath('/')}
+            onClick={() => setCurrentPath(initialPath)}
             className={`px-2 py-1 rounded hover:bg-rt-border transition-colors ${
-              currentPath === '/' ? 'text-rt-primary' : ''
+              isRoot ? 'text-rt-primary' : ''
             }`}
           >
-            Root
+            {isLocal ? 'Root' : 'Agent Root'}
           </button>
           {pathParts.map((part, i) => (
             <div key={i} className="flex items-center">
               <ChevronRight className="w-4 h-4 text-rt-text-muted" />
               <button
-                onClick={() => setCurrentPath('/' + pathParts.slice(0, i + 1).join('/'))}
+                onClick={() => {
+                  const sub = pathParts.slice(0, i + 1).join('/')
+                  setCurrentPath(isLocal ? '/' + sub : sub)
+                }}
                 className={`px-2 py-1 rounded hover:bg-rt-border transition-colors ${
                   i === pathParts.length - 1 ? 'text-rt-primary' : ''
                 }`}
@@ -1920,11 +1927,16 @@ function FileBrowserModal({
             </div>
           ) : (
             <div className="flex-1 overflow-y-auto divide-y divide-rt-border">
-              {currentPath !== '/' && (
+              {!isRoot && (
                 <button
                   onClick={() => {
-                    const parent = '/' + pathParts.slice(0, -1).join('/')
-                    setCurrentPath(parent || '/')
+                    if (isLocal) {
+                      const parent = '/' + pathParts.slice(0, -1).join('/')
+                      setCurrentPath(parent || '/')
+                    } else {
+                      const parent = pathParts.slice(0, -1).join('/')
+                      setCurrentPath(parent || '.')
+                    }
                   }}
                   className="w-full flex items-center gap-3 p-3 hover:bg-rt-surface transition-colors text-left"
                 >

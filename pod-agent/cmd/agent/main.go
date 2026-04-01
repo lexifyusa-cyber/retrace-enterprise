@@ -101,6 +101,7 @@ func loadConfig() (*agent.Config, error) {
 	// Set defaults
 	viper.SetDefault("pod.id", "")
 	viper.SetDefault("pod.name", "")
+	viper.SetDefault("pod.root_dir", ".")
 	viper.SetDefault("main_app.url", "ws://localhost:8001")
 	viper.SetDefault("main_app.reconnect_interval_seconds", 30)
 	viper.SetDefault("storage.data_dir", "./pod-data")
