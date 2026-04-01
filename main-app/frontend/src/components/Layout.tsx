@@ -509,7 +509,7 @@ export default function Layout() {
   const visibleNav = navigation.filter(item =>
     !item.minRole || hasRole(user?.role, item.minRole)
   )
-  const canAccessSettings = hasRole(user?.role, 'admin')
+  const canAccessSettings = hasRole(user?.role, 'user_admin')
 
   return (
     <div className="flex h-screen bg-rt-bg">

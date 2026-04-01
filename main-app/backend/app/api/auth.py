@@ -2109,7 +2109,7 @@ async def force_logout_user(
 
 @router.get("/tenants")
 async def list_tenants(
-    current_user: CurrentUser = Depends(require_role("admin")),
+    current_user: CurrentUser = Depends(require_role("user_admin")),
     session: AsyncSession = Depends(get_session),
 ):
     """List all tenants (global admin only). Tenant admins see only their tenant."""
@@ -2124,7 +2124,7 @@ async def list_tenants(
 @router.get("/tenant/auth")
 async def get_tenant_auth(
     tenant_id: Optional[str] = None,
-    current_user: CurrentUser = Depends(require_role("admin")),
+    current_user: CurrentUser = Depends(require_role("user_admin")),
     session: AsyncSession = Depends(get_session),
 ):
     """Get tenant's auth config. Global admin must pass tenant_id. Tenant admin uses own tenant."""
@@ -2166,7 +2166,7 @@ async def get_tenant_auth(
 async def update_tenant_auth(
     data: dict,
     request: Request,
-    current_user: CurrentUser = Depends(require_role("admin")),
+    current_user: CurrentUser = Depends(require_role("user_admin")),
     session: AsyncSession = Depends(get_session),
 ):
     """Update tenant's auth config. Global admin must pass tenant_id. Tenant admin uses own tenant."""

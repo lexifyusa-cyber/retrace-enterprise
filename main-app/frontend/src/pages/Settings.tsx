@@ -594,8 +594,8 @@ export default function Settings() {
         </p>
       </motion.div>
 
-      {/* Layout & Theme: expandable */}
-      <motion.div
+      {/* Layout & Theme: expandable — admin only */}
+      {user?.role === 'admin' && <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         className="max-w-4xl mb-6"
@@ -801,10 +801,10 @@ export default function Settings() {
             </div>
           )}
         </div>
-      </motion.div>
+      </motion.div>}
 
-      {/* LLM Configuration — collapsible */}
-      <motion.div
+      {/* LLM Configuration — collapsible — admin only */}
+      {user?.role === 'admin' && <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.15 }}
@@ -1191,9 +1191,9 @@ export default function Settings() {
           </div>
           )}
         </div>
-      </motion.div>
+      </motion.div>}
 
-      {/* Organization Settings — collapsible */}
+      {/* Organization Settings — collapsible — visible to all admins */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
