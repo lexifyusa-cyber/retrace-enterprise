@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { FolderTree, Blocks, AlertCircle, Copy, CheckCircle2, ChevronDown, ChevronUp, Wand2, Search, Terminal, Globe, Upload, Circle, Loader2, ChevronLeft, ChevronRight, Zap, Server, Clock, Check, FileCode, Folder, File, FolderOpen, RotateCcw } from 'lucide-react'
 import { localFilesApi } from '../utils/api'
@@ -81,6 +82,7 @@ const STEPS = [
 export default function McpBuilder() {
   const _saved = loadSessionState()
 
+  const navigate = useNavigate()
   const [products, setProducts] = useState<Product[]>([])
   const [selectedProductId, setSelectedProductId] = useState<string>(_saved.selectedProductId ?? '')
 
@@ -818,122 +820,20 @@ export default function McpBuilder() {
           </p>
         </div>
 
-        {/* ===== SERVER REGISTRY CARDS ===== */}
+        {/* ===== MCP SERVERS BUILT BANNER ===== */}
         {mcpServers.length > 0 && (
-          <div className="space-y-3">
-            <button
-              onClick={() => setRegistryCollapsed(!registryCollapsed)}
-              className="flex items-center gap-2 text-sm font-medium text-rt-text-strong hover:text-rt-primary transition-colors"
-            >
-              <Server className="w-4 h-4 text-rt-primary" />
-              Your MCP Servers
-              <span className="text-xs text-rt-text-muted font-normal bg-rt-bg px-2 py-0.5 rounded-full border border-rt-border">{mcpServers.length}</span>
-              {registryCollapsed ? <ChevronRight className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-            </button>
-
-            <AnimatePresence>
-              {!registryCollapsed && (
-                <motion.div
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: 'auto' }}
-                  exit={{ opacity: 0, height: 0 }}
-                  transition={{ duration: 0.2 }}
-                  className="overflow-hidden"
-                >
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {mcpServers.map((srv, index) => (
-                      <motion.div
-                        key={srv.server_id}
-                        initial={{ opacity: 0, y: 20 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{ delay: index * 0.05 }}
-                        onClick={() => {
-                          // Pre-fill the builder form with this server's settings
-                          setSourceMode(srv.source_type === 'internal' ? 'internal' : 'external')
-                          if (srv.source_type !== 'internal') {
-                            setExternalApiName(srv.product_name)
-                            if (srv.api_docs_url) {
-                              setExternalSourceType('url')
-                              setApiDocsUrl(srv.api_docs_url)
-                            }
-                            setDetectedBaseUrl(srv.api_base_url || null)
-                            setDetectedAuthType(srv.auth_type || null)
-                            setKbProductId(srv.kb_product_id || null)
-                          }
-                          setDestinationFolder(srv.destination_folder)
-                          if (srv.selected_endpoints_json) {
-                            setEndpoints(srv.selected_endpoints_json.map((ep: any, i: number) => ({
-                              ...ep,
-                              id: `${ep.method}-${ep.path}-${i}`,
-                              checked: true
-                            })))
-                          }
-                          setCurrentStep(1)
-                        }}
-                        className="p-4 bg-rt-surface border border-rt-border/50 rounded-xl hover:border-rt-primary/40 transition-all cursor-pointer group shadow-sm"
-                      >
-                        <div className="flex items-start justify-between mb-3">
-                          <div className="flex items-center gap-2 min-w-0">
-                            <Circle className="w-2.5 h-2.5 flex-shrink-0 fill-emerald-400 text-emerald-400" />
-                            <span className="text-sm font-medium text-rt-text-strong truncate">{srv.name}</span>
-                          </div>
-                        </div>
-                        <div className="space-y-1.5 mb-3">
-                          <p className="text-xs text-rt-text-muted truncate">{srv.product_name}</p>
-                          <div className="flex items-center gap-2">
-                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-rt-primary/10 text-rt-primary border border-rt-primary/20">
-                              {srv.source_type === 'internal' ? 'Internal' : 'External'}
-                            </span>
-                            {srv.selected_endpoints_json && (
-                              <span className="text-[10px] text-rt-text-muted">
-                                {srv.selected_endpoints_json.length} tools
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                        <div className="flex items-center justify-between pt-2 border-t border-rt-border/30">
-                          <span className="text-[10px] text-rt-text-muted flex items-center gap-1">
-                            <Clock className="w-3 h-3" />
-                            {new Date(srv.created_at).toLocaleDateString()}
-                          </span>
-                          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <button
-                              onClick={async (e) => {
-                                e.stopPropagation()
-                                await navigator.clipboard.writeText(JSON.stringify({ mcpServers: srv.mcp_config_json }, null, 2))
-                                setCopiedServerId(srv.server_id)
-                                setTimeout(() => setCopiedServerId(null), 2000)
-                              }}
-                              className="p-1 rounded hover:bg-rt-primary/10 text-rt-text-muted hover:text-rt-primary transition-colors"
-                              title="Copy MCP config"
-                            >
-                              {copiedServerId === srv.server_id ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                            </button>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                setBrowseRootPath(srv.destination_folder)
-                                setBrowsePath(null)
-                                setResultTab('files')
-                                setResult({ status: 'success', mcpServers: srv.mcp_config_json, quickStartCommands: srv.quick_start_commands })
-                                setStepDirection(1)
-                                setCurrentStep(3)
-                                // Trigger browse after state update
-                                setTimeout(() => browseDirectory(srv.destination_folder), 100)
-                              }}
-                              className="p-1 rounded hover:bg-rt-primary/10 text-rt-text-muted hover:text-rt-primary transition-colors"
-                              title="Browse files"
-                            >
-                              <FolderOpen className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        </div>
-                      </motion.div>
-                    ))}
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
+          <div className="flex items-center gap-3 p-4 bg-rt-surface border border-rt-border/50 rounded-xl">
+            <Server className="w-5 h-5 text-rt-primary flex-shrink-0" />
+            <p className="text-sm text-rt-text">
+              You have <span className="font-medium">{mcpServers.length}</span> MCP server{mcpServers.length > 1 ? 's' : ''} generated.{' '}
+              <button
+                onClick={() => navigate('/extensions')}
+                className="underline font-medium text-rt-primary hover:text-rt-primary/80"
+              >
+                Visit MCP Explorer
+              </button>
+              {' '}to manage, test, and configure them.
+            </p>
           </div>
         )}
 
