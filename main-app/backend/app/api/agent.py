@@ -207,6 +207,11 @@ async def list_agent_tools(
     except Exception:
         has_screenops_deps = False
     screenops_available = has_screenops_deps
+    try:
+        import playwright  # noqa: F401
+        has_playwright = True
+    except ImportError:
+        has_playwright = False
 
     # Load disabled tools from saved config
     disabled_set: set[str] = set()
@@ -235,6 +240,7 @@ async def list_agent_tools(
         AgentToolInfo(name="web_advanced", description="Advanced web search with operators (Serper API)", available=True, group=SEARCH),
         AgentToolInfo(name="todo_write", description="Plan and track multi-step tasks", available=True),
         AgentToolInfo(name="screenops", description="Screen-based computer automation (click, type, press)", requires_key="screenops_api_key", available=screenops_available),
+        AgentToolInfo(name="auto_browser", description="Granular browser control: navigate, click, type, read pages, screenshots", available=has_playwright),
         AgentToolInfo(name="knowledge_base", description="Product knowledge base: search, list, read, browse", available=True),
     ]
 

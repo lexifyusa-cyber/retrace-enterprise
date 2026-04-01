@@ -254,6 +254,7 @@ def _build_codeact_graph(
     system_prompt: str,
     max_iterations: int = 10,
     use_gemini_compat: bool = False,
+    main_event_loop: Optional[asyncio.AbstractEventLoop] = None,
 ) -> StateGraph:
     """Build the LangGraph CodeAct agent graph.
 
@@ -272,35 +273,58 @@ def _build_codeact_graph(
       sandbox → call_model
     """
 
-    # Map tool names → callable functions for the sandbox
-    tools_context: dict[str, Any] = {}
+    # Map tool names → callable functions for the sandbox.
+    # Some tools are async-only (coroutine but no func).  The sandbox runs
+    # inside exec() which is synchronous (in a worker thread), so we wrap
+    # async coroutines to submit them to the MAIN FastAPI event loop via
+    # run_coroutine_threadsafe.  This is critical because Playwright browser
+    # sessions and WebSocket objects are bound to that main loop — creating
+    # a new loop with asyncio.run() would cause cross-loop errors.
+    def _wrap_async(coro_fn):
+        """Return a sync wrapper that dispatches to the main event loop."""
+        import functools
 
-    def _make_sync_mcp_wrapper(t):
-        """Wrap an async MCP tool so it can be called synchronously from exec()."""
-        def sync_wrapper(**kwargs):
-            import asyncio as _aio
-            import concurrent.futures
-            try:
-                loop = _aio.get_running_loop()
-            except RuntimeError:
-                loop = None
-            if loop and loop.is_running():
-                with concurrent.futures.ThreadPoolExecutor() as pool:
-                    return pool.submit(_aio.run, t.ainvoke(kwargs)).result(timeout=30)
+        @functools.wraps(coro_fn)
+        def wrapper(*args, **kwargs):
+            if main_event_loop and main_event_loop.is_running():
+                future = asyncio.run_coroutine_threadsafe(
+                    coro_fn(*args, **kwargs), main_event_loop
+                )
+                return future.result(timeout=120)
             else:
-                return _aio.run(t.ainvoke(kwargs))
-        return sync_wrapper
+                return asyncio.run(coro_fn(*args, **kwargs))
+        return wrapper
 
+    tools_context: dict[str, Any] = {}
     for tool in tools:
-        if isinstance(tool, StructuredTool) and tool.func is not None:
-            tools_context[tool.name] = tool.func
-        elif hasattr(tool, 'ainvoke'):
-            # MCP adapter tools are async-only — wrap for sync sandbox
-            tools_context[getattr(tool, "name", str(tool))] = _make_sync_mcp_wrapper(tool)
-        elif hasattr(tool, 'func') and tool.func is not None:
-            tools_context[getattr(tool, "name", str(tool))] = tool.func
+        if isinstance(tool, StructuredTool):
+            if tool.func is not None:
+                tools_context[tool.name] = tool.func
+            elif tool.coroutine is not None:
+                tools_context[tool.name] = _wrap_async(tool.coroutine)
+            else:
+                tools_context[tool.name] = tool
         else:
-            tools_context[getattr(tool, "name", str(tool))] = getattr(tool, "run", tool)
+            # MCP adapter tools are async-only — wrap for sync sandbox
+            if hasattr(tool, 'ainvoke'):
+                def _make_sync_mcp_wrapper(t):
+                    def sync_wrapper(**kwargs):
+                        import concurrent.futures
+                        try:
+                            loop = asyncio.get_running_loop()
+                        except RuntimeError:
+                            loop = None
+                        if loop and loop.is_running():
+                            with concurrent.futures.ThreadPoolExecutor() as pool:
+                                return pool.submit(asyncio.run, t.ainvoke(kwargs)).result(timeout=30)
+                        else:
+                            return asyncio.run(t.ainvoke(kwargs))
+                    return sync_wrapper
+                tools_context[getattr(tool, "name", str(tool))] = _make_sync_mcp_wrapper(tool)
+            else:
+                fn = getattr(tool, "func", None) or getattr(tool, "coroutine", None) or tool
+                if asyncio.iscoroutinefunction(fn):
+                    tools_context[getattr(tool, "name", str(tool))] = _wrap_async(fn)
 
     # ── call_model node ──────────────────────────────────────────────
     def call_model(state: AgentState):
@@ -961,6 +985,7 @@ class AgentService:
                 graph = _build_codeact_graph(
                     chat_model, tools, system_prompt, max_iterations,
                     use_gemini_compat=use_gemini_compat,
+                    main_event_loop=asyncio.get_running_loop(),
                 )
                 agent = graph.compile(checkpointer=_agent_checkpointer)
 
@@ -1031,6 +1056,14 @@ class AgentService:
                         content = msg.content if hasattr(msg, "content") else str(msg)
 
                         if msg_type == "ai":
+                            # Detect browser tool calls early to open workspace
+                            ai_tool_calls = getattr(msg, "tool_calls", [])
+                            for tc in ai_tool_calls:
+                                tc_name = tc.get("name", "") if isinstance(tc, dict) else getattr(tc, "name", "")
+                                if tc_name == "auto_browser":
+                                    yield _sse("browser_navigate", {"url": "", "title": ""})
+                                    break
+
                             # Complete AI response from call_model
                             code = extract_python_code(content)
                             if not code:
@@ -1059,10 +1092,41 @@ class AgentService:
                                 })
 
                         elif msg_type == "tool":
+                            tool_name = getattr(msg, "name", "") or ""
                             yield _sse("tool_output", {
                                 "iteration": iteration,
                                 "output": content[:5000],
+                                "tool_name": tool_name,
                             })
+                            # Auto-open browser workspace when browser tools run
+                            if tool_name == "auto_browser":
+                                try:
+                                    import json as _json
+                                    tool_data = _json.loads(content) if content else {}
+                                    yield _sse("browser_navigate", {
+                                        "url": tool_data.get("url", ""),
+                                        "title": tool_data.get("title", ""),
+                                    })
+                                    tool_action = tool_data.get("action", "")
+                                    if tool_action == "page_analysis":
+                                        yield _sse("browser_analysis", {
+                                            "iteration": iteration,
+                                            "url": tool_data.get("url", ""),
+                                            "page_height_px": tool_data.get("page_height_px", 0),
+                                            "text_chars": tool_data.get("text_chars", 0),
+                                            "extraction_options": tool_data.get("extraction_options", []),
+                                            "next_steps": tool_data.get("next_steps", ""),
+                                        })
+                                    elif tool_action == "screenshot_full_page":
+                                        yield _sse("browser_full_page_scan", {
+                                            "iteration": iteration,
+                                            "url": tool_data.get("url", ""),
+                                            "num_tiles": tool_data.get("num_tiles", 0),
+                                            "page_height_px": tool_data.get("page_height_px", 0),
+                                            "hint": tool_data.get("hint", ""),
+                                        })
+                                except Exception:
+                                    yield _sse("browser_navigate", {"url": "", "title": ""})
 
             timings["execution_ms"] = int((time.time() - t_exec) * 1000)
             timings["total_ms"] = int((time.time() - t0) * 1000)

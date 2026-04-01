@@ -13,6 +13,7 @@ import toast from 'react-hot-toast'
 import { productApi, agentApi } from '@/utils/api'
 import { Product, AgentTool, Conversation } from '@/types'
 import TerminalPanel from '@/components/TerminalPanel'
+import BrowserWorkspace from '@/components/BrowserWorkspace'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -20,7 +21,7 @@ import TerminalPanel from '@/components/TerminalPanel'
 
 interface AgentMessage {
   id: string
-  type: 'user' | 'status' | 'tools' | 'code' | 'output' | 'answer' | 'error' | 'done' | 'sop' | 'doc'
+  type: 'user' | 'status' | 'tools' | 'code' | 'output' | 'answer' | 'error' | 'done' | 'sop' | 'doc' | 'browser_analysis' | 'browser_scan'
   content: string
   iteration?: number
   meta?: Record<string, any>
@@ -50,8 +51,28 @@ export default function Agent() {
   const [editingTitle, setEditingTitle] = useState<string | null>(null)
   const [editTitleValue, setEditTitleValue] = useState('')
 
-  // Terminal panel state
-  const [showTerminal, setShowTerminal] = useState(false)
+  // Workspace state (browser + terminal split view)
+  const [showWorkspace, setShowWorkspace] = useState(true)
+  const [workspaceTab, setWorkspaceTab] = useState<'browser' | 'terminal'>('browser')
+
+  // Resizable split: chatWidthPct is the left panel's percentage (30–80)
+  const [chatWidthPct, setChatWidthPct] = useState(50)
+  const isDraggingRef = useRef(false)
+  const splitContainerRef = useRef<HTMLDivElement>(null)
+
+  // Drag-to-resize workspace split
+  useEffect(() => {
+    const onMouseMove = (e: MouseEvent) => {
+      if (!isDraggingRef.current || !splitContainerRef.current) return
+      const rect = splitContainerRef.current.getBoundingClientRect()
+      const pct = Math.min(80, Math.max(30, ((e.clientX - rect.left) / rect.width) * 100))
+      setChatWidthPct(pct)
+    }
+    const onMouseUp = () => { isDraggingRef.current = false; document.body.style.cursor = ''; document.body.style.userSelect = '' }
+    window.addEventListener('mousemove', onMouseMove)
+    window.addEventListener('mouseup', onMouseUp)
+    return () => { window.removeEventListener('mousemove', onMouseMove); window.removeEventListener('mouseup', onMouseUp) }
+  }, [])
 
   // Pre-start MCP extensions in background on page load (reduces first-message latency)
   useEffect(() => {
@@ -357,6 +378,44 @@ export default function Agent() {
       }
       case 'agent_done': msg = { type: 'done', content: `Completed in ${data.iterations} iteration(s)`, meta: data.timings }; break
       case 'agent_error': msg = { type: 'error', content: data.detail || 'Agent error' }; break
+      case 'browser_navigate': {
+        setShowWorkspace(true); setWorkspaceTab('browser')
+        msg = { type: 'status', content: `Browsing: ${data.url || ''}` }
+        break
+      }
+      case 'browser_analysis': {
+        const options = (data.extraction_options || [])
+          .map((o: any) => `${o.approach}: ${o.total_tokens} tokens (${o.description})`)
+          .join('\n')
+        msg = {
+          type: 'browser_analysis',
+          content: options,
+          iteration: data.iteration,
+          meta: {
+            url: data.url,
+            page_height_px: data.page_height_px,
+            text_chars: data.text_chars,
+            extraction_options: data.extraction_options,
+            next_steps: data.next_steps,
+          },
+        }
+        break
+      }
+      case 'browser_full_page_scan': {
+        setShowWorkspace(true); setWorkspaceTab('browser')
+        msg = {
+          type: 'browser_scan',
+          content: `Scanned ${data.num_tiles} tiles (${data.page_height_px}px page)`,
+          iteration: data.iteration,
+          meta: {
+            url: data.url,
+            num_tiles: data.num_tiles,
+            page_height_px: data.page_height_px,
+            hint: data.hint,
+          },
+        }
+        break
+      }
     }
     if (msg) addMessage(msg)
     return msg
@@ -789,18 +848,13 @@ export default function Agent() {
             <div className={`w-2 h-2 rounded-full ${enabledToolsCount > 0 ? 'bg-rt-success' : 'bg-rt-warning'}`} />
             <span>{enabledToolsCount}/{tools.length} tools</span>
           </span>
-          <button
-            type="button"
-            onClick={() => setShowTerminal(prev => !prev)}
-            title={showTerminal ? 'Hide terminal' : 'Show terminal'}
-            className={`flex items-center gap-1.5 px-2 py-1 rounded-lg transition-all text-xs font-medium ${
-              showTerminal
-                ? 'bg-rt-primary/15 text-rt-primary border border-rt-primary/30'
-                : 'hover:bg-rt-surface text-rt-text-muted hover:text-rt-text border border-transparent'
-            }`}
-          >
-            <Terminal className="w-3.5 h-3.5" />
-            <span>Terminal</span>
+          <button type="button" onClick={() => setShowWorkspace(prev => !prev)}
+            title={showWorkspace ? 'Hide workspace' : 'Show workspace'}
+            className={`flex-shrink-0 flex items-center gap-1 px-2.5 py-1 rounded-md transition-all text-xs font-medium ${
+              showWorkspace ? 'bg-rt-primary-container text-[#2a1700]' : 'text-rt-text-muted hover:bg-rt-surface/60'
+            }`}>
+            <Monitor className="w-3.5 h-3.5" />
+            <span>Workspace</span>
           </button>
           <div className="flex gap-1 items-center">
             {fileOpsTools.length > 0 && (
@@ -918,6 +972,10 @@ export default function Agent() {
           {conversations.length === 0 && <span className="text-[11px] text-rt-text-muted/50 italic">No conversations yet — start typing or click New</span>}
         </div>
 
+      {/* Main content area: resizable split when workspace is visible */}
+      <div ref={splitContainerRef} className="flex-1 flex overflow-hidden">
+      {/* Left: Chat panel */}
+      <div className="flex flex-col overflow-hidden" style={{ width: showWorkspace ? `${chatWidthPct}%` : '100%' }}>
       {/* Conversation area */}
       <div className="flex-1 overflow-auto p-8">
         {messages.length === 0 ? (
@@ -1041,13 +1099,6 @@ export default function Agent() {
         )}
       </div>
 
-      {/* Terminal panel (collapsible bottom panel) */}
-      <TerminalPanel
-        conversationId={activeConversationId}
-        isVisible={showTerminal && !!activeConversationId}
-        onToggle={() => setShowTerminal(false)}
-      />
-
       {/* Input area */}
       <div className="p-8 pt-4 border-t border-rt-border bg-rt-bg-light">
         <form onSubmit={handleSubmit} className="flex gap-2 items-center">
@@ -1081,6 +1132,72 @@ export default function Agent() {
           <p className="text-[11px] text-purple-400/70 mt-1.5 pl-1">Reasoning on — agent will think step by step</p>
         )}
       </div>
+      </div>{/* end chat panel */}
+
+      {/* Resize handle */}
+      {showWorkspace && (
+        <div
+          className="w-1 cursor-col-resize hover:bg-rt-primary-container/40 active:bg-rt-primary-container/60 transition-colors shrink-0 relative group"
+          onMouseDown={() => { isDraggingRef.current = true; document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none' }}
+        >
+          <div className="absolute inset-y-0 -left-1 -right-1" />{/* wider hit area */}
+          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-1 h-8 rounded-full bg-rt-border group-hover:bg-rt-primary-container/60" />
+        </div>
+      )}
+
+      {/* Right: Workspace panel (Browser + Terminal tabs) */}
+      {showWorkspace && (
+        <div className="flex flex-col overflow-hidden" style={{ width: `${100 - chatWidthPct}%` }}>
+          {/* Tab bar */}
+          <div className="flex items-center gap-1 px-3 py-1.5 border-b border-rt-border bg-rt-surface/30 shrink-0">
+            <button
+              type="button"
+              onClick={() => setWorkspaceTab('browser')}
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-all ${
+                workspaceTab === 'browser'
+                  ? 'bg-rt-primary-container/20 text-rt-primary-container border border-rt-primary-container/30'
+                  : 'text-rt-text-muted hover:text-rt-text hover:bg-rt-surface'
+              }`}
+            >
+              <Globe className="w-3 h-3" />
+              Browser
+            </button>
+            <button
+              type="button"
+              onClick={() => setWorkspaceTab('terminal')}
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-all ${
+                workspaceTab === 'terminal'
+                  ? 'bg-rt-primary-container/20 text-rt-primary-container border border-rt-primary-container/30'
+                  : 'text-rt-text-muted hover:text-rt-text hover:bg-rt-surface'
+              }`}
+            >
+              <Terminal className="w-3 h-3" />
+              Terminal
+            </button>
+          </div>
+          {/* Stacked content — browser always renders; terminal overlays on top */}
+          <div className="flex-1 relative overflow-hidden">
+            {/* Browser — always visible underneath */}
+            <div className="absolute inset-0">
+              <BrowserWorkspace
+                conversationId={activeConversationId}
+                isVisible={showWorkspace}
+              />
+            </div>
+            {/* Terminal — overlays browser when selected */}
+            <div className={`absolute inset-0 z-10 bg-rt-bg transition-opacity duration-200 ${
+              workspaceTab === 'terminal' ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
+            }`}>
+              <TerminalPanel
+                conversationId={activeConversationId}
+                isVisible={showWorkspace && workspaceTab === 'terminal'}
+                onToggle={() => setWorkspaceTab('browser')}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+      </div>{/* end split container */}
     </div>
   )
 }
@@ -1323,6 +1440,54 @@ function MessageBubble({ message: msg, messages, messageIndex, allowLearnThis, o
             </div>
           )}
         </div>)
+    case 'browser_analysis': {
+      const opts = msg.meta?.extraction_options || []
+      return (
+        <div className="card bg-rt-surface/50 border-rt-primary-container/30">
+          <div className="flex items-center gap-2 mb-2 text-xs font-semibold text-rt-primary-container">
+            <ScanSearch className="w-4 h-4" />
+            <span>Page Content Analysis {msg.iteration ? `(iteration ${msg.iteration})` : ''}</span>
+          </div>
+          <div className="text-xs text-rt-text-muted mb-2 truncate">{msg.meta?.url}</div>
+          <div className="space-y-1.5">
+            {opts.map((opt: any, i: number) => (
+              <div key={i} className="flex items-center gap-2 text-sm">
+                <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                  opt.approach === 'read_page' ? 'bg-blue-500/20 text-blue-300'
+                    : opt.approach === 'screenshot' ? 'bg-green-500/20 text-green-300'
+                    : 'bg-purple-500/20 text-purple-300'
+                }`}>{opt.approach}</span>
+                <span className="font-mono text-rt-text">{opt.total_tokens.toLocaleString()} tokens</span>
+                {opt.num_screenshots > 0 && (
+                  <span className="text-rt-text-muted">({opt.num_screenshots} screenshot{opt.num_screenshots > 1 ? 's' : ''})</span>
+                )}
+              </div>
+            ))}
+          </div>
+          <div className="mt-2 pt-2 border-t border-rt-border/30 text-[11px] text-rt-text-muted">
+            {msg.meta?.text_chars?.toLocaleString()} chars | {msg.meta?.page_height_px?.toLocaleString()}px tall
+          </div>
+        </div>
+      )
+    }
+    case 'browser_scan': {
+      return (
+        <div className="card bg-rt-surface/50 border-rt-primary-container/30">
+          <div className="flex items-center gap-2 mb-1 text-xs font-semibold text-rt-primary-container">
+            <Monitor className="w-4 h-4" />
+            <span>Full Page Scan {msg.iteration ? `(iteration ${msg.iteration})` : ''}</span>
+          </div>
+          <div className="text-xs text-rt-text-muted mb-2 truncate">{msg.meta?.url}</div>
+          <div className="text-sm text-rt-text">
+            Captured <span className="font-mono font-bold">{msg.meta?.num_tiles}</span> screenshot tiles
+            ({msg.meta?.page_height_px?.toLocaleString()}px page)
+          </div>
+          <div className="mt-2 pt-2 border-t border-rt-border/30 text-[11px] text-rt-text-muted">
+            {msg.meta?.hint}
+          </div>
+        </div>
+      )
+    }
     case 'sop':
       return (
         <div className="card border-emerald-500/30 bg-emerald-500/5">

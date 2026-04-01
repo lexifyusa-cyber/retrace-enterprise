@@ -17,6 +17,7 @@ Provides tools for the LangGraph CodeAct agent:
   13. screenops       — Screen-based computer automation
   14. todo_write      — In-session task management
   15. knowledge_base  — Product knowledge base (search, read, list, browse)
+  16. auto_browser    — Granular browser control with intelligent content analysis (navigate, analyze_page, click, type, read, screenshot)
 
 Each tool is exposed both as a plain async/sync function and as a
 LangChain StructuredTool for injection into the LangGraph sandbox.
@@ -234,6 +235,23 @@ def get_knowledge_base_tools(
     )
 
 
+def get_auto_browser_tool(
+    chat_model: Any = None,
+    conversation_id: Optional[str] = None,
+    output_callback: Optional[Callable[[str], None]] = None,
+) -> Optional[StructuredTool]:
+    """Return the auto_browser tool if Playwright is available."""
+    try:
+        from app.tools.auto_browser import build_auto_browser_tool
+        return build_auto_browser_tool(
+            chat_model=chat_model,
+            conversation_id=conversation_id,
+            output_callback=output_callback,
+        )
+    except ImportError:
+        return None
+
+
 def get_all_tools(
     llm_client: Any = None,
     model: str = "",
@@ -292,6 +310,15 @@ def get_all_tools(
         )
         if so:
             tools.append(so)
+
+        # AutoBrowser — granular browser control
+        ab = get_auto_browser_tool(
+            chat_model=chat_model,
+            conversation_id=conversation_id,
+            output_callback=output_callback,
+        )
+        if ab:
+            tools.append(ab)
 
     return tools
 

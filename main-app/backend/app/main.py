@@ -19,6 +19,7 @@ from app.core.logging import setup_logging
 from app.api import pods, groups, products, training, query, health, settings as settings_api, files as files_api
 from app.api import agent as agent_api
 from app.api import terminal_ws as terminal_ws_api
+from app.api import browser_ws as browser_ws_api
 from app.api import email as email_api
 from app.api import channels as channels_api
 from app.services.websocket_manager import websocket_manager
@@ -488,6 +489,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     from app.services.mcp_client_service import mcp_client_manager as _mcp_mgr
     await _mcp_mgr.stop_idle_cleanup()
     await _mcp_mgr.stop_all()
+    # Close all browser sessions
+    from app.services.browser_manager import browser_manager as _bm
+    await _bm.close_all()
     await websocket_manager.shutdown()
 
 
@@ -537,6 +541,7 @@ app.include_router(files_api.router, prefix="/api/v1/files", tags=["Local Files"
 app.include_router(email_api.router, prefix="/api/v1/email", tags=["Email"])
 app.include_router(channels_api.router, prefix="/api/v1/channels", tags=["Channels"])
 app.include_router(terminal_ws_api.router, tags=["Terminal WebSocket"])
+app.include_router(browser_ws_api.router, tags=["Browser WebSocket"])
 app.include_router(mcp_builder_api.router, prefix="/api/v1/mcp-builder", tags=["MCP Builder"])
 app.include_router(mcp_extensions_api.router, prefix="/api/v1/mcp-extensions", tags=["MCP Extensions"])
 app.include_router(email_api.product_email_router, prefix="/api/v1/products", tags=["Product Email"])
