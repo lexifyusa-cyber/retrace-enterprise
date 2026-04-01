@@ -119,6 +119,7 @@ export default function McpBuilder() {
   const [analyzePhase, setAnalyzePhase] = useState<string>('')
   // MCP Server registry
   const [mcpServers, setMcpServers] = useState<McpServerEntry[]>([])
+  const mcpServersRef = useRef<McpServerEntry[]>([])
   const [copiedServerId, setCopiedServerId] = useState<string | null>(null)
 
   // Generation progress tracking (survives navigation)
@@ -190,18 +191,34 @@ export default function McpBuilder() {
           const res = await fetch(`/api/v1/mcp-builder/progress/${serverName}`, {
             headers: { 'Authorization': `Bearer ${token}` }
           })
-          if (!res.ok) return
+          if (!res.ok) {
+            // Auth error or server down — check if server was already built via ref
+            const alreadyBuilt = mcpServersRef.current.some((s: any) => s.name === serverName)
+            if (alreadyBuilt) {
+              clearInterval(poll)
+              progressPollRef.current = null
+              setIsGenerating(false)
+              sessionStorage.removeItem(GEN_SESSION_KEY)
+              fetchServers()
+            }
+            return
+          }
           const data = await res.json()
 
           if (data.status === 'not_found') {
-            clearInterval(poll)
-            progressPollRef.current = null
-            setIsGenerating(false)
-            sessionStorage.removeItem(GEN_SESSION_KEY)
-            fetchServers()
+            // No active generation — check if it already completed
+            const alreadyBuilt = mcpServersRef.current.some((s: any) => s.name === serverName)
+            if (alreadyBuilt) {
+              clearInterval(poll)
+              progressPollRef.current = null
+              setIsGenerating(false)
+              sessionStorage.removeItem(GEN_SESSION_KEY)
+              fetchServers()
+            }
             return
           }
 
+          // Update live progress
           setGenerationPhase(data.phase || '')
           setCurrentIteration(data.iteration || 0)
           if (data.logs?.length) {
@@ -302,7 +319,9 @@ export default function McpBuilder() {
         headers: { 'Authorization': `Bearer ${token}` }
       })
       if (res.ok) {
-        setMcpServers(await res.json())
+        const data = await res.json()
+        setMcpServers(data)
+        mcpServersRef.current = data
       }
     } catch (e) {
       console.error("Failed to load MCP servers", e)

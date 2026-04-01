@@ -280,6 +280,26 @@ async def get_mcp_server(server_id: str, session: AsyncSession = Depends(get_ses
     return data
 
 
+@router.get("/progress/{server_name}")
+async def get_generation_progress(
+    server_name: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Get the current generation progress for an MCP server build."""
+    from app.services.mcp_builder_progress import get_progress
+
+    progress = get_progress(server_name)
+    if progress is None:
+        return {"status": "not_found"}
+    return {
+        "status": progress.get("status", "in_progress"),
+        "phase": progress.get("phase", ""),
+        "iteration": progress.get("iteration", 0),
+        "logs": progress.get("logs", [])[-10:],
+        "result": progress.get("result"),
+    }
+
+
 @router.delete("/servers/{server_id}")
 async def delete_mcp_server(
     server_id: str,
@@ -1197,11 +1217,37 @@ async def generate_mcp_server(
 
         return None, "ok"
 
+    def _mirror_to_progress(event: str):
+        """Parse an SSE event string and write relevant fields to the progress store."""
+        from app.services.mcp_builder_progress import update_progress
+        try:
+            if not event or "\ndata: " not in event:
+                return
+            data_line = event.split("\ndata: ", 1)[1].split("\n", 1)[0]
+            data = json.loads(data_line)
+
+            if event.startswith("event: agent_status"):
+                update_progress(safe_product_name, phase=data.get("message") or data.get("step", ""))
+            elif event.startswith("event: agent_tools"):
+                update_progress(safe_product_name, phase=f"{data.get('count', 0)} tools loaded")
+            elif event.startswith("event: agent_code"):
+                if "iteration" in data:
+                    update_progress(safe_product_name, iteration=data["iteration"])
+            elif event.startswith("event: tool_output"):
+                if data.get("output"):
+                    short = data["output"][:120].replace("\n", " ")
+                    update_progress(safe_product_name, log=short)
+        except Exception:
+            pass  # Never let mirroring break the SSE stream
+
     async def _stream_generation():
+        from app.services.mcp_builder_progress import update_progress
         state["final_answer"] = ""
+        update_progress(safe_product_name, status="in_progress", phase="Starting generation...")
 
         # ── Attempt 1: Full generation ────────────────────────────
         async for event in _run_agent(task_prompt, max_iter=60):
+            _mirror_to_progress(event)
             yield event
 
         final_answer = state["final_answer"]
@@ -1261,6 +1307,7 @@ async def generate_mcp_server(
                     f"`py_compile` and an import check."
                 )
 
+            update_progress(safe_product_name, phase=f"Retrying ({severity})...")
             retry_agent = AgentService()
             async for event in retry_agent.execute_task(
                 product_id=agent_product_id,
@@ -1269,6 +1316,7 @@ async def generate_mcp_server(
                 mcp_builder_config=mcp_config,
                 max_iterations=20
             ):
+                _mirror_to_progress(event)
                 yield event
                 if event.startswith("event: agent_answer_chunk"):
                     lines = event.split("\n")
@@ -1302,10 +1350,13 @@ async def generate_mcp_server(
         if final_error and final_severity == "missing":
             # Total failure — server.py never got created
             logger.error("mcp_builder_total_failure", error=final_error)
+            fail_msg = (f"Generation failed: {final_error}. The LLM agent did not produce the server code. "
+                        f"Please check your LLM API configuration and try again.")
+            update_progress(safe_product_name, status="failed", phase="Generation failed",
+                            result={"status": "error", "message": fail_msg})
             yield _sse("mcp_result", {
                 "status": "error",
-                "message": f"Generation failed: {final_error}. The LLM agent did not produce the server code. "
-                           f"Please check your LLM API configuration and try again.",
+                "message": fail_msg,
                 "mcpServers": None,
                 "quickStartCommands": None,
             })
@@ -1414,6 +1465,9 @@ async def generate_mcp_server(
         except Exception as exc:
             logger.warning("mcp_server_save_failed", error=str(exc))
 
+        update_progress(safe_product_name, status="completed", phase="Complete",
+                        result={"status": status, "mcpServers": mcp_servers_config,
+                                "quickStartCommands": _build_quick_start(), "message": message})
         yield _sse("mcp_result", {
             "status": status,
             "mcpServers": mcp_servers_config,

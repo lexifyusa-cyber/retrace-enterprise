@@ -91,7 +91,7 @@ export default function McpExtensions() {
         <div className="flex items-center gap-3 mb-4">
           <Puzzle className="w-6 h-6 text-rt-primary" />
           <div>
-            <h1 className="text-xl font-bold">MCP Extensions</h1>
+            <h1 className="text-xl font-bold">MCP Explorer</h1>
             <p className="text-sm text-rt-text-muted">
               Browse and install MCP extensions to extend the ReTrace agent
             </p>

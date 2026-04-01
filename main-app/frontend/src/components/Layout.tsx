@@ -82,7 +82,7 @@ const navigation: NavItem[] = [
   { name: 'Automations',     href: '/sops',        icon: ClipboardList },
   { name: 'Documentation',   href: '/docs',        icon: FileText },
   { name: 'MCP Builder',     href: '/mcp-builder', icon: Blocks,  minRole: 'user_admin' },
-  { name: 'Extensions',      href: '/extensions',  icon: Puzzle,  minRole: 'user_admin' },
+  { name: 'MCP Explorer',    href: '/extensions',  icon: Puzzle,  minRole: 'user_admin' },
   { name: 'User Management', href: '/users',       icon: Users,   minRole: 'user_admin' },
 ]
 
