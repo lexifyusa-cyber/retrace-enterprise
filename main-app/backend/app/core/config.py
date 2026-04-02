@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     HOST: str = "0.0.0.0"
     PORT: int = 8000
     WEBSOCKET_PORT: int = 8001
+    WEBSOCKET_EXTERNAL_HOST: str = ""
     
     # LLM Providers
     OPENAI_API_KEY: str = ""

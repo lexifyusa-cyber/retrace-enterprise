@@ -4,6 +4,7 @@ POD installer generator service.
 
 import os
 import shutil
+import socket
 import subprocess
 import zipfile
 from pathlib import Path
@@ -14,6 +15,18 @@ import structlog
 from app.core.config import settings
 
 logger = structlog.get_logger()
+
+
+def get_local_ip() -> str:
+    """Return the LAN IP of the interface that routes to the internet."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "localhost"
 
 
 async def generate_pod_installer(
@@ -47,7 +60,7 @@ async def generate_pod_installer(
             "root_dir": ".",
         },
         "main_app": {
-            "url": f"ws://localhost:{settings.WEBSOCKET_PORT}",
+            "url": f"ws://{settings.WEBSOCKET_EXTERNAL_HOST or get_local_ip()}:{settings.WEBSOCKET_PORT}",
             "reconnect_interval_seconds": 30,
         },
         "storage": {
@@ -166,12 +179,14 @@ See documentation for Windows Service installation.
         binary_included=binary_available
     )
     
+    ws_host = settings.WEBSOCKET_EXTERNAL_HOST or get_local_ip()
     return {
         "path": str(archive_path),
         "archive_name": archive_path.name,
         "instructions": instructions,
         "binary_included": binary_available,
-        "download_url": f"/api/v1/pods/{pod_id}/download"
+        "download_url": f"/api/v1/pods/{pod_id}/download",
+        "ws_host": ws_host,
     }
 
 

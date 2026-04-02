@@ -1347,6 +1347,8 @@ function ProductAgents({ productId }: { productId: string }) {
   const [selectedOs, setSelectedOs] = useState<'linux' | 'windows'>('linux')
   const [generating, setGenerating] = useState(false)
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null)
+  const [wsHost, setWsHost] = useState<string>('')
+  const [archiveName, setArchiveName] = useState<string>('')
   const queryClient = useQueryClient()
 
   const { data: podData } = useQuery({
@@ -1375,6 +1377,8 @@ function ProductAgents({ productId }: { productId: string }) {
     try {
       const result = await productApi.generatePod(productId, selectedOs, agentName.trim())
       setDownloadUrl(result.download_url)
+      setWsHost(result.ws_host || '')
+      setArchiveName(result.archive_name || '')
       queryClient.invalidateQueries({ queryKey: ['product-pods', productId] })
       toast.success('Agent package generated')
     } catch (error: any) {
@@ -1557,20 +1561,24 @@ function ProductAgents({ productId }: { productId: string }) {
                     {selectedOs === 'windows' ? (
                       <div className="bg-rt-surface rounded-lg border border-rt-border p-4 font-mono text-xs text-rt-text space-y-1.5">
                         <p className="text-rt-success"># Extract and run</p>
-                        <p>Expand-Archive retrace-*.zip -DestinationPath .\agent</p>
-                        <p>cd agent</p>
+                        <p>tar -xf {archiveName || 'retrace-*.zip'}</p>
                         <p>.\retrace-agent.exe --config config.yaml</p>
                       </div>
                     ) : (
                       <div className="bg-rt-surface rounded-lg border border-rt-border p-4 font-mono text-xs text-rt-text space-y-1.5">
                         <p className="text-rt-success"># Extract, make executable, and run</p>
-                        <p>tar -xzf retrace-*.tar.gz</p>
+                        <p>tar -xzf {archiveName || 'retrace-*.tar.gz'}</p>
                         <p>chmod +x retrace-agent</p>
                         <p>./retrace-agent --config config.yaml</p>
                         <p></p>
                         <p className="text-rt-success"># Or run in background</p>
                         <p>nohup ./retrace-agent --config config.yaml &amp;</p>
                       </div>
+                    )}
+                    {wsHost && wsHost !== 'localhost' && (
+                      <p className="text-xs text-rt-text-muted mt-2">
+                        Agent will connect to <span className="font-mono text-rt-primary">{wsHost}</span>
+                      </p>
                     )}
                   </div>
 

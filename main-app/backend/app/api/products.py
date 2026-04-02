@@ -421,6 +421,7 @@ async def generate_product_pod(
         "binary_included": installer_info["binary_included"],
         "download_url": installer_info["download_url"],
         "instructions": installer_info["instructions"],
+        "ws_host": installer_info.get("ws_host", "localhost"),
     }
 
 
