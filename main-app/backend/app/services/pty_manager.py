@@ -336,7 +336,22 @@ class PTYManager:
     # ------------------------------------------------------------------
 
     def _spawn(self, conversation_id: str) -> PTYSession:
-        shell = os.environ.get("SHELL", "/bin/bash")
+        # Check if a sandbox container exists for this conversation.
+        # If so, spawn the shell inside the container instead of on the host.
+        sandbox_container_id = self._get_sandbox_container_id(conversation_id)
+
+        if sandbox_container_id:
+            shell = "podman"
+            shell_args = [
+                "podman", "exec", "-it",
+                "-w", "/workspace",
+                sandbox_container_id,
+                "/bin/bash",
+            ]
+        else:
+            shell = os.environ.get("SHELL", "/bin/bash")
+            shell_args = [shell, "-l"]
+
         child_pid, master_fd = pty.fork()
 
         if child_pid == 0:
@@ -347,7 +362,11 @@ class PTYManager:
                 pass
             env = os.environ.copy()
             env["TERM"] = "xterm-256color"
-            os.execvpe(shell, [shell, "-l"], env)
+            # Add podman to PATH for macOS
+            for p in ["/opt/homebrew/bin", "/usr/local/bin"]:
+                if p not in env.get("PATH", ""):
+                    env["PATH"] = p + ":" + env.get("PATH", "")
+            os.execvpe(shell_args[0], shell_args, env)
             os._exit(1)
         else:
             flags = fcntl.fcntl(master_fd, fcntl.F_GETFL)
@@ -356,6 +375,18 @@ class PTYManager:
                 conversation_id=conversation_id, pid=child_pid,
                 fd=master_fd, shell=shell,
             )
+
+    def _get_sandbox_container_id(self, conversation_id: str) -> str | None:
+        """Get the Podman container ID for a sandbox session, if one exists."""
+        try:
+            from app.services.sandbox_manager import get_session
+            session = get_session(conversation_id)
+            if session and hasattr(session, 'container') and session.container:
+                cid = session.container.id
+                return cid[:12] if cid else None
+        except Exception:
+            pass
+        return None
 
     def _reader_loop(self, session: PTYSession):
         fd = session.fd

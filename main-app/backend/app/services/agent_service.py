@@ -961,6 +961,20 @@ class AgentService:
                 user_platform=user_platform,
             )
 
+            # ── 5a. Sandbox mode — add instructions for file serving ──────
+            if sandbox_session:
+                system_prompt += f"""
+
+## SANDBOX ENVIRONMENT
+You are running inside a sandboxed container. All files are in /workspace.
+- Files you create are in /workspace (persistent across sessions).
+- When you create HTML/web files and want to open them in the browser, use this URL:
+  `http://localhost:8000/api/v1/agent/sandbox/{thread_id}/serve/{{filename}}`
+  For example: `auto_browser(action="navigate", url="http://localhost:8000/api/v1/agent/sandbox/{thread_id}/serve/snake.html")`
+- The ~ (home directory) maps to /workspace.
+- You CANNOT access the host machine's filesystem.
+"""
+
             # ── 5b. MCP Builder mode — inject prompt supplement ──────────
             if mcp_builder_config:
                 from app.skills.mcp_builder_prompt import build_mcp_builder_supplement_slim

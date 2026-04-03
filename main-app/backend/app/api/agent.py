@@ -1783,6 +1783,28 @@ async def download_sandbox_file(
     return FileResponse(file_path, filename=filename)
 
 
+@router.get("/sandbox/{conversation_id}/serve/{path:path}")
+async def serve_sandbox_file(
+    conversation_id: str,
+    path: str,
+):
+    """Serve a sandbox file with correct MIME type (for browser rendering).
+
+    This endpoint does NOT require auth so the browser workspace iframe
+    can load HTML/JS/CSS files directly from the sandbox.
+    """
+    from app.services.sandbox_manager import get_sandbox_file_path
+    from fastapi.responses import FileResponse
+    import mimetypes
+
+    file_path = get_sandbox_file_path(conversation_id, path)
+    if file_path is None:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    mime, _ = mimetypes.guess_type(file_path)
+    return FileResponse(file_path, media_type=mime or "application/octet-stream")
+
+
 @router.get("/sandbox/status")
 async def sandbox_status(
     current_user: CurrentUser = Depends(get_current_user),
