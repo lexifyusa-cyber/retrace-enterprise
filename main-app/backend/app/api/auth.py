@@ -753,7 +753,7 @@ async def refresh_token(
             UserSession.revoked == False,
         )
     )
-    user_session = result.scalar_one_or_none()
+    user_session = result.scalars().first()  # Use first() to handle duplicate sessions gracefully
     if not user_session or user_session.expires_at < datetime.utcnow():
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Session expired or revoked")
 

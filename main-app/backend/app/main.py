@@ -157,6 +157,58 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     except Exception as exc:
         print(f"[STARTUP] user_sessions migration skipped: {exc}", flush=True)
 
+    # Cleanup: remove stale sessions + add partial unique index
+    try:
+        import sqlite3
+        from pathlib import Path
+        from urllib.parse import unquote
+        db_url = settings.DATABASE_URL
+        if "sqlite" in db_url:
+            parsed = db_url.split("///", 1)[-1].split("?", 1)[0]
+            db_path = unquote(parsed)
+            if not Path(db_path).is_absolute():
+                backend_dir = Path(__file__).parent.parent
+                db_path = str((backend_dir / parsed).resolve())
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+
+            # Delete expired sessions
+            cursor.execute("DELETE FROM user_sessions WHERE expires_at < datetime('now')")
+            expired_count = cursor.rowcount
+
+            # Delete revoked sessions older than 30 days
+            cursor.execute("DELETE FROM user_sessions WHERE revoked = 1 AND created_at < datetime('now', '-30 days')")
+            revoked_count = cursor.rowcount
+
+            # Revoke duplicate active sessions (keep newest per refresh_token_hash)
+            cursor.execute("""
+                UPDATE user_sessions SET revoked = 1
+                WHERE revoked = 0
+                AND session_id NOT IN (
+                    SELECT session_id FROM (
+                        SELECT session_id, ROW_NUMBER() OVER (
+                            PARTITION BY refresh_token_hash ORDER BY created_at DESC
+                        ) AS rn
+                        FROM user_sessions WHERE revoked = 0
+                    ) WHERE rn = 1
+                )
+            """)
+            dup_count = cursor.rowcount
+
+            # Add partial unique index on active sessions (prevents future duplicates)
+            cursor.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS ix_user_sessions_active_token
+                ON user_sessions (refresh_token_hash)
+                WHERE revoked = 0
+            """)
+
+            conn.commit()
+            conn.close()
+            if expired_count or revoked_count or dup_count:
+                print(f"[STARTUP] Session cleanup: {expired_count} expired, {revoked_count} old revoked, {dup_count} duplicates", flush=True)
+    except Exception as exc:
+        print(f"[STARTUP] Session cleanup skipped: {exc}", flush=True)
+
     # Migration: create user_extensions table if missing
     try:
         import sqlite3
