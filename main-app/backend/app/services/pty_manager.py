@@ -341,9 +341,10 @@ class PTYManager:
         sandbox_container_id = self._get_sandbox_container_id(conversation_id)
 
         if sandbox_container_id:
-            shell = "podman"
+            shell = "/bin/bash"  # The actual shell inside the container
+            from app.services.sandbox_manager import _podman_bin
             shell_args = [
-                "podman", "exec", "-it",
+                _podman_bin(), "exec", "-it",
                 "-w", "/workspace",
                 sandbox_container_id,
                 "/bin/bash",

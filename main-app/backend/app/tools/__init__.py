@@ -72,7 +72,7 @@ def get_base_tools(
         from app.core.config import settings as app_settings
         serper_key = getattr(app_settings, "serper_api_key", "") or ""
 
-        terminal_fn = make_sandboxed_terminal(sandbox_session, output_callback)
+        terminal_fn = make_sandboxed_terminal(sandbox_session, conversation_id, output_callback)
         read_file_fn = make_sandboxed_read_file(sandbox_session)
         write_file_fn = make_sandboxed_write_file(sandbox_session)
         delete_file_fn = make_sandboxed_delete_file(sandbox_session)

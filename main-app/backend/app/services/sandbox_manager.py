@@ -52,7 +52,8 @@ def _patch_podman_exec(session):
         cid = container.id[:12] if hasattr(container, 'id') else str(container)
         workdir = kwargs.get("workdir")
 
-        cmd = ["podman", "exec"]
+        _podman = _podman_bin()
+        cmd = [_podman, "exec"]
         if workdir:
             cmd.extend(["-w", workdir])
         cmd.append(cid)
@@ -84,27 +85,58 @@ def _podman_env() -> dict:
     return env
 
 
+def _podman_bin() -> str:
+    """Get the full path to the podman binary."""
+    if os.path.isfile("/opt/homebrew/bin/podman"):
+        return "/opt/homebrew/bin/podman"
+    return "podman"
+
+
 def _check_podman_available() -> bool:
-    """Check if podman is installed AND the machine is responsive."""
+    """Check if podman is installed AND the machine is responsive.
+
+    If the machine SSH is stale, auto-restarts it once.
+    """
     import subprocess
+    env = _podman_env()
+    pb = _podman_bin()
+
+    # Check binary exists
     try:
         result = subprocess.run(
-            ["podman", "--version"],
-            capture_output=True, text=True, timeout=5, env=_podman_env(),
+            [pb, "--version"],
+            capture_output=True, text=True, timeout=5, env=env,
         )
         if result.returncode != 0:
             return False
-        # Verify machine is actually responsive (not just binary exists)
-        result = subprocess.run(
-            ["podman", "info", "--format", "{{.Host.RemoteSocket.Exists}}"],
-            capture_output=True, text=True, timeout=10, env=_podman_env(),
-        )
-        if result.returncode != 0:
-            logger.warning("podman_machine_not_responsive", stderr=(result.stderr or "")[:200])
-            return False
-        return True
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
+
+    # Check machine is responsive (with auto-restart on failure)
+    for attempt in range(2):
+        try:
+            result = subprocess.run(
+                [pb, "info", "--format", "{{.Host.RemoteSocket.Exists}}"],
+                capture_output=True, text=True, timeout=10, env=env,
+            )
+            if result.returncode == 0:
+                return True
+        except subprocess.TimeoutExpired:
+            pass
+
+        if attempt == 0:
+            # Stale SSH connection — restart the machine
+            logger.warning("podman_machine_stale_restarting")
+            try:
+                subprocess.run([pb, "machine", "stop"], capture_output=True, timeout=30, env=env)
+                subprocess.run([pb, "machine", "start"], capture_output=True, timeout=120, env=env)
+                logger.info("podman_machine_restarted")
+            except Exception as exc:
+                logger.error("podman_machine_restart_failed", error=str(exc))
+                return False
+
+    logger.warning("podman_machine_not_responsive_after_restart")
+    return False
 
 
 def _check_image_exists() -> bool:
@@ -112,7 +144,7 @@ def _check_image_exists() -> bool:
     import subprocess
     try:
         result = subprocess.run(
-            ["podman", "image", "exists", SANDBOX_IMAGE],
+            [_podman_bin(), "image", "exists", SANDBOX_IMAGE],
             capture_output=True, timeout=5, env=_podman_env(),
         )
         return result.returncode == 0
@@ -137,7 +169,7 @@ def _build_sandbox_image() -> bool:
     logger.info("sandbox_building_image", image=SANDBOX_IMAGE, context=dockerfile_dir)
     try:
         result = subprocess.run(
-            ["podman", "build", "-t", SANDBOX_IMAGE, dockerfile_dir],
+            [_podman_bin(), "build", "-t", SANDBOX_IMAGE, dockerfile_dir],
             capture_output=True,
             text=True,
             timeout=600,  # 10 minutes for build
@@ -271,7 +303,7 @@ def destroy_session(user_id: str):
                 cid = container.id[:12] if hasattr(container, 'id') else str(container)
                 import subprocess
                 subprocess.run(
-                    ["podman", "rm", "-f", cid],
+                    [_podman_bin(), "rm", "-f", cid],
                     capture_output=True, timeout=10, env=_podman_env(),
                 )
             logger.info("sandbox_session_destroyed", conversation_id=conversation_id)

@@ -20,8 +20,13 @@ logger = structlog.get_logger()
 # Terminal
 # ---------------------------------------------------------------------------
 
-def make_sandboxed_terminal(session, output_callback=None):
-    """Return a sandboxed terminal(command) function."""
+def make_sandboxed_terminal(session, conversation_id=None, output_callback=None):
+    """Return a sandboxed terminal(command) function.
+
+    Uses podman exec (via session.execute_command) for clean output.
+    Forwards the command + output to the Terminal tab's WebSocket so
+    it shows there too.
+    """
 
     def terminal(command: str) -> str:
         """Execute a shell command inside the sandbox container."""
@@ -30,7 +35,7 @@ def make_sandboxed_terminal(session, output_callback=None):
             return "Error: empty command"
 
         try:
-            # Use execute_command for shell; prefix cd /workspace for persistent volume
+            # Run via podman exec — clean output, no markers
             result = session.execute_command(f"cd /workspace && {command}")
             output = result.stdout or ""
             if result.stderr:
@@ -42,6 +47,28 @@ def make_sandboxed_terminal(session, output_callback=None):
 
             if output_callback and output:
                 output_callback(output)
+
+            # Forward to Terminal tab WebSocket so it shows there
+            if conversation_id:
+                try:
+                    from app.services.pty_manager import pty_manager
+                    session_pty = pty_manager._sessions.get(conversation_id)
+                    if session_pty and session_pty.websocket_clients:
+                        import asyncio
+                        # Format: show command and output cleanly
+                        display = f"\r\n\033[1;33m$ {command}\033[0m\r\n{output}\r\n"
+                        loop = pty_manager._event_loop
+                        if loop and loop.is_running():
+                            for ws in list(session_pty.websocket_clients):
+                                try:
+                                    asyncio.run_coroutine_threadsafe(
+                                        ws.send_json({"type": "output", "data": display}),
+                                        loop,
+                                    )
+                                except Exception:
+                                    pass
+                except Exception:
+                    pass
 
             return output if output.strip() else "(no output)"
         except Exception as exc:
