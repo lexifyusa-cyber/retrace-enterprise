@@ -319,11 +319,11 @@ def destroy_session(user_id: str):
                     [_podman_bin(), "rm", "-f", cid],
                     capture_output=True, timeout=10, env=_podman_env(),
                 )
-            logger.info("sandbox_session_destroyed", conversation_id=conversation_id)
+            logger.info("sandbox_session_destroyed", user_id=user_id)
         except Exception as exc:
             logger.error(
                 "sandbox_session_destroy_error",
-                conversation_id=conversation_id,
+                user_id=user_id,
                 error=str(exc),
             )
 
