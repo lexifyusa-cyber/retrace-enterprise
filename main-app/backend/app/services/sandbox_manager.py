@@ -194,6 +194,7 @@ def get_or_create_session(conversation_id: str):
     # Podman Python API expects volumes as dict: {host_path: {"bind": container_path, "mode": mode}}
     # workdir="/sandbox" (default, ephemeral) so llm-sandbox temp .py files
     # don't pollute the persistent /workspace volume.
+    # Port 9222 mapped for Chromium remote debugging (auto_browser via CDP).
     session = SandboxSession(
         lang="python",
         backend="podman",
@@ -204,6 +205,7 @@ def get_or_create_session(conversation_id: str):
             "volumes": {
                 volume_path: {"bind": "/workspace", "mode": "rw"},
             },
+            "ports": {"9222/tcp": 9222},
         },
         workdir="/sandbox",
     )
@@ -328,6 +330,81 @@ def get_sandbox_file_path(conversation_id: str, path: str) -> Optional[str]:
         return None
 
     return target
+
+
+def start_chromium_in_sandbox(conversation_id: str) -> bool:
+    """Start headless Chromium inside the sandbox container with remote debugging.
+
+    Returns True if Chromium was started successfully.
+    """
+    session = get_session(conversation_id)
+    if not session:
+        return False
+
+    try:
+        # Find Playwright's Chromium binary inside the container
+        # PLAYWRIGHT_BROWSERS_PATH=/opt/playwright is set in the Dockerfile
+        find_result = session.execute_command(
+            "find /opt/playwright -name chrome -type f 2>/dev/null | head -1"
+        )
+        chrome_path = (find_result.stdout or "").strip()
+        if not chrome_path:
+            # Fallback: try standard playwright detection
+            find_result = session.execute_command(
+                "PLAYWRIGHT_BROWSERS_PATH=/opt/playwright python3 -c "
+                "\"from playwright.sync_api import sync_playwright; "
+                "p=sync_playwright().start(); print(p.chromium.executable_path); p.stop()\" 2>/dev/null"
+            )
+            chrome_path = (find_result.stdout or "").strip()
+        if not chrome_path:
+            logger.warning("sandbox_chromium_not_found")
+            return False
+        logger.info("sandbox_chromium_found", path=chrome_path)
+
+        # Launch Chromium in the background inside the container
+        session.execute_command(
+            f"{chrome_path} --headless --no-sandbox --disable-gpu "
+            "--disable-dev-shm-usage "
+            "--remote-debugging-address=0.0.0.0 "
+            "--remote-debugging-port=9222 &"
+        )
+        # Give it a moment to start
+        import time as _time
+        _time.sleep(3)
+
+        # Verify it's running
+        check = session.execute_command("curl -s http://localhost:9222/json/version")
+        if check.stdout and "webSocketDebuggerUrl" in check.stdout:
+            logger.info("sandbox_chromium_started", conversation_id=conversation_id)
+            return True
+
+        logger.warning("sandbox_chromium_check_failed", stdout=check.stdout[:200] if check.stdout else "")
+        return False
+    except Exception as exc:
+        logger.error("sandbox_chromium_start_error", error=str(exc))
+        return False
+
+
+def get_chromium_cdp_url(conversation_id: str) -> str | None:
+    """Get the CDP WebSocket URL for Chromium running inside a sandbox container."""
+    session = get_session(conversation_id)
+    if not session:
+        return None
+
+    try:
+        result = session.execute_command("curl -s http://localhost:9222/json/version")
+        if result.stdout:
+            import json
+            data = json.loads(result.stdout)
+            ws_url = data.get("webSocketDebuggerUrl", "")
+            if ws_url:
+                # Replace container's localhost with host's localhost
+                # since port 9222 is mapped to host
+                ws_url = ws_url.replace("0.0.0.0", "127.0.0.1")
+                return ws_url
+    except Exception as exc:
+        logger.warning("sandbox_chromium_cdp_url_error", error=str(exc))
+    return None
 
 
 def cleanup_idle_sessions():

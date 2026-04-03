@@ -200,30 +200,28 @@ class BrowserManager:
 
                 session.playwright = await async_playwright().start()
 
-                # Check if a sandbox session exists for this conversation
-                # If so, launch Chromium inside the container and connect via CDP
-                cdp_endpoint = None
+                # Check if a sandbox session exists for this conversation.
+                # If so, start Chromium inside the container and connect via CDP.
+                cdp_url = None
                 try:
-                    from app.services.sandbox_manager import get_session as get_sandbox_session
+                    from app.services.sandbox_manager import (
+                        get_session as get_sandbox_session,
+                        start_chromium_in_sandbox,
+                        get_chromium_cdp_url,
+                    )
                     sandbox = get_sandbox_session(conversation_id)
                     if sandbox:
-                        # Launch Chromium inside the container with remote debugging
-                        sandbox.run(
-                            "chromium --headless --no-sandbox "
-                            "--disable-dev-shm-usage --disable-gpu "
-                            "--remote-debugging-address=0.0.0.0 "
-                            "--remote-debugging-port=9222 &"
-                        )
-                        import asyncio
-                        await asyncio.sleep(2)  # Wait for Chromium to start
-                        cdp_endpoint = "http://localhost:9222"
+                        logger.info("browser_starting_chromium_in_sandbox", conversation_id=conversation_id)
+                        started = start_chromium_in_sandbox(conversation_id)
+                        if started:
+                            cdp_url = get_chromium_cdp_url(conversation_id)
+                            logger.info("browser_cdp_url", url=cdp_url)
                 except Exception as cdp_err:
-                    logger.warning("browser_cdp_sandbox_fallback", error=str(cdp_err))
+                    logger.warning("browser_cdp_sandbox_error", error=str(cdp_err))
 
-                if cdp_endpoint:
-                    session.browser = await session.playwright.chromium.connect_over_cdp(
-                        cdp_endpoint
-                    )
+                if cdp_url:
+                    session.browser = await session.playwright.chromium.connect_over_cdp(cdp_url)
+                    logger.info("browser_connected_via_cdp", conversation_id=conversation_id)
                 else:
                     session.browser = await session.playwright.chromium.launch(
                         headless=True,
@@ -233,6 +231,7 @@ class BrowserManager:
                             "--disable-dev-shm-usage",
                         ],
                     )
+                    logger.info("browser_launched_locally", conversation_id=conversation_id)
                 session.context = await session.browser.new_context(
                     viewport={"width": SCREENSHOT_WIDTH, "height": SCREENSHOT_HEIGHT},
                     user_agent=(

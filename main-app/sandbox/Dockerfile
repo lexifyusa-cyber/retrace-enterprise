@@ -11,8 +11,10 @@ RUN pip install --no-cache-dir \
     duckduckgo-search requests
 
 # For Chromium (auto_browser)
+# Install to /opt/playwright so it's baked into the image (not in /workspace volume)
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
 RUN pip install --no-cache-dir playwright \
-    && playwright install chromium --with-deps
+    && playwright install --with-deps chromium
 
 # For MCP servers (Node.js — npx comes bundled with npm)
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
