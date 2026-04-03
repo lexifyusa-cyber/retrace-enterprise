@@ -901,13 +901,23 @@ class AgentService:
             try:
                 from app.services.sandbox_manager import ensure_sandbox_ready, get_or_create_session
                 if ensure_sandbox_ready():
-                    sandbox_session = get_or_create_session(thread_id)
-                    logger.info("sandbox_session_active", conversation_id=thread_id)
-                    yield _sse("agent_status", {"step": "init", "message": "Sandbox ready"})
+                    yield _sse("agent_status", {"step": "init", "message": "Starting sandbox..."})
+                    # Run in thread with timeout to avoid blocking the SSE stream
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor() as pool:
+                        future = pool.submit(get_or_create_session, thread_id)
+                        try:
+                            sandbox_session = future.result(timeout=30)
+                            logger.info("sandbox_session_active", conversation_id=thread_id)
+                            yield _sse("agent_status", {"step": "init", "message": "Sandbox ready"})
+                        except concurrent.futures.TimeoutError:
+                            logger.warning("sandbox_creation_timeout", conversation_id=thread_id)
+                            sandbox_session = None
                 else:
                     logger.info("sandbox_not_available_running_unsandboxed", conversation_id=thread_id)
             except Exception as sandbox_err:
                 logger.warning("sandbox_init_failed", error=str(sandbox_err))
+                sandbox_session = None
 
             tools = get_all_tools(
                 llm_client=async_llm_client,

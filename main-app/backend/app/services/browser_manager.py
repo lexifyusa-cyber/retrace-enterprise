@@ -200,28 +200,28 @@ class BrowserManager:
 
                 session.playwright = await async_playwright().start()
 
-                # Check if a sandbox session exists for this conversation.
-                # If so, start Chromium inside the container and connect via CDP.
+                # Try to connect to the shared browserless container via CDP.
+                # Falls back to local Playwright launch if browserless is not available.
                 cdp_url = None
                 try:
-                    from app.services.sandbox_manager import (
-                        get_session as get_sandbox_session,
-                        start_chromium_in_sandbox,
-                        get_chromium_cdp_url,
-                    )
-                    sandbox = get_sandbox_session(conversation_id)
-                    if sandbox:
-                        logger.info("browser_starting_chromium_in_sandbox", conversation_id=conversation_id)
-                        started = start_chromium_in_sandbox(conversation_id)
-                        if started:
-                            cdp_url = get_chromium_cdp_url(conversation_id)
-                            logger.info("browser_cdp_url", url=cdp_url)
-                except Exception as cdp_err:
-                    logger.warning("browser_cdp_sandbox_error", error=str(cdp_err))
+                    from app.services.browserless_manager import ensure_running
+                    cdp_url = ensure_running()
+                except Exception as bl_err:
+                    logger.warning("browserless_not_available", error=str(bl_err))
 
                 if cdp_url:
+                    # Connect to browserless via CDP (version-agnostic)
                     session.browser = await session.playwright.chromium.connect_over_cdp(cdp_url)
-                    logger.info("browser_connected_via_cdp", conversation_id=conversation_id)
+                    session.context = await session.browser.new_context(
+                        viewport={"width": SCREENSHOT_WIDTH, "height": SCREENSHOT_HEIGHT},
+                        user_agent=(
+                            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                            "AppleWebKit/537.36 (KHTML, like Gecko) "
+                            "Chrome/120.0.0.0 Safari/537.36"
+                        ),
+                    )
+                    session.page = await session.context.new_page()
+                    logger.info("browser_connected_via_browserless", conversation_id=conversation_id)
                 else:
                     session.browser = await session.playwright.chromium.launch(
                         headless=True,
@@ -232,15 +232,15 @@ class BrowserManager:
                         ],
                     )
                     logger.info("browser_launched_locally", conversation_id=conversation_id)
-                session.context = await session.browser.new_context(
-                    viewport={"width": SCREENSHOT_WIDTH, "height": SCREENSHOT_HEIGHT},
-                    user_agent=(
-                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/120.0.0.0 Safari/537.36"
-                    ),
-                )
-                session.page = await session.context.new_page()
+                    session.context = await session.browser.new_context(
+                        viewport={"width": SCREENSHOT_WIDTH, "height": SCREENSHOT_HEIGHT},
+                        user_agent=(
+                            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                            "AppleWebKit/537.36 (KHTML, like Gecko) "
+                            "Chrome/120.0.0.0 Safari/537.36"
+                        ),
+                    )
+                    session.page = await session.context.new_page()
                 session.screenshot_task = asyncio.create_task(
                     self._screenshot_loop(session)
                 )

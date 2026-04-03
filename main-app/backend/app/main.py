@@ -476,19 +476,30 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     await mcp_client_manager.start_idle_cleanup()
     logger.info("MCP client idle cleanup started")
 
-    # Check sandbox availability and auto-build image if needed
+    # Check sandbox availability (non-blocking)
     try:
         from app.services.sandbox_manager import is_sandbox_available, _build_sandbox_image
         status = is_sandbox_available()
         if status.get("available"):
             logger.info("sandbox_ready", status="available")
         elif status.get("needs_build"):
-            logger.info("sandbox_building_image")
-            _build_sandbox_image()
+            # Build in background thread so app starts immediately
+            import threading
+            logger.info("sandbox_building_image_in_background")
+            threading.Thread(target=_build_sandbox_image, daemon=True).start()
         else:
             logger.info("sandbox_not_available", reason=status.get("reason", "unknown"))
     except Exception as sandbox_check_err:
         logger.warning("sandbox_startup_check_failed", error=str(sandbox_check_err))
+
+    # Start shared browserless container (non-blocking)
+    try:
+        from app.services.browserless_manager import ensure_running as _start_browserless
+        import threading
+        threading.Thread(target=_start_browserless, daemon=True).start()
+        logger.info("browserless_starting_in_background")
+    except Exception as bl_err:
+        logger.warning("browserless_startup_failed", error=str(bl_err))
 
     # Start sandbox idle cleanup background task (every 5 minutes)
     async def _sandbox_idle_cleanup_loop():
@@ -524,6 +535,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     try:
         from app.services.sandbox_manager import destroy_all_sessions
         destroy_all_sessions()
+    except Exception:
+        pass
+    # Stop shared browserless container
+    try:
+        from app.services.browserless_manager import stop as _stop_browserless
+        _stop_browserless()
     except Exception:
         pass
 
