@@ -493,3 +493,95 @@ else:
             return f"Error in todo_write: {exc}"
 
     return todo_write
+
+
+# ---------------------------------------------------------------------------
+# Auto Browser (Playwright + Chromium inside container)
+# ---------------------------------------------------------------------------
+
+def make_sandboxed_auto_browser(session, output_callback=None):
+    """Return a sandboxed auto_browser function.
+
+    Runs browser_agent.py inside the container which manages a persistent
+    Chromium instance via Playwright. All actions return JSON with screenshot.
+    """
+
+    def auto_browser(
+        action: str,
+        url: str = "",
+        selector: str = "",
+        text: str = "",
+        x: int = 0,
+        y: int = 0,
+        key: str = "",
+        direction: str = "down",
+        amount: int = 300,
+        js_expression: str = "",
+        seconds: float = 1.0,
+        describe_screenshot: bool = False,
+        value: str = "",
+    ) -> str:
+        """Control a browser inside the sandbox container."""
+        try:
+            # Build action payload
+            payload = {"action": action}
+            if url:
+                payload["url"] = url
+            if selector:
+                payload["selector"] = selector
+            if text:
+                payload["text"] = text
+            if x or y:
+                payload["x"] = x
+                payload["y"] = y
+            if key:
+                payload["key"] = key
+            if action == "scroll":
+                payload["direction"] = direction
+                payload["amount"] = amount
+            if js_expression:
+                payload["js_expression"] = js_expression
+            if action == "wait":
+                payload["seconds"] = seconds
+            if value:
+                payload["value"] = value
+
+            payload_json = json.dumps(payload)
+            # Escape single quotes for shell
+            escaped = payload_json.replace("'", "'\\''")
+
+            result = session.execute_command(
+                f"python3 /opt/browser_agent.py '{escaped}'"
+            )
+
+            stdout = result.stdout or ""
+            if not stdout.strip():
+                return json.dumps({"error": f"No output from browser_agent: {result.stderr or 'unknown'}"})
+
+            # Parse and return the JSON result
+            try:
+                data = json.loads(stdout.strip())
+            except json.JSONDecodeError:
+                return json.dumps({"error": f"Invalid JSON from browser_agent: {stdout[:200]}"})
+
+            # Broadcast screenshot to WebSocket if available
+            if output_callback and data.get("screenshot"):
+                try:
+                    import asyncio
+                    ws_data = json.dumps({
+                        "type": "screenshot",
+                        "data": data["screenshot"],
+                        "url": data.get("url", ""),
+                        "title": data.get("title", ""),
+                    })
+                    output_callback(ws_data)
+                except Exception:
+                    pass
+
+            return json.dumps(data)
+
+        except Exception as exc:
+            logger.error("sandboxed_auto_browser_error", action=action, error=str(exc))
+            return json.dumps({"error": str(exc)})
+
+    return auto_browser

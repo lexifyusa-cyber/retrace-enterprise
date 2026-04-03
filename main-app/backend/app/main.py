@@ -492,15 +492,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     except Exception as sandbox_check_err:
         logger.warning("sandbox_startup_check_failed", error=str(sandbox_check_err))
 
-    # Start shared browserless container (non-blocking)
-    try:
-        from app.services.browserless_manager import ensure_running as _start_browserless
-        import threading
-        threading.Thread(target=_start_browserless, daemon=True).start()
-        logger.info("browserless_starting_in_background")
-    except Exception as bl_err:
-        logger.warning("browserless_startup_failed", error=str(bl_err))
-
     # Start sandbox idle cleanup background task (every 5 minutes)
     async def _sandbox_idle_cleanup_loop():
         import asyncio as _aio
@@ -535,12 +526,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     try:
         from app.services.sandbox_manager import destroy_all_sessions
         destroy_all_sessions()
-    except Exception:
-        pass
-    # Stop shared browserless container
-    try:
-        from app.services.browserless_manager import stop as _stop_browserless
-        _stop_browserless()
     except Exception:
         pass
 

@@ -40,6 +40,7 @@ class BrowserSession:
     context: Any = None          # Browser context
     page: Any = None             # Active page
     playwright: Any = None       # Playwright instance
+    sandbox_session: Any = None  # llm-sandbox session (if sandboxed)
     websocket_clients: set = field(default_factory=set)
     screenshot_task: Optional[asyncio.Task] = None
     last_activity: float = field(default_factory=time.time)
@@ -48,8 +49,32 @@ class BrowserSession:
     current_title: str = ""
     is_navigating: bool = False
 
+    def _run_browser_agent(self, action_json: str) -> dict:
+        """Run browser_agent.py inside the sandbox container."""
+        escaped = action_json.replace("'", "'\\''")
+        result = self.sandbox_session.execute_command(
+            f"python3 /opt/browser_agent.py '{escaped}'"
+        )
+        stdout = (result.stdout or "").strip()
+        if not stdout:
+            return {"ok": False, "error": result.stderr or "no output"}
+        try:
+            data = json.loads(stdout)
+            if data.get("url"):
+                self.current_url = data["url"]
+            if data.get("title"):
+                self.current_title = data["title"]
+            return data
+        except json.JSONDecodeError:
+            return {"ok": False, "error": f"Invalid JSON: {stdout[:200]}"}
+
     async def get_screenshot_base64(self) -> Optional[str]:
         """Capture current page as base64 JPEG."""
+        if self.sandbox_session:
+            data = await asyncio.to_thread(
+                self._run_browser_agent, '{"action":"screenshot"}'
+            )
+            return data.get("screenshot")
         if not self.page:
             return None
         try:
@@ -63,13 +88,21 @@ class BrowserSession:
             logger.warning("screenshot_failed", error=str(exc))
             return None
 
+    async def _sandbox_action(self, action_data: dict) -> dict:
+        """Run a browser action via the sandbox container."""
+        return await asyncio.to_thread(
+            self._run_browser_agent, json.dumps(action_data)
+        )
+
     async def navigate(self, url: str) -> dict:
         """Navigate the page to a URL."""
-        if not self.page:
-            return {"error": "No browser page"}
         self.is_navigating = True
         self.last_activity = time.time()
         try:
+            if self.sandbox_session:
+                return await self._sandbox_action({"action": "navigate", "url": url})
+            if not self.page:
+                return {"error": "No browser page"}
             await self.page.goto(url, wait_until="domcontentloaded", timeout=30000)
             self.current_url = self.page.url
             self.current_title = await self.page.title()
@@ -81,9 +114,11 @@ class BrowserSession:
 
     async def click(self, x: int, y: int) -> dict:
         """Click at page coordinates."""
+        self.last_activity = time.time()
+        if self.sandbox_session:
+            return await self._sandbox_action({"action": "click", "x": x, "y": y})
         if not self.page:
             return {"error": "No browser page"}
-        self.last_activity = time.time()
         try:
             await self.page.mouse.click(x, y)
             await asyncio.sleep(0.3)
@@ -95,9 +130,11 @@ class BrowserSession:
 
     async def scroll(self, direction: str = "down", amount: int = 300) -> dict:
         """Scroll the page."""
+        self.last_activity = time.time()
+        if self.sandbox_session:
+            return await self._sandbox_action({"action": "scroll", "direction": direction, "amount": amount})
         if not self.page:
             return {"error": "No browser page"}
-        self.last_activity = time.time()
         try:
             delta = amount if direction == "down" else -amount
             await self.page.mouse.wheel(0, delta)
@@ -107,9 +144,11 @@ class BrowserSession:
 
     async def type_text(self, text: str) -> dict:
         """Type text into the focused element."""
+        self.last_activity = time.time()
+        if self.sandbox_session:
+            return await self._sandbox_action({"action": "type", "text": text})
         if not self.page:
             return {"error": "No browser page"}
-        self.last_activity = time.time()
         try:
             await self.page.keyboard.type(text)
             return {"typed": len(text)}
@@ -118,9 +157,11 @@ class BrowserSession:
 
     async def press_key(self, key: str) -> dict:
         """Press a keyboard key (e.g., 'Enter', 'Tab')."""
+        self.last_activity = time.time()
+        if self.sandbox_session:
+            return await self._sandbox_action({"action": "press_key", "key": key})
         if not self.page:
             return {"error": "No browser page"}
-        self.last_activity = time.time()
         try:
             await self.page.keyboard.press(key)
             return {"pressed": key}
@@ -129,9 +170,11 @@ class BrowserSession:
 
     async def go_back(self) -> dict:
         """Navigate back in history."""
+        self.last_activity = time.time()
+        if self.sandbox_session:
+            return await self._sandbox_action({"action": "back"})
         if not self.page:
             return {"error": "No browser page"}
-        self.last_activity = time.time()
         try:
             await self.page.go_back(wait_until="domcontentloaded", timeout=15000)
             self.current_url = self.page.url
@@ -142,9 +185,11 @@ class BrowserSession:
 
     async def go_forward(self) -> dict:
         """Navigate forward in history."""
+        self.last_activity = time.time()
+        if self.sandbox_session:
+            return await self._sandbox_action({"action": "forward"})
         if not self.page:
             return {"error": "No browser page"}
-        self.last_activity = time.time()
         try:
             await self.page.go_forward(wait_until="domcontentloaded", timeout=15000)
             self.current_url = self.page.url
@@ -155,9 +200,11 @@ class BrowserSession:
 
     async def refresh(self) -> dict:
         """Reload the current page."""
+        self.last_activity = time.time()
+        if self.sandbox_session:
+            return await self._sandbox_action({"action": "refresh"})
         if not self.page:
             return {"error": "No browser page"}
-        self.last_activity = time.time()
         try:
             await self.page.reload(wait_until="domcontentloaded", timeout=15000)
             self.current_url = self.page.url
@@ -196,33 +243,23 @@ class BrowserManager:
 
             session = BrowserSession(conversation_id=conversation_id)
             try:
-                from playwright.async_api import async_playwright
-
-                session.playwright = await async_playwright().start()
-
-                # Try to connect to the shared browserless container via CDP.
-                # Falls back to local Playwright launch if browserless is not available.
-                cdp_url = None
+                # Check if sandbox exists — if so, browser runs inside container
+                sandbox = None
                 try:
-                    from app.services.browserless_manager import ensure_running
-                    cdp_url = ensure_running()
-                except Exception as bl_err:
-                    logger.warning("browserless_not_available", error=str(bl_err))
+                    from app.services.sandbox_manager import get_session as get_sandbox_session
+                    sandbox = get_sandbox_session(conversation_id)
+                except Exception:
+                    pass
 
-                if cdp_url:
-                    # Connect to browserless via CDP (version-agnostic)
-                    session.browser = await session.playwright.chromium.connect_over_cdp(cdp_url)
-                    session.context = await session.browser.new_context(
-                        viewport={"width": SCREENSHOT_WIDTH, "height": SCREENSHOT_HEIGHT},
-                        user_agent=(
-                            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                            "AppleWebKit/537.36 (KHTML, like Gecko) "
-                            "Chrome/120.0.0.0 Safari/537.36"
-                        ),
-                    )
-                    session.page = await session.context.new_page()
-                    logger.info("browser_connected_via_browserless", conversation_id=conversation_id)
+                if sandbox:
+                    # Sandboxed: browser_agent.py runs Playwright+Chromium inside container
+                    # No Playwright needed on host — all communication via podman exec
+                    session.sandbox_session = sandbox
+                    logger.info("browser_using_sandbox", conversation_id=conversation_id)
                 else:
+                    # Non-sandboxed: launch Playwright locally on host
+                    from playwright.async_api import async_playwright
+                    session.playwright = await async_playwright().start()
                     session.browser = await session.playwright.chromium.launch(
                         headless=True,
                         args=[

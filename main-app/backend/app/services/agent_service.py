@@ -978,9 +978,9 @@ class AgentService:
 ## SANDBOX ENVIRONMENT
 You are running inside a sandboxed container. All files are in /workspace.
 - Files you create are in /workspace (persistent across sessions).
-- When you create HTML/web files and want to open them in the browser, use this URL:
-  `http://localhost:8000/api/v1/agent/sandbox/{thread_id}/serve/{{filename}}`
-  For example: `auto_browser(action="navigate", url="http://localhost:8000/api/v1/agent/sandbox/{thread_id}/serve/snake.html")`
+- To open HTML/web files in the browser, use file:// URLs:
+  `auto_browser(action="navigate", url="file:///workspace/snake.html")`
+- To open external websites: `auto_browser(action="navigate", url="https://google.com")`
 - The ~ (home directory) maps to /workspace.
 - You CANNOT access the host machine's filesystem.
 """

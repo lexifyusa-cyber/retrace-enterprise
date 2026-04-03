@@ -66,6 +66,7 @@ def get_base_tools(
             make_sandboxed_web_search,
             make_sandboxed_web_fetch,
             make_sandboxed_todo_write,
+            make_sandboxed_auto_browser,
         )
 
         from app.core.config import settings as app_settings
@@ -125,6 +126,18 @@ def get_base_tools(
                 "Create or update a structured todo list for the current session. "
                 "Pass a JSON array of {id, content, status} objects."
             )))
+
+        # auto_browser — Playwright + Chromium inside container
+        auto_browser_fn = make_sandboxed_auto_browser(sandbox_session, output_callback)
+        tools.append(StructuredTool.from_function(
+            name="auto_browser",
+            func=auto_browser_fn,
+            description=(
+                "Control a browser inside the sandbox. Navigate to URLs, click, type, "
+                "read page content, take screenshots, scroll, press keys, and run JS. "
+                "Use file:///workspace/filename.html to open local files."
+            ),
+        ))
 
         return tools
 
@@ -416,14 +429,16 @@ def get_all_tools(
         if so:
             tools.append(so)
 
-        # AutoBrowser — stays on host for now (Phase 4 will move to container)
-        ab = get_auto_browser_tool(
-            chat_model=chat_model,
-            conversation_id=conversation_id,
-            output_callback=output_callback,
-        )
-        if ab:
-            tools.append(ab)
+        # AutoBrowser — host-side only when not sandboxed
+        # (sandboxed version is added in get_base_tools above)
+        if not sandbox_session:
+            ab = get_auto_browser_tool(
+                chat_model=chat_model,
+                conversation_id=conversation_id,
+                output_callback=output_callback,
+            )
+            if ab:
+                tools.append(ab)
 
     return tools
 
