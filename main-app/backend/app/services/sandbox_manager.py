@@ -258,6 +258,7 @@ def get_or_create_session(user_id: str):
         image=SANDBOX_IMAGE,
         keep_template=True,
         verbose=False,
+        skip_environment_setup=True,  # Use container's system Python (has all Dockerfile packages)
         runtime_configs={
             "volumes": {
                 volume_path: {"bind": "/workspace", "mode": "rw"},
