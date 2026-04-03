@@ -1732,3 +1732,61 @@ async def dashboard_stats(session: AsyncSession = Depends(get_session)):
         ],
         "product_coverage": product_coverage,
     }
+
+
+# ---------------------------------------------------------------------------
+# Sandbox file explorer
+# ---------------------------------------------------------------------------
+
+@router.get("/sandbox/{conversation_id}/files")
+async def list_sandbox_files(
+    conversation_id: str,
+    path: str = Query(default="/", description="Directory path relative to sandbox root"),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """List files and directories in the sandbox volume."""
+    from app.services.sandbox_manager import list_sandbox_files as _list_files
+    entries = _list_files(conversation_id, path)
+    return {"path": path, "entries": entries}
+
+
+@router.get("/sandbox/{conversation_id}/file")
+async def read_sandbox_file(
+    conversation_id: str,
+    path: str = Query(..., description="File path relative to sandbox root"),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Read a text file from the sandbox volume."""
+    from app.services.sandbox_manager import read_sandbox_file as _read_file
+    content = _read_file(conversation_id, path)
+    if content is None:
+        raise HTTPException(status_code=404, detail="File not found")
+    return {"path": path, "content": content}
+
+
+@router.get("/sandbox/{conversation_id}/download")
+async def download_sandbox_file(
+    conversation_id: str,
+    path: str = Query(..., description="File path relative to sandbox root"),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Download a file from the sandbox volume."""
+    from app.services.sandbox_manager import get_sandbox_file_path
+    from fastapi.responses import FileResponse
+    import os
+
+    file_path = get_sandbox_file_path(conversation_id, path)
+    if file_path is None:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    filename = os.path.basename(file_path)
+    return FileResponse(file_path, filename=filename)
+
+
+@router.get("/sandbox/status")
+async def sandbox_status(
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Check if sandboxing is available (Podman installed + image built)."""
+    from app.services.sandbox_manager import is_sandbox_available
+    return is_sandbox_available()

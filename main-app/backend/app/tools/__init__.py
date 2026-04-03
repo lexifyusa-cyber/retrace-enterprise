@@ -40,13 +40,95 @@ from app.tools.todo import make_todo_for_conversation
 def get_base_tools(
     conversation_id: Optional[str] = None,
     output_callback: Optional[Callable[[str], None]] = None,
+    sandbox_session: Optional[Any] = None,
 ) -> list[StructuredTool]:
     """Return the always-available tools (no extra API keys required).
 
     When *conversation_id* is provided the terminal tool is backed by a
     persistent PTY session.  *output_callback* receives real-time terminal
     output chunks for SSE streaming.
+
+    When *sandbox_session* is provided (an llm-sandbox SandboxSession),
+    all tools execute inside the Podman container instead of on the host.
     """
+
+    # ── Sandboxed tools (all execute inside Podman container) ──────────
+    if sandbox_session:
+        from app.tools.sandboxed import (
+            make_sandboxed_terminal,
+            make_sandboxed_read_file,
+            make_sandboxed_write_file,
+            make_sandboxed_delete_file,
+            make_sandboxed_download_file,
+            make_sandboxed_str_replace,
+            make_sandboxed_grep,
+            make_sandboxed_glob_search,
+            make_sandboxed_web_search,
+            make_sandboxed_web_fetch,
+            make_sandboxed_todo_write,
+        )
+
+        from app.core.config import settings as app_settings
+        serper_key = getattr(app_settings, "serper_api_key", "") or ""
+
+        terminal_fn = make_sandboxed_terminal(sandbox_session, output_callback)
+        read_file_fn = make_sandboxed_read_file(sandbox_session)
+        write_file_fn = make_sandboxed_write_file(sandbox_session)
+        delete_file_fn = make_sandboxed_delete_file(sandbox_session)
+        download_file_fn = make_sandboxed_download_file(sandbox_session)
+        str_replace_fn = make_sandboxed_str_replace(sandbox_session)
+        grep_fn = make_sandboxed_grep(sandbox_session)
+        glob_search_fn = make_sandboxed_glob_search(sandbox_session)
+        web_search_fn = make_sandboxed_web_search(sandbox_session, serper_key)
+        web_fetch_fn = make_sandboxed_web_fetch(sandbox_session)
+
+        tools = [
+            StructuredTool.from_function(name="terminal", func=terminal_fn, description=(
+                "Execute a shell/terminal command inside the sandbox. "
+                "Use for running commands, installing packages, checking system info, "
+                "executing scripts, managing files via CLI. Returns stdout + stderr."
+            )),
+            StructuredTool.from_function(name="read_file", func=read_file_fn, description=(
+                "Read and return the full text contents of a file. "
+                "Use to examine source code, config files, logs, data files."
+            )),
+            StructuredTool.from_function(name="write_file", func=write_file_fn, description=(
+                "Write text content to a file (creates or overwrites). "
+                "Creates parent directories as needed."
+            )),
+            StructuredTool.from_function(name="delete_file", func=delete_file_fn, description=(
+                "Delete a file at the given path. Refuses to delete directories."
+            )),
+            StructuredTool.from_function(name="download_file", func=download_file_fn, description=(
+                "Download a file from a URL to a local path. Follows redirects; max 512 MB."
+            )),
+            StructuredTool.from_function(name="str_replace", func=str_replace_fn, description=(
+                "Replace exact text in a file. Set replace_all=True to replace all occurrences."
+            )),
+            StructuredTool.from_function(name="grep", func=grep_fn, description=(
+                "Search file contents using regex. Powered by ripgrep."
+            )),
+            StructuredTool.from_function(name="glob_search", func=glob_search_fn, description=(
+                "Find files matching a glob pattern (e.g. '*.py', 'src/**/*.tsx')."
+            )),
+            StructuredTool.from_function(name="web_search", func=web_search_fn, description=(
+                "Search the web. Returns titles, URLs, snippets."
+            )),
+            StructuredTool.from_function(name="web_fetch", func=web_fetch_fn, description=(
+                "Fetch a URL and return its content as clean readable text."
+            )),
+        ]
+
+        if conversation_id:
+            todo_fn = make_sandboxed_todo_write(sandbox_session)
+            tools.append(StructuredTool.from_function(name="todo_write", func=todo_fn, description=(
+                "Create or update a structured todo list for the current session. "
+                "Pass a JSON array of {id, content, status} objects."
+            )))
+
+        return tools
+
+    # ── Original tools (direct host execution, no sandbox) ─────────────
     if conversation_id:
         terminal_fn = make_terminal_for_conversation(conversation_id, output_callback=output_callback)
     else:
@@ -267,6 +349,7 @@ def get_all_tools(
     api_url: Optional[str] = None,
     conversation_id: Optional[str] = None,
     output_callback: Optional[Callable[[str], None]] = None,
+    sandbox_session: Optional[Any] = None,
 ) -> list[StructuredTool]:
     """Assemble the full tool list based on available credentials.
 
@@ -285,9 +368,28 @@ def get_all_tools(
         api_url: LLM API base URL
         conversation_id: Conversation ID for persistent PTY terminal session
         output_callback: Callback receiving real-time terminal output chunks
+        sandbox_session: llm-sandbox SandboxSession for sandboxed execution
     """
-    tools = get_base_tools(conversation_id=conversation_id, output_callback=output_callback)
+    tools = get_base_tools(
+        conversation_id=conversation_id,
+        output_callback=output_callback,
+        sandbox_session=sandbox_session,
+    )
 
+    # When sandboxed, web_advanced is already handled by sandboxed web_search.
+    # web_research needs LLM client — for now, use host version.
+    if sandbox_session:
+        from app.tools.sandboxed import make_sandboxed_web_advanced
+        from app.core.config import settings as app_settings
+        serper_key = getattr(app_settings, "serper_api_key", "") or ""
+        tools.append(StructuredTool.from_function(
+            name="web_advanced",
+            func=make_sandboxed_web_advanced(sandbox_session, serper_key),
+            description="Advanced web search with operators (site:, filetype:, etc.).",
+        ))
+
+    # ── Tools that stay on host regardless of sandbox ─────────────
+    # knowledge_base needs direct DB access, screenops needs host screen
     if product_id:
         tools.extend(get_knowledge_base_tools(
             product_id=product_id,
@@ -297,13 +399,16 @@ def get_all_tools(
             base_url=api_url,
         ))
 
-    if llm_client and model:
-        tools.append(get_web_research_tool(llm_client, model))
-    
-    # web_advanced is always available (falls back to basic search if Serper not configured)
-    tools.append(get_web_advanced_tool())
+    if not sandbox_session:
+        # These only run on host (non-sandboxed path)
+        if llm_client and model:
+            tools.append(get_web_research_tool(llm_client, model))
+
+        # web_advanced is always available (falls back to basic search if Serper not configured)
+        tools.append(get_web_advanced_tool())
 
     if chat_model:
+        # screenops always runs on host (needs real screen)
         so = get_screenops_tool(
             chat_model, screenops_api_key, screenops_model,
             screenops_api_url, screenops_mouse_timeout, screenops_image_scale,
@@ -311,7 +416,7 @@ def get_all_tools(
         if so:
             tools.append(so)
 
-        # AutoBrowser — granular browser control
+        # AutoBrowser — stays on host for now (Phase 4 will move to container)
         ab = get_auto_browser_tool(
             chat_model=chat_model,
             conversation_id=conversation_id,

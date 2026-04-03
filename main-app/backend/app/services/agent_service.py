@@ -896,6 +896,19 @@ class AgentService:
             from app.tools.web_search import configure_web_search
             configure_web_search(serper_api_key=llm_settings.get("serper_api_key", ""))
 
+            # ── 3a. Create sandbox session (if Podman is available) ────
+            sandbox_session = None
+            try:
+                from app.services.sandbox_manager import ensure_sandbox_ready, get_or_create_session
+                if ensure_sandbox_ready():
+                    sandbox_session = get_or_create_session(thread_id)
+                    logger.info("sandbox_session_active", conversation_id=thread_id)
+                    yield _sse("agent_status", {"step": "init", "message": "Sandbox ready"})
+                else:
+                    logger.info("sandbox_not_available_running_unsandboxed", conversation_id=thread_id)
+            except Exception as sandbox_err:
+                logger.warning("sandbox_init_failed", error=str(sandbox_err))
+
             tools = get_all_tools(
                 llm_client=async_llm_client,
                 model=model_name,
@@ -910,6 +923,7 @@ class AgentService:
                 api_key=llm_settings.get("api_key", ""),
                 api_url=llm_settings.get("api_url"),
                 conversation_id=thread_id,
+                sandbox_session=sandbox_session,
             )
             # Filter by user-disabled tools (legacy KB names → disable knowledge_base)
             disabled = set((llm_settings.get("agent_tools_config") or {}).get("disabled") or [])

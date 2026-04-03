@@ -199,14 +199,40 @@ class BrowserManager:
                 from playwright.async_api import async_playwright
 
                 session.playwright = await async_playwright().start()
-                session.browser = await session.playwright.chromium.launch(
-                    headless=True,
-                    args=[
-                        "--disable-blink-features=AutomationControlled",
-                        "--no-sandbox",
-                        "--disable-dev-shm-usage",
-                    ],
-                )
+
+                # Check if a sandbox session exists for this conversation
+                # If so, launch Chromium inside the container and connect via CDP
+                cdp_endpoint = None
+                try:
+                    from app.services.sandbox_manager import get_session as get_sandbox_session
+                    sandbox = get_sandbox_session(conversation_id)
+                    if sandbox:
+                        # Launch Chromium inside the container with remote debugging
+                        sandbox.run(
+                            "chromium --headless --no-sandbox "
+                            "--disable-dev-shm-usage --disable-gpu "
+                            "--remote-debugging-address=0.0.0.0 "
+                            "--remote-debugging-port=9222 &"
+                        )
+                        import asyncio
+                        await asyncio.sleep(2)  # Wait for Chromium to start
+                        cdp_endpoint = "http://localhost:9222"
+                except Exception as cdp_err:
+                    logger.warning("browser_cdp_sandbox_fallback", error=str(cdp_err))
+
+                if cdp_endpoint:
+                    session.browser = await session.playwright.chromium.connect_over_cdp(
+                        cdp_endpoint
+                    )
+                else:
+                    session.browser = await session.playwright.chromium.launch(
+                        headless=True,
+                        args=[
+                            "--disable-blink-features=AutomationControlled",
+                            "--no-sandbox",
+                            "--disable-dev-shm-usage",
+                        ],
+                    )
                 session.context = await session.browser.new_context(
                     viewport={"width": SCREENSHOT_WIDTH, "height": SCREENSHOT_HEIGHT},
                     user_agent=(

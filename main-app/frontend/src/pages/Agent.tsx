@@ -5,7 +5,7 @@ import {
   Package, Check, ChevronDown, ChevronRight, AlertTriangle, Code, Play, X, Database,
   FileEdit, Plus, MessageSquare, Trash2, Edit2, GraduationCap, CheckCircle2,
   ClipboardList, CalendarClock, Repeat, Timer, Sparkles,
-  Download, ScanSearch, FolderSearch, Link2, ListTodo, Replace,
+  Download, ScanSearch, FolderSearch, FolderOpen, Link2, ListTodo, Replace,
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import ReactMarkdown from 'react-markdown'
@@ -14,6 +14,7 @@ import { productApi, agentApi } from '@/utils/api'
 import { Product, AgentTool, Conversation } from '@/types'
 import TerminalPanel from '@/components/TerminalPanel'
 import BrowserWorkspace from '@/components/BrowserWorkspace'
+import SandboxFileExplorer from '@/components/SandboxFileExplorer'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -53,7 +54,8 @@ export default function Agent() {
 
   // Workspace state (browser + terminal split view)
   const [showWorkspace, setShowWorkspace] = useState(true)
-  const [workspaceTab, setWorkspaceTab] = useState<'browser' | 'terminal'>('browser')
+  const [workspaceTab, setWorkspaceTab] = useState<'browser' | 'terminal' | 'files'>('browser')
+  const [isSandboxed, setIsSandboxed] = useState(false)
 
   // Resizable split: chatWidthPct is the left panel's percentage (30–80)
   const [chatWidthPct, setChatWidthPct] = useState(50)
@@ -361,6 +363,7 @@ export default function Agent() {
     switch (event) {
       case 'agent_status': {
         const content = data.message || data.step
+        if (content === 'Sandbox ready') setIsSandboxed(true)
         if (content !== 'Agent is working...') msg = { type: 'status', content }
         break
       }
@@ -848,6 +851,12 @@ export default function Agent() {
             <div className={`w-2 h-2 rounded-full ${enabledToolsCount > 0 ? 'bg-rt-success' : 'bg-rt-warning'}`} />
             <span>{enabledToolsCount}/{tools.length} tools</span>
           </span>
+          {isSandboxed && (
+            <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-green-500/10 text-green-500 text-[10px] font-medium border border-green-500/20">
+              <div className="w-1.5 h-1.5 rounded-full bg-green-500" />
+              Sandboxed
+            </span>
+          )}
           <button type="button" onClick={() => setShowWorkspace(prev => !prev)}
             title={showWorkspace ? 'Hide workspace' : 'Show workspace'}
             className={`flex-shrink-0 flex items-center gap-1 px-2.5 py-1 rounded-md transition-all text-xs font-medium ${
@@ -1174,6 +1183,18 @@ export default function Agent() {
               <Terminal className="w-3 h-3" />
               Terminal
             </button>
+            <button
+              type="button"
+              onClick={() => setWorkspaceTab('files')}
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-all ${
+                workspaceTab === 'files'
+                  ? 'bg-rt-primary-container/20 text-rt-primary-container border border-rt-primary-container/30'
+                  : 'text-rt-text-muted hover:text-rt-text hover:bg-rt-surface'
+              }`}
+            >
+              <FolderOpen className="w-3 h-3" />
+              Files
+            </button>
           </div>
           {/* Stacked content — browser always renders; terminal overlays on top */}
           <div className="flex-1 relative overflow-hidden">
@@ -1192,6 +1213,14 @@ export default function Agent() {
                 conversationId={activeConversationId}
                 isVisible={showWorkspace && workspaceTab === 'terminal'}
                 onToggle={() => setWorkspaceTab('browser')}
+              />
+            </div>
+            {/* Files — overlays browser when selected */}
+            <div className={`absolute inset-0 z-10 bg-rt-bg transition-opacity duration-200 ${
+              workspaceTab === 'files' ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
+            }`}>
+              <SandboxFileExplorer
+                conversationId={activeConversationId}
               />
             </div>
           </div>

@@ -476,6 +476,33 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     await mcp_client_manager.start_idle_cleanup()
     logger.info("MCP client idle cleanup started")
 
+    # Check sandbox availability and auto-build image if needed
+    try:
+        from app.services.sandbox_manager import is_sandbox_available, _build_sandbox_image
+        status = is_sandbox_available()
+        if status.get("available"):
+            logger.info("sandbox_ready", status="available")
+        elif status.get("needs_build"):
+            logger.info("sandbox_building_image")
+            _build_sandbox_image()
+        else:
+            logger.info("sandbox_not_available", reason=status.get("reason", "unknown"))
+    except Exception as sandbox_check_err:
+        logger.warning("sandbox_startup_check_failed", error=str(sandbox_check_err))
+
+    # Start sandbox idle cleanup background task (every 5 minutes)
+    async def _sandbox_idle_cleanup_loop():
+        import asyncio as _aio
+        while True:
+            await _aio.sleep(300)  # 5 minutes
+            try:
+                from app.services.sandbox_manager import cleanup_idle_sessions
+                cleanup_idle_sessions()
+            except Exception:
+                pass
+
+    _sandbox_cleanup_task = _asyncio.create_task(_sandbox_idle_cleanup_loop())
+
     yield
     
     # Shutdown
@@ -493,6 +520,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     from app.services.browser_manager import browser_manager as _bm
     await _bm.close_all()
     await websocket_manager.shutdown()
+    # Destroy all sandbox containers
+    try:
+        from app.services.sandbox_manager import destroy_all_sessions
+        destroy_all_sessions()
+    except Exception:
+        pass
 
 
 app = FastAPI(
