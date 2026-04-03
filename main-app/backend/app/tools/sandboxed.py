@@ -23,9 +23,8 @@ logger = structlog.get_logger()
 def make_sandboxed_terminal(session, conversation_id=None, output_callback=None):
     """Return a sandboxed terminal(command) function.
 
-    Uses podman exec (via session.execute_command) for clean output.
-    Forwards the command + output to the Terminal tab's WebSocket so
-    it shows there too.
+    Uses podman exec for clean output to the LLM. Forwards the command
+    and output to the Terminal tab WebSocket with proper formatting.
     """
 
     def terminal(command: str) -> str:
@@ -41,34 +40,28 @@ def make_sandboxed_terminal(session, conversation_id=None, output_callback=None)
             if result.stderr:
                 output += f"\n{result.stderr}" if output else result.stderr
 
-            # Truncate large output
             if len(output) > 100_000:
                 output = output[:100_000] + "\n[output truncated at 100KB]"
 
             if output_callback and output:
                 output_callback(output)
 
-            # Forward to Terminal tab WebSocket so it shows there
+            # Forward to Terminal tab WebSocket
             if conversation_id:
                 try:
                     from app.services.pty_manager import pty_manager
-                    session_pty = pty_manager._sessions.get(conversation_id)
-                    if session_pty and session_pty.websocket_clients:
+                    pty_session = pty_manager.get(conversation_id)
+                    if pty_session and pty_session.websocket_clients:
                         import asyncio
-                        # Format: show command and output cleanly
-                        # Convert \n to \r\n for proper xterm.js display
-                        formatted_output = output.replace("\r\n", "\n").replace("\n", "\r\n")
-                        display = f"\r\n\033[1;33m$ {command}\033[0m\r\n{formatted_output}\r\n"
-                        loop = pty_manager._event_loop
-                        if loop and loop.is_running():
-                            for ws in list(session_pty.websocket_clients):
-                                try:
-                                    asyncio.run_coroutine_threadsafe(
-                                        ws.send_json({"type": "output", "data": display}),
-                                        loop,
-                                    )
-                                except Exception:
-                                    pass
+                        # Write the command into the real PTY shell so it
+                        # shows with the natural prompt. Don't use markers.
+                        if pty_session.fd >= 0:
+                            try:
+                                cmd_bytes = f"{command}\n".encode()
+                                import os as _os
+                                _os.write(pty_session.fd, cmd_bytes)
+                            except OSError:
+                                pass
                 except Exception:
                     pass
 
