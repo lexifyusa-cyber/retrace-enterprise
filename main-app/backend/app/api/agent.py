@@ -1738,6 +1738,21 @@ async def dashboard_stats(session: AsyncSession = Depends(get_session)):
 # Sandbox file explorer
 # ---------------------------------------------------------------------------
 
+def _resolve_sandbox_id(conversation_id: str, current_user=None) -> str:
+    """Resolve conversation_id to the user's sandbox ID (user_id).
+
+    Falls back to current_user.user_id if mapping not found,
+    then to conversation_id as last resort.
+    """
+    from app.services.sandbox_manager import get_user_for_conversation
+    user_id = get_user_for_conversation(conversation_id)
+    if user_id:
+        return user_id
+    if current_user and hasattr(current_user, 'user_id'):
+        return current_user.user_id
+    return conversation_id
+
+
 @router.get("/sandbox/{conversation_id}/files")
 async def list_sandbox_files(
     conversation_id: str,
@@ -1746,7 +1761,8 @@ async def list_sandbox_files(
 ):
     """List files and directories in the sandbox volume."""
     from app.services.sandbox_manager import list_sandbox_files as _list_files
-    entries = _list_files(conversation_id, path)
+    sandbox_id = _resolve_sandbox_id(conversation_id, current_user)
+    entries = _list_files(sandbox_id, path)
     return {"path": path, "entries": entries}
 
 
@@ -1758,7 +1774,8 @@ async def read_sandbox_file(
 ):
     """Read a text file from the sandbox volume."""
     from app.services.sandbox_manager import read_sandbox_file as _read_file
-    content = _read_file(conversation_id, path)
+    sandbox_id = _resolve_sandbox_id(conversation_id, current_user)
+    content = _read_file(sandbox_id, path)
     if content is None:
         raise HTTPException(status_code=404, detail="File not found")
     return {"path": path, "content": content}
@@ -1775,7 +1792,8 @@ async def download_sandbox_file(
     from fastapi.responses import FileResponse
     import os
 
-    file_path = get_sandbox_file_path(conversation_id, path)
+    sandbox_id = _resolve_sandbox_id(conversation_id, current_user)
+    file_path = get_sandbox_file_path(sandbox_id, path)
     if file_path is None:
         raise HTTPException(status_code=404, detail="File not found")
 
@@ -1793,11 +1811,12 @@ async def serve_sandbox_file(
     This endpoint does NOT require auth so the browser workspace iframe
     can load HTML/JS/CSS files directly from the sandbox.
     """
-    from app.services.sandbox_manager import get_sandbox_file_path
+    from app.services.sandbox_manager import get_sandbox_file_path, get_user_for_conversation
     from fastapi.responses import FileResponse
     import mimetypes
 
-    file_path = get_sandbox_file_path(conversation_id, path)
+    sandbox_id = get_user_for_conversation(conversation_id) or conversation_id
+    file_path = get_sandbox_file_path(sandbox_id, path)
     if file_path is None:
         raise HTTPException(status_code=404, detail="File not found")
 

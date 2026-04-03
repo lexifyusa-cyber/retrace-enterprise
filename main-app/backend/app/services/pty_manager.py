@@ -379,8 +379,8 @@ class PTYManager:
     def _get_sandbox_container_id(self, conversation_id: str) -> str | None:
         """Get the Podman container ID for a sandbox session, if one exists."""
         try:
-            from app.services.sandbox_manager import get_session
-            session = get_session(conversation_id)
+            from app.services.sandbox_manager import get_session_for_conversation
+            session = get_session_for_conversation(conversation_id)
             if session and hasattr(session, 'container') and session.container:
                 cid = session.container.id
                 return cid[:12] if cid else None

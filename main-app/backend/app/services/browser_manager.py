@@ -226,7 +226,12 @@ class BrowserManager:
         return len(self._sessions)
 
     async def get_or_create(self, conversation_id: str) -> BrowserSession:
-        """Get an existing browser session or create a new one."""
+        """Get an existing browser session or create a new one.
+
+        Creates a lazy session — no host browser is launched until needed.
+        If a sandbox session exists, uses that for all browser operations.
+        If no sandbox and no browser, the screenshot loop waits gracefully.
+        """
         async with self._lock:
             if conversation_id in self._sessions:
                 session = self._sessions[conversation_id]
@@ -234,64 +239,77 @@ class BrowserManager:
                 return session
 
             if self.active_count >= MAX_CONCURRENT_SESSIONS:
-                # Close the oldest idle session
                 oldest_id = min(
                     self._sessions,
                     key=lambda k: self._sessions[k].last_activity,
                 )
                 await self._close_session_unlocked(oldest_id)
 
+            # Create session WITHOUT launching a browser.
+            # Browser will be attached later via attach_sandbox() when
+            # the agent creates the sandbox container.
             session = BrowserSession(conversation_id=conversation_id)
-            try:
-                # Check if sandbox exists — if so, browser runs inside container
-                sandbox = None
-                try:
-                    from app.services.sandbox_manager import get_session as get_sandbox_session
-                    sandbox = get_sandbox_session(conversation_id)
-                except Exception:
-                    pass
 
+            # Check if sandbox already exists (agent may have started first)
+            try:
+                from app.services.sandbox_manager import get_session_for_conversation
+                sandbox = get_session_for_conversation(conversation_id)
                 if sandbox:
-                    # Sandboxed: browser_agent.py runs Playwright+Chromium inside container
-                    # No Playwright needed on host — all communication via podman exec
                     session.sandbox_session = sandbox
                     logger.info("browser_using_sandbox", conversation_id=conversation_id)
-                else:
-                    # Non-sandboxed: launch Playwright locally on host
-                    from playwright.async_api import async_playwright
-                    session.playwright = await async_playwright().start()
-                    session.browser = await session.playwright.chromium.launch(
-                        headless=True,
-                        args=[
-                            "--disable-blink-features=AutomationControlled",
-                            "--no-sandbox",
-                            "--disable-dev-shm-usage",
-                        ],
-                    )
-                    logger.info("browser_launched_locally", conversation_id=conversation_id)
-                    session.context = await session.browser.new_context(
-                        viewport={"width": SCREENSHOT_WIDTH, "height": SCREENSHOT_HEIGHT},
-                        user_agent=(
-                            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                            "AppleWebKit/537.36 (KHTML, like Gecko) "
-                            "Chrome/120.0.0.0 Safari/537.36"
-                        ),
-                    )
-                    session.page = await session.context.new_page()
+            except Exception:
+                pass
+
+            session.screenshot_task = asyncio.create_task(
+                self._screenshot_loop(session)
+            )
+            self._sessions[conversation_id] = session
+            logger.info(
+                "browser_session_created",
+                conversation_id=conversation_id,
+                sandboxed=session.sandbox_session is not None,
+            )
+            return session
+
+    async def attach_sandbox(self, conversation_id: str, sandbox_session) -> None:
+        """Attach a sandbox session to an existing browser session.
+
+        Called by agent_service when the sandbox is created, so the
+        Browser tab starts using the container's Chromium.
+        """
+        async with self._lock:
+            if conversation_id in self._sessions:
+                session = self._sessions[conversation_id]
+                # Close any existing host browser (shouldn't exist with lazy creation)
+                if session.playwright:
+                    try:
+                        if session.page:
+                            await session.page.close()
+                        if session.context:
+                            await session.context.close()
+                        if session.browser:
+                            await session.browser.close()
+                        await session.playwright.stop()
+                    except Exception:
+                        pass
+                    session.playwright = None
+                    session.browser = None
+                    session.context = None
+                    session.page = None
+                session.sandbox_session = sandbox_session
+                logger.info("browser_sandbox_attached", conversation_id=conversation_id)
+            else:
+                # No browser session yet — create one with sandbox
+                session = BrowserSession(
+                    conversation_id=conversation_id,
+                    sandbox_session=sandbox_session,
+                )
                 session.screenshot_task = asyncio.create_task(
                     self._screenshot_loop(session)
                 )
                 self._sessions[conversation_id] = session
-                logger.info(
-                    "browser_session_created",
-                    conversation_id=conversation_id,
-                    active_sessions=self.active_count,
-                )
-                return session
-            except Exception as exc:
-                logger.error("browser_session_create_failed", error=str(exc))
-                await self._cleanup_session(session)
-                raise
+                logger.info("browser_session_created_with_sandbox", conversation_id=conversation_id)
+
 
     async def get(self, conversation_id: str) -> Optional[BrowserSession]:
         """Get an existing session or None."""

@@ -899,17 +899,28 @@ class AgentService:
             # ── 3a. Create sandbox session (if Podman is available) ────
             sandbox_session = None
             try:
-                from app.services.sandbox_manager import ensure_sandbox_ready, get_or_create_session
+                from app.services.sandbox_manager import ensure_sandbox_ready, get_or_create_session, register_conversation
                 if ensure_sandbox_ready():
                     yield _sse("agent_status", {"step": "init", "message": "Starting sandbox..."})
+                    # Use user_id for sandbox (one container per user, shared across conversations)
+                    sandbox_user_id = user_auth_context.get("user_id", thread_id)
+                    register_conversation(thread_id, sandbox_user_id)
                     # Run in thread with timeout to avoid blocking the SSE stream
                     import concurrent.futures
                     with concurrent.futures.ThreadPoolExecutor() as pool:
-                        future = pool.submit(get_or_create_session, thread_id)
+                        future = pool.submit(get_or_create_session, sandbox_user_id)
                         try:
                             sandbox_session = future.result(timeout=30)
-                            logger.info("sandbox_session_active", conversation_id=thread_id)
+                            logger.info("sandbox_session_active", user_id=sandbox_user_id, conversation_id=thread_id)
                             yield _sse("agent_status", {"step": "init", "message": "Sandbox ready"})
+                            # Attach sandbox to browser manager so Browser tab uses it
+                            try:
+                                from app.services.browser_manager import browser_manager as _bm
+                                asyncio.get_event_loop().create_task(
+                                    _bm.attach_sandbox(thread_id, sandbox_session)
+                                )
+                            except Exception:
+                                pass
                         except concurrent.futures.TimeoutError:
                             logger.warning("sandbox_creation_timeout", conversation_id=thread_id)
                             sandbox_session = None

@@ -17,12 +17,24 @@ import structlog
 
 logger = structlog.get_logger()
 
-# Active sessions keyed by conversation_id
+# Active sessions keyed by user_id (one container per user)
 _active_sessions: dict = {}
-# Last activity timestamp per conversation_id
+# Last activity timestamp per user_id
 _session_activity: dict[str, float] = {}
+# Mapping conversation_id → user_id for reverse lookups
+_conversation_user_map: dict[str, str] = {}
 
 IDLE_TIMEOUT_SECONDS = 30 * 60  # 30 minutes
+
+
+def register_conversation(conversation_id: str, user_id: str):
+    """Register which user owns a conversation (for reverse lookups)."""
+    _conversation_user_map[conversation_id] = user_id
+
+
+def get_user_for_conversation(conversation_id: str) -> Optional[str]:
+    """Get the user_id that owns a conversation."""
+    return _conversation_user_map.get(conversation_id)
 
 
 def _patch_podman_exec(session):
@@ -175,42 +187,39 @@ def ensure_sandbox_ready() -> bool:
     return True
 
 
-def get_or_create_session(conversation_id: str):
-    """Get existing sandbox session or create a new persistent one."""
+def get_or_create_session(user_id: str):
+    """Get existing sandbox session or create a new one for this user.
+
+    One container per user — all their conversations share it.
+    """
     from llm_sandbox import SandboxSession
 
-    if conversation_id in _active_sessions:
-        session = _active_sessions[conversation_id]
-        _session_activity[conversation_id] = time.time()
+    if user_id in _active_sessions:
+        session = _active_sessions[user_id]
+        _session_activity[user_id] = time.time()
         # Check if session is still alive
         try:
-            # Quick health check — run a trivial command
             result = session.run("echo ok")
             if result.stdout and "ok" in result.stdout:
                 return session
         except Exception:
-            logger.warning("sandbox_session_stale", conversation_id=conversation_id)
-            # Session is dead, remove and recreate
+            logger.warning("sandbox_session_stale", user_id=user_id)
             try:
                 session.close()
             except Exception:
                 pass
-            del _active_sessions[conversation_id]
+            del _active_sessions[user_id]
 
-    # Create volume directory for persistent storage
-    volume_path = os.path.join(SANDBOX_BASE, conversation_id)
+    # Create volume directory for persistent storage (per user)
+    volume_path = os.path.join(SANDBOX_BASE, user_id)
     os.makedirs(volume_path, exist_ok=True)
 
     logger.info(
         "sandbox_creating_session",
-        conversation_id=conversation_id,
+        user_id=user_id,
         volume_path=volume_path,
     )
 
-    # Use runtime_configs for Podman-native volume binding
-    # Podman Python API expects volumes as dict: {host_path: {"bind": container_path, "mode": mode}}
-    # workdir="/sandbox" (default, ephemeral) so llm-sandbox temp .py files
-    # don't pollute the persistent /workspace volume.
     session = SandboxSession(
         lang="python",
         backend="podman",
@@ -229,24 +238,42 @@ def get_or_create_session(conversation_id: str):
     # Patch Podman exec to use CLI (fixes empty stdout bug in Podman Python lib)
     _patch_podman_exec(session)
 
-    _active_sessions[conversation_id] = session
+    _active_sessions[user_id] = session
 
-    logger.info("sandbox_session_created", conversation_id=conversation_id)
-    _session_activity[conversation_id] = time.time()
+    logger.info("sandbox_session_created", user_id=user_id)
+    _session_activity[user_id] = time.time()
     return session
 
 
-def get_session(conversation_id: str):
+def get_session(user_id: str):
     """Get session without creating. Returns None if not active."""
-    return _active_sessions.get(conversation_id)
+    return _active_sessions.get(user_id)
 
 
-def destroy_session(conversation_id: str):
+def get_session_for_conversation(conversation_id: str):
+    """Get session by conversation_id (resolves to user_id first)."""
+    user_id = get_user_for_conversation(conversation_id)
+    if user_id:
+        return _active_sessions.get(user_id)
+    return None
+
+
+def destroy_session(user_id: str):
     """Destroy a sandbox session and cleanup container."""
-    session = _active_sessions.pop(conversation_id, None)
+    session = _active_sessions.pop(user_id, None)
+    _session_activity.pop(user_id, None)
     if session:
+        # Use podman CLI to force-kill the container instead of
+        # session.close() which hangs on Podman Python library socket issues.
         try:
-            session.close()
+            container = getattr(session, 'container', None)
+            if container:
+                cid = container.id[:12] if hasattr(container, 'id') else str(container)
+                import subprocess
+                subprocess.run(
+                    ["podman", "rm", "-f", cid],
+                    capture_output=True, timeout=10, env=_podman_env(),
+                )
             logger.info("sandbox_session_destroyed", conversation_id=conversation_id)
         except Exception as exc:
             logger.error(
@@ -257,9 +284,25 @@ def destroy_session(conversation_id: str):
 
 
 def destroy_all_sessions():
-    """Destroy all active sandbox sessions. Called on app shutdown."""
-    for cid in list(_active_sessions.keys()):
-        destroy_session(cid)
+    """Destroy all active sandbox sessions. Called on app shutdown.
+
+    Uses a timeout to prevent hanging on Podman socket issues.
+    """
+    import concurrent.futures
+    def _destroy_all():
+        for cid in list(_active_sessions.keys()):
+            destroy_session(cid)
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            future = pool.submit(_destroy_all)
+            future.result(timeout=15)  # Max 15 seconds for all cleanups
+    except concurrent.futures.TimeoutError:
+        logger.warning("sandbox_destroy_all_timeout")
+        _active_sessions.clear()
+    except Exception as exc:
+        logger.warning("sandbox_destroy_all_error", error=str(exc))
+        _active_sessions.clear()
     logger.info("sandbox_all_sessions_destroyed")
 
 
