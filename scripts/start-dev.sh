@@ -106,19 +106,54 @@ setup_podman() {
         echo "✅ Podman already installed ($(podman --version))"
     fi
 
+    # Detect chip type for optimal VM provider
+    ARCH=$(uname -m)
+    if [ "$ARCH" = "arm64" ]; then
+        VM_PROVIDER="libkrun"   # Apple Silicon — no SSH, stable
+    else
+        VM_PROVIDER="applehv"   # Intel — SSH-based, needs keep-alive
+    fi
+
     # Initialize Podman machine if not exists
     if ! podman machine info &> /dev/null; then
-        echo "📦 Initializing Podman machine (Linux VM)..."
-        podman machine init
+        echo "📦 Initializing Podman machine (Linux VM, provider: $VM_PROVIDER)..."
+        CONTAINERS_MACHINE_PROVIDER=$VM_PROVIDER podman machine init
         echo "✅ Podman machine initialized"
     fi
 
-    # Always restart Podman machine to ensure fresh SSH connection.
-    # This avoids stale socket issues that cause "connection refused" errors.
+    # Ensure machine is running and responsive
     echo "🔄 Ensuring Podman machine is ready..."
-    podman machine stop 2>/dev/null || true
-    podman machine start
-    echo "✅ Podman machine ready"
+    MACHINE_STATE=$(podman machine info --format "{{.Host.MachineState}}" 2>/dev/null || echo "Unknown")
+    if [ "$MACHINE_STATE" = "Running" ]; then
+        # Verify connection actually works
+        if podman info --format "{{.Host.RemoteSocket.Exists}}" &> /dev/null; then
+            echo "✅ Podman machine running and responsive"
+        else
+            echo "⚠️  Podman machine connection stale. Restarting..."
+            podman machine stop 2>/dev/null || true
+            podman machine start
+            echo "✅ Podman machine restarted"
+        fi
+    else
+        echo "🔄 Starting Podman machine..."
+        podman machine start
+        echo "✅ Podman machine started"
+    fi
+
+    # For Intel Macs (SSH-based), configure SSH keep-alive to prevent drops
+    if [ "$VM_PROVIDER" = "applehv" ]; then
+        if ! grep -q "ServerAliveInterval" ~/.ssh/config 2>/dev/null; then
+            echo "🔧 Configuring SSH keep-alive for Podman stability..."
+            mkdir -p ~/.ssh
+            echo "" >> ~/.ssh/config
+            echo "# Podman machine keep-alive (prevents SSH drops)" >> ~/.ssh/config
+            echo "Host *" >> ~/.ssh/config
+            echo "    ServerAliveInterval 60" >> ~/.ssh/config
+            echo "    ServerAliveCountMax 3" >> ~/.ssh/config
+            chmod 600 ~/.ssh/config
+            echo "✅ SSH keep-alive configured"
+        fi
+    fi
 
     # Build sandbox image if not exists
     SANDBOX_DIR="$PROJECT_ROOT/main-app/sandbox"
