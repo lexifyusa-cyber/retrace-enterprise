@@ -42,6 +42,13 @@ async def terminal_websocket(websocket: WebSocket, conversation_id: str):
     # Register this client for output broadcasts
     session.websocket_clients.add(websocket)
 
+    # If session is pending (no shell yet, waiting for sandbox), show a message
+    if session.shell == "pending":
+        await websocket.send_json({
+            "type": "output",
+            "data": "\033[1;33mWaiting for sandbox container...\033[0m\r\nTerminal will connect automatically when you send a message.\r\n",
+        })
+
     # Send buffered scrollback so the user sees prior output
     if session.scrollback:
         try:

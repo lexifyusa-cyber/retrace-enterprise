@@ -921,6 +921,15 @@ class AgentService:
                                 )
                             except Exception:
                                 pass
+                            # Respawn Terminal tab PTY inside the container
+                            # (only if it's pending or doesn't exist yet)
+                            try:
+                                from app.services.pty_manager import pty_manager as _pty
+                                existing = _pty.get(thread_id)
+                                if existing is None or existing.shell == "pending":
+                                    _pty.respawn_in_sandbox(thread_id)
+                            except Exception:
+                                pass
                         except concurrent.futures.TimeoutError:
                             logger.warning("sandbox_creation_timeout", conversation_id=thread_id)
                             sandbox_session = None

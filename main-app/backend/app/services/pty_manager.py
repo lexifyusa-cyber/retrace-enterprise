@@ -96,17 +96,37 @@ class PTYManager:
                     return session
                 self._cleanup_session(session)
 
-            session = self._spawn(conversation_id)
+            # Check if sandbox container exists
+            sandbox_cid = self._get_sandbox_container_id(conversation_id)
+
+            if sandbox_cid:
+                # Sandbox ready — spawn shell inside container
+                session = self._spawn_in_container(conversation_id, sandbox_cid)
+            else:
+                # No sandbox yet. Always create a pending session.
+                # respawn_in_sandbox() will create the real shell when
+                # the agent starts and creates the sandbox container.
+                # If Podman is not available, the agent will run unsandboxed
+                # and the terminal will stay pending (user can type in chat).
+                session = PTYSession(
+                    conversation_id=conversation_id,
+                    pid=-1, fd=-1, shell="pending",
+                )
+                self._sessions[conversation_id] = session
+                logger.info("pty_pending_sandbox", conversation_id=conversation_id)
+                return session
+
             self._sessions[conversation_id] = session
 
-            t = threading.Thread(
-                target=self._reader_loop,
-                args=(session,),
-                daemon=True,
-                name=f"pty-reader-{conversation_id[:8]}",
-            )
-            session._reader_thread = t
-            t.start()
+            if session.fd >= 0:
+                t = threading.Thread(
+                    target=self._reader_loop,
+                    args=(session,),
+                    daemon=True,
+                    name=f"pty-reader-{conversation_id[:8]}",
+                )
+                session._reader_thread = t
+                t.start()
 
             if self._reaper_thread is None or not self._reaper_thread.is_alive():
                 self._reaper_thread = threading.Thread(
@@ -127,6 +147,8 @@ class PTYManager:
         session = self.get(conversation_id)
         if session is None:
             raise ValueError(f"No PTY session for conversation {conversation_id}")
+        if session.fd < 0:
+            return  # Pending session, no shell yet
         session.touch()
         try:
             os.write(session.fd, data)
@@ -136,7 +158,7 @@ class PTYManager:
 
     def resize(self, conversation_id: str, cols: int, rows: int):
         session = self.get(conversation_id)
-        if session is None:
+        if session is None or session.fd < 0:
             return
         session.cols = cols
         session.rows = rows
@@ -156,6 +178,61 @@ class PTYManager:
     def destroy_all(self):
         for cid in list(self._sessions.keys()):
             self.destroy(cid)
+
+    def respawn_in_sandbox(self, conversation_id: str):
+        """Spawn (or respawn) the Terminal tab shell inside the sandbox container.
+
+        Called by agent_service when the sandbox is created. Handles:
+        - Pending session (no shell yet, just WebSocket clients waiting)
+        - Existing host shell (kills it and respawns in container)
+        - No existing session (creates new one in container)
+        """
+        sandbox_cid = self._get_sandbox_container_id(conversation_id)
+        if not sandbox_cid:
+            logger.warning("pty_respawn_no_sandbox", conversation_id=conversation_id)
+            return
+
+        ws_clients = set()
+
+        with self._sessions_lock:
+            old_session = self._sessions.pop(conversation_id, None)
+
+        if old_session:
+            ws_clients = set(old_session.websocket_clients)
+            if old_session.fd >= 0:
+                # Real shell exists — clean it up
+                self._cleanup_session(old_session)
+
+        logger.info("pty_spawning_in_sandbox", conversation_id=conversation_id, container=sandbox_cid)
+
+        # Spawn new shell inside container
+        new_session = self._spawn_in_container(conversation_id, sandbox_cid)
+        self._sessions[conversation_id] = new_session
+
+        # Start reader thread
+        t = threading.Thread(
+            target=self._reader_loop,
+            args=(new_session,),
+            daemon=True,
+            name=f"pty-reader-{conversation_id[:8]}",
+        )
+        new_session._reader_thread = t
+        t.start()
+
+        # Restore WebSocket clients
+        new_session.websocket_clients.update(ws_clients)
+
+        # Notify Terminal tab
+        if ws_clients and self._event_loop and self._event_loop.is_running():
+            import asyncio
+            msg = {"type": "output", "data": "\r\n\033[1;32m[Sandbox ready — terminal connected to container]\033[0m\r\n"}
+            for ws in list(ws_clients):
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        ws.send_json(msg), self._event_loop
+                    )
+                except Exception:
+                    pass
 
     # ------------------------------------------------------------------
     # Shell readiness and prompt setup
@@ -335,24 +412,8 @@ class PTYManager:
     # Internal
     # ------------------------------------------------------------------
 
-    def _spawn(self, conversation_id: str) -> PTYSession:
-        # Check if a sandbox container exists for this conversation.
-        # If so, spawn the shell inside the container instead of on the host.
-        sandbox_container_id = self._get_sandbox_container_id(conversation_id)
-
-        if sandbox_container_id:
-            shell = "/bin/bash"  # The actual shell inside the container
-            from app.services.sandbox_manager import _podman_bin
-            shell_args = [
-                _podman_bin(), "exec", "-it",
-                "-w", "/workspace",
-                sandbox_container_id,
-                "/bin/bash",
-            ]
-        else:
-            shell = os.environ.get("SHELL", "/bin/bash")
-            shell_args = [shell, "-l"]
-
+    def _spawn_pty(self, conversation_id: str, shell: str, shell_args: list) -> PTYSession:
+        """Spawn a PTY with the given shell command."""
         child_pid, master_fd = pty.fork()
 
         if child_pid == 0:
@@ -363,7 +424,6 @@ class PTYManager:
                 pass
             env = os.environ.copy()
             env["TERM"] = "xterm-256color"
-            # Add podman to PATH for macOS
             for p in ["/opt/homebrew/bin", "/usr/local/bin"]:
                 if p not in env.get("PATH", ""):
                     env["PATH"] = p + ":" + env.get("PATH", "")
@@ -377,11 +437,38 @@ class PTYManager:
                 fd=master_fd, shell=shell,
             )
 
+    def _spawn_in_container(self, conversation_id: str, container_id: str) -> PTYSession:
+        """Spawn a shell inside a sandbox container."""
+        from app.services.sandbox_manager import _podman_bin
+        return self._spawn_pty(conversation_id, "/bin/bash", [
+            _podman_bin(), "exec", "-it",
+            "-w", "/workspace",
+            container_id,
+            "/bin/bash",
+        ])
+
+    def _spawn_host(self, conversation_id: str) -> PTYSession:
+        """Spawn a shell on the host (fallback when Podman not available)."""
+        shell = os.environ.get("SHELL", "/bin/bash")
+        return self._spawn_pty(conversation_id, shell, [shell, "-l"])
+
     def _get_sandbox_container_id(self, conversation_id: str) -> str | None:
-        """Get the Podman container ID for a sandbox session, if one exists."""
+        """Get the Podman container ID for a sandbox session, if one exists.
+
+        Tries conversation→user mapping first, then falls back to finding
+        any active sandbox session (one container per user, shared across
+        all conversations).
+        """
         try:
-            from app.services.sandbox_manager import get_session_for_conversation
+            from app.services.sandbox_manager import (
+                get_session_for_conversation,
+                get_any_active_session,
+            )
+            # Try conversation mapping first
             session = get_session_for_conversation(conversation_id)
+            if not session:
+                # Fallback: get any active sandbox (desktop app = typically one user)
+                session = get_any_active_session()
             if session and hasattr(session, 'container') and session.container:
                 cid = session.container.id
                 return cid[:12] if cid else None

@@ -113,15 +113,12 @@ setup_podman() {
         echo "✅ Podman machine initialized"
     fi
 
-    # Start Podman machine if not running
-    MACHINE_STATE=$(podman machine info --format "{{.Host.MachineState}}" 2>/dev/null || echo "Unknown")
-    if [ "$MACHINE_STATE" != "Running" ]; then
-        echo "🔄 Starting Podman machine..."
-        podman machine start
-        echo "✅ Podman machine started"
-    else
-        echo "✅ Podman machine already running"
-    fi
+    # Always restart Podman machine to ensure fresh SSH connection.
+    # This avoids stale socket issues that cause "connection refused" errors.
+    echo "🔄 Ensuring Podman machine is ready..."
+    podman machine stop 2>/dev/null || true
+    podman machine start
+    echo "✅ Podman machine ready"
 
     # Build sandbox image if not exists
     SANDBOX_DIR="$PROJECT_ROOT/main-app/sandbox"

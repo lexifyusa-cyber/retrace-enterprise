@@ -290,6 +290,18 @@ def get_session_for_conversation(conversation_id: str):
     return None
 
 
+def get_any_active_session():
+    """Get any active sandbox session.
+
+    Used as fallback when conversation→user mapping isn't available yet
+    (e.g. Terminal tab connects before agent runs). Safe for single-user
+    desktop app. For multi-user, proper WebSocket auth is needed.
+    """
+    for session in _active_sessions.values():
+        return session
+    return None
+
+
 def destroy_session(user_id: str):
     """Destroy a sandbox session and cleanup container."""
     session = _active_sessions.pop(user_id, None)

@@ -56,7 +56,9 @@ def make_sandboxed_terminal(session, conversation_id=None, output_callback=None)
                     if session_pty and session_pty.websocket_clients:
                         import asyncio
                         # Format: show command and output cleanly
-                        display = f"\r\n\033[1;33m$ {command}\033[0m\r\n{output}\r\n"
+                        # Convert \n to \r\n for proper xterm.js display
+                        formatted_output = output.replace("\r\n", "\n").replace("\n", "\r\n")
+                        display = f"\r\n\033[1;33m$ {command}\033[0m\r\n{formatted_output}\r\n"
                         loop = pty_manager._event_loop
                         if loop and loop.is_running():
                             for ws in list(session_pty.websocket_clients):
