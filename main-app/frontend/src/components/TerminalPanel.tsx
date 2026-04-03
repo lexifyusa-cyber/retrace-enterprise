@@ -252,7 +252,7 @@ export default function TerminalPanel({ conversationId, isVisible, onToggle }: T
       className={`flex flex-col border-t border-rt-border bg-rt-bg ${
         isMaximized ? 'fixed inset-0 z-50' : ''
       }`}
-      style={isMaximized ? undefined : { height: '320px', minHeight: '160px' }}
+      style={isMaximized ? undefined : { height: '100%', minHeight: '160px' }}
     >
       {/* Terminal header bar */}
       <div className="flex items-center justify-between px-4 py-1.5 bg-rt-bg-light border-b border-rt-border select-none">
