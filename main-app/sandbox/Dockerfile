@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y \
 # Python packages for web tools
 RUN pip install --no-cache-dir \
     httpx trafilatura beautifulsoup4 \
-    duckduckgo-search requests
+    ddgs requests
 
 # Playwright + Chromium for auto_browser (inside container)
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright

@@ -362,7 +362,7 @@ except httpx.HTTPError as e:
 """
             else:
                 code = f"""
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 try:
     with DDGS() as ddgs:
         results = list(ddgs.text({json.dumps(query)}, max_results={num_results}))
