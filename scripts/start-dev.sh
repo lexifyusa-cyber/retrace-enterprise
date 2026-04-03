@@ -85,6 +85,61 @@ check_python
 check_command node
 install_go
 
+# Install and setup Podman (for sandbox container isolation)
+setup_podman() {
+    echo ""
+    echo "🐳 Setting up Podman (sandbox container runtime)..."
+
+    # Install Podman if not present
+    if ! command -v podman &> /dev/null; then
+        echo "📦 Installing Podman..."
+        if ! command -v brew &> /dev/null; then
+            echo "❌ Homebrew is required. Installing Homebrew first..."
+            /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+            if [ -f "/opt/homebrew/bin/brew" ]; then
+                eval "$(/opt/homebrew/bin/brew shellenv)"
+            fi
+        fi
+        brew install podman
+        echo "✅ Podman installed"
+    else
+        echo "✅ Podman already installed ($(podman --version))"
+    fi
+
+    # Initialize Podman machine if not exists
+    if ! podman machine info &> /dev/null; then
+        echo "📦 Initializing Podman machine (Linux VM)..."
+        podman machine init
+        echo "✅ Podman machine initialized"
+    fi
+
+    # Start Podman machine if not running
+    MACHINE_STATE=$(podman machine info --format "{{.Host.MachineState}}" 2>/dev/null || echo "Unknown")
+    if [ "$MACHINE_STATE" != "Running" ]; then
+        echo "🔄 Starting Podman machine..."
+        podman machine start
+        echo "✅ Podman machine started"
+    else
+        echo "✅ Podman machine already running"
+    fi
+
+    # Build sandbox image if not exists
+    SANDBOX_DIR="$PROJECT_ROOT/main-app/sandbox"
+    if [ -f "$SANDBOX_DIR/Dockerfile" ]; then
+        if ! podman image exists retrace-sandbox:latest 2>/dev/null; then
+            echo "🔨 Building sandbox container image (first time, may take 2-3 minutes)..."
+            podman build -t retrace-sandbox:latest "$SANDBOX_DIR"
+            echo "✅ Sandbox image built"
+        else
+            echo "✅ Sandbox image already exists"
+        fi
+    fi
+
+    echo "✅ Podman sandbox ready"
+}
+
+setup_podman
+
 # Build POD agents (pre-build for faster POD generation)
 if command -v go &> /dev/null; then
     echo ""
