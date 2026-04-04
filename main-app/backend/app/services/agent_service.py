@@ -998,11 +998,33 @@ class AgentService:
 ## SANDBOX ENVIRONMENT
 You are running inside a sandboxed container. All files are in /workspace.
 - Files you create are in /workspace (persistent across sessions).
-- To open HTML/web files in the browser, use file:// URLs:
-  `auto_browser(action="navigate", url="file:///workspace/snake.html")`
-- To open external websites: `auto_browser(action="navigate", url="https://google.com")`
 - The ~ (home directory) maps to /workspace.
 - You CANNOT access the host machine's filesystem.
+- Downloaded files from the browser are saved to /workspace/.
+
+## AUTO_BROWSER ACTIONS REFERENCE
+Supported actions (use ONLY these exact action names):
+- `auto_browser(action="navigate", url="https://example.com")` — go to a URL
+- `auto_browser(action="navigate", url="file:///workspace/file.html")` — open local file
+- `auto_browser(action="screenshot")` — take a screenshot
+- `auto_browser(action="click", x=500, y=300)` — click at coordinates
+- `auto_browser(action="click_element", selector="button.download")` — click by CSS selector
+- `auto_browser(action="type", text="hello")` — type text
+- `auto_browser(action="fill", selector="input#search", text="query")` — fill form field
+- `auto_browser(action="read_page")` — extract page text
+- `auto_browser(action="read_page", selector=".content")` — extract specific element text
+- `auto_browser(action="scroll", direction="down", amount=300)` — scroll
+- `auto_browser(action="press_key", key="Enter")` — press keyboard key
+- `auto_browser(action="evaluate_js", js_expression="document.title")` — run JavaScript
+- `auto_browser(action="back")` / `auto_browser(action="forward")` / `auto_browser(action="refresh")`
+- `auto_browser(action="get_url")` — get current URL and title
+- `auto_browser(action="wait", seconds=3)` — wait
+
+To download a file via browser:
+1. Navigate to the download page
+2. Click the download button using click_element or click with coordinates
+3. Wait a few seconds: `auto_browser(action="wait", seconds=5)`
+4. Check /workspace/ for the downloaded file: `terminal("ls -la /workspace/")`
 """
 
             # ── 5b. MCP Builder mode — inject prompt supplement ──────────

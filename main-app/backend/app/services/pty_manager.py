@@ -223,16 +223,29 @@ class PTYManager:
         new_session.websocket_clients.update(ws_clients)
 
         # Notify Terminal tab
-        if ws_clients and self._event_loop and self._event_loop.is_running():
+        if self._event_loop and self._event_loop.is_running():
             import asyncio
-            msg = {"type": "output", "data": "\r\n\033[1;32m[Sandbox ready — terminal connected to container]\033[0m\r\n"}
-            for ws in list(ws_clients):
+            if ws_clients:
+                msg = {"type": "output", "data": "\r\n\033[1;32m[Sandbox ready — terminal connected to container]\033[0m\r\n"}
+                for ws in list(ws_clients):
+                    try:
+                        asyncio.run_coroutine_threadsafe(
+                            ws.send_json(msg), self._event_loop
+                        )
+                    except Exception:
+                        pass
+
+        # Replay queued commands from old pending session
+        if old_session and hasattr(old_session, '_queued_commands') and old_session._queued_commands:
+            # Wait briefly for shell to be ready
+            time.sleep(1)
+            for cmd in old_session._queued_commands:
                 try:
-                    asyncio.run_coroutine_threadsafe(
-                        ws.send_json(msg), self._event_loop
-                    )
-                except Exception:
-                    pass
+                    os.write(new_session.fd, f"{cmd}\n".encode())
+                    time.sleep(0.5)  # Space out commands
+                except OSError:
+                    break
+            old_session._queued_commands.clear()
 
     # ------------------------------------------------------------------
     # Shell readiness and prompt setup

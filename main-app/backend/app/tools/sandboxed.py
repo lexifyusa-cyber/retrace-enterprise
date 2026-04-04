@@ -11,9 +11,32 @@ import json
 import shlex
 from typing import Optional
 
+import base64
+
 import structlog
 
 logger = structlog.get_logger()
+
+
+def _run_python(session, code: str):
+    """Run Python code inside the container using session.execute_command.
+
+    Uses podman exec (CLI) instead of session.run() which copies files
+    via the Podman Python library's SSH connection. The SSH connection
+    gets overwhelmed in long chats with many tool calls and drops.
+
+    This sends the code as base64-encoded string to avoid shell escaping
+    issues with quotes, newlines, etc.
+    """
+    encoded = base64.b64encode(code.encode()).decode()
+    return session.execute_command(
+        f"python3 -c \"import base64; exec(base64.b64decode('{encoded}').decode())\""
+    )
+
+
+def _run_shell(session, cmd: str):
+    """Run a shell command inside the container using session.execute_command."""
+    return session.execute_command(cmd)
 
 
 # ---------------------------------------------------------------------------
@@ -46,22 +69,25 @@ def make_sandboxed_terminal(session, conversation_id=None, output_callback=None)
             if output_callback and output:
                 output_callback(output)
 
-            # Forward to Terminal tab WebSocket
+            # Write command into PTY shell so it appears in Terminal tab
+            # scrollback (visible when user opens Terminal tab later).
             if conversation_id:
                 try:
                     from app.services.pty_manager import pty_manager
                     pty_session = pty_manager.get(conversation_id)
-                    if pty_session and pty_session.websocket_clients:
-                        import asyncio
-                        # Write the command into the real PTY shell so it
-                        # shows with the natural prompt. Don't use markers.
-                        if pty_session.fd >= 0:
+                    if pty_session:
+                        if pty_session.fd >= 0 and not pty_session._closed:
+                            # PTY ready — write command directly
                             try:
-                                cmd_bytes = f"{command}\n".encode()
                                 import os as _os
-                                _os.write(pty_session.fd, cmd_bytes)
+                                _os.write(pty_session.fd, f"{command}\n".encode())
                             except OSError:
                                 pass
+                        else:
+                            # PTY pending — queue command for replay when ready
+                            if not hasattr(pty_session, '_queued_commands'):
+                                pty_session._queued_commands = []
+                            pty_session._queued_commands.append(command)
                 except Exception:
                     pass
 
@@ -97,7 +123,7 @@ else:
     with open(path, 'r', encoding='utf-8', errors='replace') as f:
         print(f.read())
 """
-            result = session.run(code)
+            result = _run_python(session, code)
             return result.stdout if result.stdout else f"Error: {result.stderr or 'unknown error'}"
         except Exception as exc:
             return f"Error reading file: {exc}"
@@ -124,7 +150,7 @@ with open(path, 'w', encoding='utf-8') as f:
 size = os.path.getsize(path)
 print(f"Wrote {{size}} bytes to {{path}}")
 """
-            result = session.run(code)
+            result = _run_python(session, code)
             return result.stdout if result.stdout else f"Error: {result.stderr or 'unknown error'}"
         except Exception as exc:
             return f"Error writing file: {exc}"
@@ -151,7 +177,7 @@ else:
     os.remove(path)
     print(f"Deleted {{path}}")
 """
-            result = session.run(code)
+            result = _run_python(session, code)
             return result.stdout if result.stdout else f"Error: {result.stderr or 'unknown error'}"
         except Exception as exc:
             return f"Error deleting file: {exc}"
@@ -189,7 +215,7 @@ try:
 except httpx.HTTPError as e:
     print(f"Error downloading: {{e}}")
 """
-            result = session.run(code)
+            result = _run_python(session, code)
             return result.stdout if result.stdout else f"Error: {result.stderr or 'unknown error'}"
         except Exception as exc:
             return f"Error downloading file: {exc}"
@@ -231,7 +257,7 @@ else:
             f.write(new_content)
         print(f"Replaced {{count if {replace_all} else 1}} occurrence(s) in {{path}}")
 """
-            result = session.run(code)
+            result = _run_python(session, code)
             return result.stdout if result.stdout else f"Error: {result.stderr or 'unknown error'}"
         except Exception as exc:
             return f"Error in str_replace: {exc}"
@@ -273,7 +299,7 @@ def make_sandboxed_grep(session):
             cmd_parts.append(shlex.quote(path))
 
             cmd = " ".join(cmd_parts)
-            result = session.run(cmd)
+            result = _run_shell(session, cmd)
             output = result.stdout or ""
             if len(output) > 80_000:
                 output = output[:80_000] + "\n[output truncated]"
@@ -312,7 +338,7 @@ if not matches:
 elif len(matches) > {max_results}:
     print(f"[{{len(matches) - {max_results}}} more results truncated]")
 """
-            result = session.run(code)
+            result = _run_python(session, code)
             return result.stdout if result.stdout else "No matches found"
         except Exception as exc:
             return f"Error in glob_search: {exc}"
@@ -373,7 +399,7 @@ try:
 except Exception as e:
     print(f"Search error: {{e}}")
 """
-            result = session.run(code)
+            result = _run_python(session, code)
             return result.stdout if result.stdout else f"Error: {result.stderr or 'no results'}"
         except Exception as exc:
             return f"Error in web_search: {exc}"
@@ -409,7 +435,7 @@ try:
 except httpx.HTTPError as e:
     print(f"Fetch error: {{e}}")
 """
-            result = session.run(code)
+            result = _run_python(session, code)
             output = result.stdout or ""
             if len(output) > 200_000:
                 output = output[:200_000] + "\n[content truncated]"
@@ -509,7 +535,7 @@ else:
         icon = {{'pending': '[ ]', 'in_progress': '[~]', 'completed': '[x]', 'cancelled': '[-]'}}.get(status, '[ ]')
         print(f"{{icon}} {{t.get('content', '')}}")
 """
-            result = session.run(code)
+            result = _run_python(session, code)
             return result.stdout if result.stdout else "Todo list updated"
         except Exception as exc:
             return f"Error in todo_write: {exc}"

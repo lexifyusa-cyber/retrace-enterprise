@@ -48,6 +48,9 @@ def _start_chromium():
     if not chrome_path:
         return False
 
+    # Create download directory
+    os.makedirs("/workspace/Downloads", exist_ok=True)
+
     subprocess.Popen(
         [
             chrome_path,
@@ -58,6 +61,8 @@ def _start_chromium():
             "--remote-debugging-address=127.0.0.1",
             "--remote-debugging-port=9222",
             "--window-size=1280,900",
+            "--download-default-directory=/workspace/Downloads",
+            "--disable-popup-blocking",
         ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -107,6 +112,22 @@ def _connect_and_execute(action_data):
             )
             page = context.new_page()
 
+        # Enable file downloads to /workspace/Downloads/
+        try:
+            cdp_session = context.new_cdp_session(page)
+            cdp_session.send("Page.setDownloadBehavior", {
+                "behavior": "allow",
+                "downloadPath": "/workspace/Downloads"
+            })
+        except Exception:
+            try:
+                cdp_session.send("Browser.setDownloadBehavior", {
+                    "behavior": "allow",
+                    "downloadPath": "/workspace/Downloads"
+                })
+            except Exception:
+                pass
+
         action = action_data.get("action", "")
 
         try:
@@ -121,12 +142,29 @@ def _connect_and_execute(action_data):
             elif action == "click":
                 x = int(action_data.get("x", 0))
                 y = int(action_data.get("y", 0))
+                # Snapshot files before click to detect new downloads
+                before_files = set(os.listdir("/workspace/Downloads/")) if os.path.isdir("/workspace/Downloads/") else set()
                 page.mouse.click(x, y)
+                time.sleep(3)  # Wait for download to start
+                # Check for new downloaded files
+                after_files = set(os.listdir("/workspace/Downloads/")) if os.path.isdir("/workspace/Downloads/") else set()
+                new_files = after_files - before_files
                 result = {"ok": True}
+                if new_files:
+                    result["downloaded"] = list(new_files)
 
             elif action == "click_element":
                 selector = action_data.get("selector", "")
+                # Snapshot files before click to detect new downloads
+                before_files = set(os.listdir("/workspace/Downloads/")) if os.path.isdir("/workspace/Downloads/") else set()
                 page.locator(selector).first.click(timeout=5000)
+                time.sleep(3)  # Wait for download to start
+                # Check for new downloaded files
+                after_files = set(os.listdir("/workspace/Downloads/")) if os.path.isdir("/workspace/Downloads/") else set()
+                new_files = after_files - before_files
+                result = {"ok": True}
+                if new_files:
+                    result["downloaded"] = list(new_files)
                 result = {"ok": True}
 
             elif action == "type":

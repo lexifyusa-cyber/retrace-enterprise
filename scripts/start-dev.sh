@@ -110,6 +110,14 @@ setup_podman() {
     ARCH=$(uname -m)
     if [ "$ARCH" = "arm64" ]; then
         VM_PROVIDER="libkrun"   # Apple Silicon — no SSH, stable
+        # Install krunkit if needed (required for libkrun)
+        if ! command -v krunkit &> /dev/null; then
+            echo "📦 Installing krunkit (required for libkrun)..."
+            brew tap slp/krunkit
+            brew install krunkit
+            echo "✅ krunkit installed"
+        fi
+        export CONTAINERS_MACHINE_PROVIDER=libkrun
     else
         VM_PROVIDER="applehv"   # Intel — SSH-based, needs keep-alive
     fi
@@ -117,7 +125,7 @@ setup_podman() {
     # Initialize Podman machine if not exists
     if ! podman machine info &> /dev/null; then
         echo "📦 Initializing Podman machine (Linux VM, provider: $VM_PROVIDER)..."
-        CONTAINERS_MACHINE_PROVIDER=$VM_PROVIDER podman machine init
+        podman machine init
         echo "✅ Podman machine initialized"
     fi
 
@@ -140,19 +148,20 @@ setup_podman() {
         echo "✅ Podman machine started"
     fi
 
-    # For Intel Macs (SSH-based), configure SSH keep-alive to prevent drops
-    if [ "$VM_PROVIDER" = "applehv" ]; then
-        if ! grep -q "ServerAliveInterval" ~/.ssh/config 2>/dev/null; then
-            echo "🔧 Configuring SSH keep-alive for Podman stability..."
-            mkdir -p ~/.ssh
-            echo "" >> ~/.ssh/config
-            echo "# Podman machine keep-alive (prevents SSH drops)" >> ~/.ssh/config
-            echo "Host *" >> ~/.ssh/config
-            echo "    ServerAliveInterval 60" >> ~/.ssh/config
-            echo "    ServerAliveCountMax 3" >> ~/.ssh/config
-            chmod 600 ~/.ssh/config
-            echo "✅ SSH keep-alive configured"
-        fi
+    # Set correct SSH key for Podman machine (prevents auth failures)
+    export CONTAINER_SSHKEY=~/.local/share/containers/podman/machine/machine
+
+    # Configure SSH keep-alive to prevent Podman connection drops (all Macs)
+    if ! grep -q "ServerAliveInterval" ~/.ssh/config 2>/dev/null; then
+        echo "🔧 Configuring SSH keep-alive for Podman stability..."
+        mkdir -p ~/.ssh
+        echo "" >> ~/.ssh/config
+        echo "# Podman machine keep-alive (prevents SSH drops)" >> ~/.ssh/config
+        echo "Host *" >> ~/.ssh/config
+        echo "    ServerAliveInterval 30" >> ~/.ssh/config
+        echo "    ServerAliveCountMax 5" >> ~/.ssh/config
+        chmod 600 ~/.ssh/config
+        echo "✅ SSH keep-alive configured"
     fi
 
     # Build sandbox image if not exists

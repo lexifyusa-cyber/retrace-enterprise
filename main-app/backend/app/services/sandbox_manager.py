@@ -77,11 +77,19 @@ SANDBOX_IMAGE = "retrace-sandbox:latest"
 
 
 def _podman_env() -> dict:
-    """Return environment with Homebrew paths for Podman on macOS."""
+    """Return environment with Homebrew paths and libkrun provider for Podman on macOS."""
+    import platform
     env = os.environ.copy()
     for p in ["/opt/homebrew/bin", "/usr/local/bin"]:
         if p not in env.get("PATH", ""):
             env["PATH"] = p + ":" + env.get("PATH", "")
+    # Use libkrun on Apple Silicon
+    if platform.machine() == "arm64":
+        env["CONTAINERS_MACHINE_PROVIDER"] = "libkrun"
+    # Set correct SSH key for Podman machine (prevents auth failures)
+    ssh_key = os.path.expanduser("~/.local/share/containers/podman/machine/machine")
+    if os.path.isfile(ssh_key):
+        env["CONTAINER_SSHKEY"] = ssh_key
     return env
 
 
