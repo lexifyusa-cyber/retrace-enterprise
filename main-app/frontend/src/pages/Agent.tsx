@@ -57,6 +57,34 @@ export default function Agent() {
   const [workspaceTab, setWorkspaceTab] = useState<'browser' | 'terminal' | 'files'>('browser')
   const [isSandboxed, setIsSandboxed] = useState(false)
 
+  // Debug mode — click "Agent" title 6 times → enter password → toggle appears
+  const [debugMode, setDebugMode] = useState(() => localStorage.getItem('rt-debug-mode') === 'true')
+  const [debugUnlocked, setDebugUnlocked] = useState(() => localStorage.getItem('rt-debug-unlocked') === 'true')
+  const debugClickCount = useRef(0)
+  const debugClickTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const handleDebugClick = useCallback(() => {
+    debugClickCount.current += 1
+    if (debugClickTimer.current) clearTimeout(debugClickTimer.current)
+    debugClickTimer.current = setTimeout(() => { debugClickCount.current = 0 }, 2000)
+    if (debugClickCount.current >= 6) {
+      debugClickCount.current = 0
+      if (debugUnlocked) return
+      setDebugUnlocked(true)
+      setDebugMode(true)
+      localStorage.setItem('rt-debug-unlocked', 'true')
+      localStorage.setItem('rt-debug-mode', 'true')
+    }
+  }, [debugUnlocked])
+
+  const toggleDebugMode = useCallback(() => {
+    setDebugMode(prev => {
+      const next = !prev
+      localStorage.setItem('rt-debug-mode', String(next))
+      return next
+    })
+  }, [])
+
   // Resizable split: chatWidthPct is the left panel's percentage (30–80)
   const [chatWidthPct, setChatWidthPct] = useState(50)
   const isDraggingRef = useRef(false)
@@ -806,7 +834,7 @@ export default function Agent() {
             <Bot className="w-5 h-5 text-purple-400" />
           </div>
           <div>
-            <h1 className="text-3xl font-display font-bold">Agent</h1>
+            <h1 className="text-3xl font-display font-bold cursor-default select-none" onClick={handleDebugClick}>Agent</h1>
             <p className="text-rt-text-muted text-sm">Execute tasks on your products using AI-powered tools</p>
           </div>
         </div>
@@ -856,6 +884,19 @@ export default function Agent() {
               <div className="w-1.5 h-1.5 rounded-full bg-green-500" />
               Sandboxed
             </span>
+          )}
+          {debugUnlocked && (
+            <button type="button" onClick={toggleDebugMode}
+              title={debugMode ? 'Hide debug info' : 'Show debug info'}
+              className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium border transition-colors ${
+                debugMode
+                  ? 'bg-purple-500/10 text-purple-400 border-purple-500/20'
+                  : 'bg-rt-surface/50 text-rt-text-muted/40 border-rt-border/30 hover:text-rt-text-muted'
+              }`}
+            >
+              <Code className="w-2.5 h-2.5" />
+              Debug
+            </button>
           )}
           <button type="button" onClick={() => setShowWorkspace(prev => !prev)}
             title={showWorkspace ? 'Hide workspace' : 'Show workspace'}
@@ -1006,7 +1047,7 @@ export default function Agent() {
             </div>
           </div>
         ) : (
-          <div className="space-y-4 max-w-4xl mx-auto">
+          <div className="space-y-5 max-w-3xl mx-auto px-4 py-6">
             {messageNodes.map((node, nodeIndex) => {
               if (node.kind === 'single') {
                 const msg = messages[node.index]
@@ -1027,6 +1068,7 @@ export default function Agent() {
                     onEditDoc={handleEditDoc}
                     onApproveDoc={handleApproveDoc}
                     hasAnswer={messages.some(m => m.type === 'answer') || streamingAnswer !== null}
+                    debugMode={debugMode}
                   />
                 )
               }
@@ -1037,6 +1079,7 @@ export default function Agent() {
               const streamingForThisBlock = streamingAnswer !== null && nodeIndex === lastToolBlockNodeIndex
               const answerStarted = answerAfterThisBlock || streamingForThisBlock
               const isExpanded = answerStarted ? expandedToolBlocks.has(toolsMsg.id) : true
+              if (!debugMode) return <div key={toolsMsg.id} />
               return (
                 <div key={toolsMsg.id}>
                   <button
@@ -1044,12 +1087,12 @@ export default function Agent() {
                     onClick={() => toggleToolBlock(toolsMsg.id)}
                     className="flex items-center gap-2 text-xs text-rt-text-muted pl-2 w-full text-left rounded-lg hover:bg-rt-surface/50 transition-colors py-1.5"
                   >
-                    <Check className="w-3 h-3 text-rt-success flex-shrink-0" />
-                    <span className="flex-1">{toolsMsg.content}</span>
-                    <ChevronDown className={`w-3.5 h-3.5 flex-shrink-0 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+                    <ChevronDown className={`w-3.5 h-3.5 flex-shrink-0 transition-transform ${isExpanded ? '' : '-rotate-90'}`} />
+                    <Code className="w-3 h-3 text-purple-400" />
+                    <span>{node.childIndices.filter(i => messages[i]?.type === 'code').length} tool call{node.childIndices.filter(i => messages[i]?.type === 'code').length !== 1 ? 's' : ''}</span>
                   </button>
                   {isExpanded && node.childIndices.length > 0 && (
-                    <div className="space-y-4 mt-4">
+                    <div className="space-y-0.5 mt-1">
                       {node.childIndices.map((idx) => {
                         const m = messages[idx]
                         return (
@@ -1069,6 +1112,7 @@ export default function Agent() {
                             isCreatingDoc={isCreatingDoc}
                             onEditDoc={handleEditDoc}
                             onApproveDoc={handleApproveDoc}
+                            debugMode={debugMode}
                           />
                         )
                       })}
@@ -1078,9 +1122,13 @@ export default function Agent() {
               )
             })}
             {streamingAnswer !== null && (
-              <div className="card">
-                <div className="flex items-center gap-2 mb-3 text-xs text-rt-text-muted"><Bot className="w-3.5 h-3.5 text-purple-400" /><span>Agent Answer</span></div>
-                <div className="prose"><ReactMarkdown>{streamingAnswer}</ReactMarkdown></div>
+              <div className="flex gap-4 animate-fade-in">
+                <div className="w-8 h-8 rounded-full bg-rt-primary/15 flex items-center justify-center flex-shrink-0 mt-0.5">
+                  <Bot className="w-[18px] h-[18px] text-rt-primary" />
+                </div>
+                <div className="flex-1 min-w-0 pt-0.5">
+                  <div className="prose prose-agent"><ReactMarkdown>{streamingAnswer}</ReactMarkdown></div>
+                </div>
               </div>
             )}
             {streamingSOP !== null && (
@@ -1109,8 +1157,8 @@ export default function Agent() {
       </div>
 
       {/* Input area */}
-      <div className="p-8 pt-4 border-t border-rt-border bg-rt-bg-light">
-        <form onSubmit={handleSubmit} className="flex gap-2 items-center">
+      <div className="px-4 py-3 border-t border-rt-border/50 bg-rt-bg-light">
+        <form onSubmit={handleSubmit} className="max-w-3xl mx-auto flex gap-2 items-end">
           <button
             type="button"
             onClick={() => setUseReasoning(r => !r)}
@@ -1124,9 +1172,11 @@ export default function Agent() {
           >
             <Sparkles className="w-4 h-4" />
           </button>
-          <input type="text" value={task} onChange={e => setTask(e.target.value)}
+          <textarea value={task} onChange={e => { setTask(e.target.value); e.target.style.height = 'auto'; e.target.style.height = Math.min(e.target.scrollHeight, 200) + 'px' }}
+            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (task.trim()) handleSubmit(e as any) } }}
             placeholder={isRunning ? 'Agent is working...' : 'Describe a task to perform...'}
-            className="input flex-1" disabled={isRunning} />
+            rows={1}
+            className="input flex-1 resize-none min-h-[44px] max-h-[200px]" disabled={isRunning} />
           {isRunning ? (
             <button type="button" onClick={handleStop} className="btn-secondary flex items-center gap-2 text-red-400 border-red-400/30 hover:bg-red-400/10">
               <X className="w-4 h-4" /> Stop
@@ -1235,9 +1285,8 @@ export default function Agent() {
 // Message bubble with "Learn This" button on answers
 // ---------------------------------------------------------------------------
 
-function MessageBubble({ message: msg, messages, messageIndex, allowLearnThis, onLearnThis, onCreateSOP, isCreatingSOP, onApproveSOP, onEditSOP, onCreateDoc, isCreatingDoc, onEditDoc, onApproveDoc, hasAnswer }: {
+function MessageBubble({ message: msg, messages, messageIndex, allowLearnThis, onLearnThis, onCreateSOP, isCreatingSOP, onApproveSOP, onEditSOP, onCreateDoc, isCreatingDoc, onEditDoc, onApproveDoc, hasAnswer, debugMode }: {
   message: AgentMessage; messages: AgentMessage[]; messageIndex: number
-  /** Requires a selected product (knowledge base training). Doc & automation work without a product. */
   allowLearnThis?: boolean
   onLearnThis: (question: string, answer: string) => void
   onCreateSOP?: (goal: string) => void
@@ -1249,6 +1298,7 @@ function MessageBubble({ message: msg, messages, messageIndex, allowLearnThis, o
   onEditDoc?: (docId: string, editInstructions: string) => Promise<{ doc_markdown: string; title: string }>
   onApproveDoc?: (docId: string) => Promise<void>
   hasAnswer?: boolean
+  debugMode?: boolean
 }) {
   const [isLearning, setIsLearning] = useState(false)
   const [learned, setLearned] = useState(false)
@@ -1334,47 +1384,64 @@ function MessageBubble({ message: msg, messages, messageIndex, allowLearnThis, o
 
   switch (msg.type) {
     case 'user':
-      return (<div className="card bg-rt-primary/5 border-rt-primary/20"><div className="flex items-start gap-2"><span className="text-lg">👤</span><p className="font-medium">{msg.content}</p></div></div>)
-    case 'status':
-      return (<div className="flex items-center gap-2 text-sm text-rt-text-muted pl-2"><Loader2 className="w-3 h-3 animate-spin" />{msg.content}</div>)
-    case 'tools':
-      return (<div className="flex items-center gap-2 text-xs text-rt-text-muted pl-2"><Check className="w-3 h-3 text-rt-success" />{msg.content}</div>)
-    case 'code':
       return (
-        <div className="card bg-rt-surface/50 border-rt-border">
-          <div
-            className="flex items-center gap-2 text-xs text-rt-text-muted cursor-pointer select-none"
-            onClick={() => setIsExpanded(prev => !prev)}
-          >
-            <ChevronRight className={`w-3.5 h-3.5 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
-            <Code className="w-3.5 h-3.5 text-blue-400" />
-            <span>Code Execution {msg.iteration ? `(iteration ${msg.iteration})` : ''}</span>
+        <div className="flex justify-end animate-fade-in">
+          <div className="max-w-[85%] bg-rt-primary/8 rounded-2xl rounded-br-md px-4 py-3">
+            <p className="text-[15px] leading-relaxed whitespace-pre-wrap">{msg.content}</p>
+          </div>
+        </div>
+      )
+    case 'status':
+      return (
+        <div className="flex items-center gap-2.5 text-[13px] text-rt-text-muted py-1 pl-12">
+          <div className="flex gap-1">
+            <div className="w-1.5 h-1.5 rounded-full bg-rt-text-muted/50 animate-bounce" style={{ animationDelay: '0ms' }} />
+            <div className="w-1.5 h-1.5 rounded-full bg-rt-text-muted/50 animate-bounce" style={{ animationDelay: '150ms' }} />
+            <div className="w-1.5 h-1.5 rounded-full bg-rt-text-muted/50 animate-bounce" style={{ animationDelay: '300ms' }} />
+          </div>
+          <span>{msg.content}</span>
+        </div>
+      )
+    case 'tools':
+      if (!debugMode) return null
+      return (<div className="flex items-center gap-2 text-xs text-rt-text-muted pl-2"><Check className="w-3 h-3 text-rt-success" /><span>{msg.content}</span></div>)
+    case 'code':
+      if (!debugMode) return null
+      return (
+        <div className="pl-12 my-0.5">
+          <div className="inline-flex items-center gap-2 text-xs text-rt-text-muted/70 cursor-pointer select-none py-1 px-2 rounded-md hover:bg-rt-surface/50 transition-colors" onClick={() => setIsExpanded(prev => !prev)}>
+            <ChevronRight className={`w-3 h-3 transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}`} />
+            <Code className="w-3 h-3" />
+            <span>Code {msg.iteration ? `· step ${msg.iteration}` : ''}</span>
           </div>
           {isExpanded && (
-            <pre className="bg-rt-surface border border-rt-border text-rt-text text-sm p-3 rounded-lg overflow-x-auto font-mono whitespace-pre-wrap mt-2">{msg.content}</pre>
+            <pre className="bg-rt-bg-lighter border border-rt-border/30 text-[13px] p-4 rounded-xl overflow-x-auto font-mono whitespace-pre-wrap mt-1.5 leading-relaxed">{msg.content}</pre>
           )}
-        </div>)
+        </div>
+      )
     case 'output':
+      if (!debugMode) return null
       return (
-        <div className="card bg-rt-surface/30 border-rt-border">
-          <div
-            className="flex items-center gap-2 text-xs text-rt-text-muted cursor-pointer select-none"
-            onClick={() => setIsExpanded(prev => !prev)}
-          >
-            <ChevronRight className={`w-3.5 h-3.5 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
-            <Terminal className="w-3.5 h-3.5 text-yellow-400" />
+        <div className="pl-12 my-0.5">
+          <div className="inline-flex items-center gap-2 text-xs text-rt-text-muted/70 cursor-pointer select-none py-1 px-2 rounded-md hover:bg-rt-surface/50 transition-colors" onClick={() => setIsExpanded(prev => !prev)}>
+            <ChevronRight className={`w-3 h-3 transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}`} />
+            <Terminal className="w-3 h-3" />
             <span>Output</span>
           </div>
           {isExpanded && (
-            <pre className="bg-rt-surface border border-rt-border text-rt-text text-xs p-3 rounded-lg overflow-x-auto font-mono whitespace-pre-wrap max-h-60 overflow-y-auto mt-2">{msg.content}</pre>
+            <pre className="bg-rt-bg-lighter border border-rt-border/30 text-[13px] p-4 rounded-xl overflow-x-auto font-mono whitespace-pre-wrap max-h-72 overflow-y-auto mt-1.5 leading-relaxed">{msg.content}</pre>
           )}
-        </div>)
+        </div>
+      )
     case 'answer':
       return (
-        <div className="card">
-          <div className="flex items-center gap-2 mb-3 text-xs text-rt-text-muted"><Bot className="w-3.5 h-3.5 text-purple-400" /><span>Agent Answer</span></div>
-          <div className="prose"><ReactMarkdown>{msg.content}</ReactMarkdown></div>
-          <div className="mt-3 pt-2 border-t border-rt-border/50 flex flex-wrap items-center gap-2">
+        <div className="flex gap-4 animate-fade-in group">
+          <div className="w-8 h-8 rounded-full bg-rt-primary/15 flex items-center justify-center flex-shrink-0 mt-0.5">
+            <Bot className="w-[18px] h-[18px] text-rt-primary" />
+          </div>
+          <div className="flex-1 min-w-0 pt-0.5">
+          <div className="prose prose-agent"><ReactMarkdown>{msg.content}</ReactMarkdown></div>
+          <div className="mt-2 flex flex-wrap items-center gap-1.5 opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity">
               {allowLearnThis !== false ? (
                 learned ? (
                   <span className="inline-flex items-center gap-1.5 text-xs text-rt-success"><CheckCircle2 className="w-3.5 h-3.5" />Added to knowledge base</span>
@@ -1382,46 +1449,46 @@ function MessageBubble({ message: msg, messages, messageIndex, allowLearnThis, o
                   <button
                     onClick={() => { setActivePrompt(activePrompt === 'learn' ? null : 'learn'); setPromptInput('') }}
                     disabled={isLearning || !getQuestionForAnswer()}
-                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
                       activePrompt === 'learn'
                         ? 'bg-amber-500/25 text-amber-300 ring-1 ring-amber-500/40'
-                        : 'bg-amber-500/10 text-amber-400 hover:bg-amber-500/20'
+                        : 'text-rt-text-muted/50 hover:text-amber-400 hover:bg-amber-500/10'
                     }`}
-                    title="Train this Q&A as expert knowledge — it will be prioritized in future searches"
+                    title="Train this Q&A as expert knowledge"
                   >
-                    {isLearning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <GraduationCap className="w-3.5 h-3.5" />}
-                    Learn This
+                    {isLearning ? <Loader2 className="w-3 h-3 animate-spin" /> : <GraduationCap className="w-3 h-3" />}
+                    Learn
                   </button>
                 )
               ) : (
-                <span className="text-[11px] text-rt-text-muted/80 italic" title="Select a product to save this answer to its knowledge base">
-                  KB: select a product to use Learn This
+                <span className="text-[10px] text-rt-text-muted/40" title="Select a product to save this answer to its knowledge base">
+                  Select a product for KB
                 </span>
               )}
               <button
                 onClick={() => { setActivePrompt(activePrompt === 'automation' ? null : 'automation'); setPromptInput('') }}
                 disabled={isCreatingSOP || !getQuestionForAnswer() || !onCreateSOP}
-                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
                   activePrompt === 'automation'
                     ? 'bg-emerald-500/25 text-emerald-300 ring-1 ring-emerald-500/40'
-                    : 'bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20'
+                    : 'text-rt-text-muted/50 hover:text-emerald-400 hover:bg-emerald-500/10'
                 }`}
                 title="Build an automation workflow from this Q&A"
               >
-                {isCreatingSOP ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ClipboardList className="w-3.5 h-3.5" />}
+                {isCreatingSOP ? <Loader2 className="w-3 h-3 animate-spin" /> : <ClipboardList className="w-3 h-3" />}
                 Build Automation
               </button>
               <button
                 onClick={() => { setActivePrompt(activePrompt === 'doc' ? null : 'doc'); setPromptInput('') }}
                 disabled={isCreatingDoc || !getQuestionForAnswer() || !onCreateDoc}
-                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
                   activePrompt === 'doc'
                     ? 'bg-blue-500/25 text-blue-300 ring-1 ring-blue-500/40'
-                    : 'bg-blue-500/10 text-blue-400 hover:bg-blue-500/20'
+                    : 'text-rt-text-muted/50 hover:text-blue-400 hover:bg-blue-500/10'
                 }`}
                 title="Build a knowledge article from this Q&A"
               >
-                {isCreatingDoc ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileText className="w-3.5 h-3.5" />}
+                {isCreatingDoc ? <Loader2 className="w-3 h-3 animate-spin" /> : <FileText className="w-3 h-3" />}
                 Build Documentation
               </button>
             </div>
@@ -1468,7 +1535,7 @@ function MessageBubble({ message: msg, messages, messageIndex, allowLearnThis, o
               </form>
             </div>
           )}
-        </div>)
+        </div></div>)
     case 'browser_analysis': {
       const opts = msg.meta?.extraction_options || []
       return (
@@ -1717,9 +1784,10 @@ function MessageBubble({ message: msg, messages, messageIndex, allowLearnThis, o
           )}
         </div>)
     case 'done':
-      return (<div className="flex items-center gap-2 text-xs text-rt-success pl-2"><Check className="w-3 h-3" />{msg.content}{msg.meta?.total_ms && <span className="text-rt-text-muted">({msg.meta.total_ms}ms)</span>}</div>)
+      if (!debugMode) return null
+      return (<div className="flex items-center gap-2 text-xs text-rt-success pl-2"><Check className="w-3 h-3" /><span>{msg.content}</span>{msg.meta?.total_ms && <span className="text-rt-text-muted">({msg.meta.total_ms}ms)</span>}</div>)
     case 'error':
-      return (<div className="card bg-red-500/5 border-red-500/20"><div className="flex items-center gap-2"><AlertTriangle className="w-4 h-4 text-red-400" /><p className="text-sm text-red-400">{msg.content}</p></div></div>)
+      return (<div className="flex items-center gap-2 text-[13px] text-red-400 py-1 pl-12"><AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" /><span>{msg.content}</span></div>)
     default:
       return null
   }

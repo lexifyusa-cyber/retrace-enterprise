@@ -58,6 +58,8 @@ function storeTokens(access: string, refresh: string) {
 function clearTokens() {
   localStorage.removeItem('rt_access_token')
   localStorage.removeItem('rt_refresh_token')
+  localStorage.removeItem('rt-debug-mode')
+  localStorage.removeItem('rt-debug-unlocked')
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
