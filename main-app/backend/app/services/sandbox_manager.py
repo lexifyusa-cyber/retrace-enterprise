@@ -23,6 +23,8 @@ _active_sessions: dict = {}
 _session_activity: dict[str, float] = {}
 # Mapping conversation_id → user_id for reverse lookups
 _conversation_user_map: dict[str, str] = {}
+# Track each user's current container ID for cleanup
+_user_container_ids: dict[str, str] = {}
 
 IDLE_TIMEOUT_SECONDS = 30 * 60  # 30 minutes
 
@@ -108,7 +110,8 @@ def _patch_podman_exec(session):
 
         for attempt in range(2):
             try:
-                proc = _sp.run(_build_cmd(), capture_output=True, text=True, timeout=30, env=env)
+                # 60s timeout: browser_agent.py needs time for Chromium startup + page load
+                proc = _sp.run(_build_cmd(), capture_output=True, text=True, timeout=60, env=env)
                 stdout_bytes = proc.stdout.encode() if proc.stdout else b""
                 stderr_bytes = proc.stderr.encode() if proc.stderr else b""
 
@@ -311,9 +314,10 @@ def get_or_create_session(user_id: str):
     if user_id in _active_sessions:
         session = _active_sessions[user_id]
         _session_activity[user_id] = time.time()
-        # Check if session is still alive
+        # Check if session is still alive (use execute_command, not session.run
+        # which uses the broken Podman Python library)
         try:
-            result = session.run("echo ok")
+            result = session.execute_command("echo ok")
             if result.stdout and "ok" in result.stdout:
                 return session
         except Exception:
@@ -352,6 +356,24 @@ def get_or_create_session(user_id: str):
 
     # Patch Podman exec to use CLI (fixes empty stdout bug in Podman Python lib)
     _patch_podman_exec(session)
+
+    # Clean up this user's old container (from previous SSH drops)
+    # Only remove the previous container for THIS user, not other users' containers
+    try:
+        new_cid = session.container.id[:12] if hasattr(session, 'container') and session.container else None
+        old_cid = _user_container_ids.get(user_id)
+        if new_cid and old_cid and old_cid != new_cid:
+            import subprocess
+            subprocess.run(
+                [_podman_bin(), "rm", "-f", old_cid],
+                capture_output=True, timeout=10, env=_podman_env(),
+            )
+            logger.info("sandbox_cleaned_old_container", user_id=user_id, old=old_cid, new=new_cid)
+        # Track this user's current container ID
+        if new_cid:
+            _user_container_ids[user_id] = new_cid
+    except Exception:
+        pass  # Cleanup is best-effort, don't fail session creation
 
     _active_sessions[user_id] = session
 

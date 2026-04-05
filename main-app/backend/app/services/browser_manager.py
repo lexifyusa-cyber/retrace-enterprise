@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -68,13 +69,32 @@ class BrowserSession:
         except json.JSONDecodeError:
             return {"ok": False, "error": f"Invalid JSON: {stdout[:200]}"}
 
+    def _read_screenshot_from_volume(self) -> Optional[str]:
+        """Read screenshot directly from the shared volume (no SSH)."""
+        try:
+            from app.services.sandbox_manager import SANDBOX_BASE, get_user_for_conversation
+            user_id = get_user_for_conversation(self.conversation_id)
+            if not user_id:
+                # Try any active session
+                from app.services.sandbox_manager import _active_sessions
+                for uid in _active_sessions:
+                    user_id = uid
+                    break
+            if not user_id:
+                return None
+            screenshot_path = os.path.join(SANDBOX_BASE, user_id, ".browser-screenshot.jpg")
+            if os.path.isfile(screenshot_path):
+                with open(screenshot_path, "rb") as f:
+                    return base64.b64encode(f.read()).decode()
+        except Exception:
+            pass
+        return None
+
     async def get_screenshot_base64(self) -> Optional[str]:
-        """Capture current page as base64 JPEG."""
+        """Read screenshot from shared volume (no SSH needed)."""
         if self.sandbox_session:
-            data = await asyncio.to_thread(
-                self._run_browser_agent, '{"action":"screenshot"}'
-            )
-            return data.get("screenshot")
+            # Read directly from disk — no podman exec, no SSH
+            return await asyncio.to_thread(self._read_screenshot_from_volume)
         if not self.page:
             return None
         try:
@@ -90,9 +110,30 @@ class BrowserSession:
 
     async def _sandbox_action(self, action_data: dict) -> dict:
         """Run a browser action via the sandbox container."""
-        return await asyncio.to_thread(
+        result = await asyncio.to_thread(
             self._run_browser_agent, json.dumps(action_data)
         )
+        # Read screenshot from shared volume (no SSH) and push to Browser tab
+        if result.get("screenshot_file") and self.websocket_clients:
+            try:
+                screenshot_b64 = await asyncio.to_thread(self._read_screenshot_from_volume)
+                if screenshot_b64:
+                    message = json.dumps({
+                        "type": "screenshot",
+                        "data": screenshot_b64,
+                        "url": result.get("url", self.current_url),
+                        "title": result.get("title", self.current_title),
+                    })
+                    disconnected = set()
+                    for ws in self.websocket_clients:
+                        try:
+                            await ws.send_text(message)
+                        except Exception:
+                            disconnected.add(ws)
+                    self.websocket_clients -= disconnected
+            except Exception:
+                pass
+        return result
 
     async def navigate(self, url: str) -> dict:
         """Navigate the page to a URL."""
@@ -359,31 +400,28 @@ class BrowserManager:
             logger.warning("browser_cleanup_error", error=str(exc))
 
     async def _screenshot_loop(self, session: BrowserSession) -> None:
-        """Background task: capture and broadcast screenshots."""
+        """Background task: poll screenshot from shared volume and broadcast.
+
+        Screenshots are read from disk (no SSH) — the container writes
+        .browser-screenshot.jpg to the shared volume, and we read it
+        directly from the host filesystem. Safe to poll frequently.
+        """
         last_data = None
         while True:
             try:
                 await asyncio.sleep(SCREENSHOT_INTERVAL)
 
                 if not session.websocket_clients:
-                    continue  # No one watching, skip capture
+                    continue
 
                 screenshot_b64 = await session.get_screenshot_base64()
                 if not screenshot_b64:
                     continue
 
-                # Skip if identical to last frame (no change)
+                # Skip if identical to last frame
                 if screenshot_b64 == last_data:
                     continue
                 last_data = screenshot_b64
-
-                # Update page info
-                if session.page:
-                    try:
-                        session.current_url = session.page.url
-                        session.current_title = await session.page.title()
-                    except Exception:
-                        pass
 
                 message = json.dumps({
                     "type": "screenshot",
@@ -392,7 +430,6 @@ class BrowserManager:
                     "title": session.current_title,
                 })
 
-                # Broadcast to all clients
                 disconnected = set()
                 for ws in session.websocket_clients:
                     try:
@@ -403,9 +440,40 @@ class BrowserManager:
 
             except asyncio.CancelledError:
                 break
-            except Exception as exc:
-                logger.warning("screenshot_loop_error", error=str(exc))
+            except Exception:
                 await asyncio.sleep(1)
+
+    async def push_screenshot(self, conversation_id: str) -> None:
+        """Take a screenshot and broadcast to all WebSocket clients.
+
+        Called after browser actions (navigate, click, etc.) instead
+        of constant polling. Prevents SSH overload.
+        """
+        session = self._sessions.get(conversation_id)
+        if not session or not session.websocket_clients:
+            return
+
+        try:
+            screenshot_b64 = await session.get_screenshot_base64()
+            if not screenshot_b64:
+                return
+
+            message = json.dumps({
+                "type": "screenshot",
+                "data": screenshot_b64,
+                "url": session.current_url,
+                "title": session.current_title,
+            })
+
+            disconnected = set()
+            for ws in session.websocket_clients:
+                try:
+                    await ws.send_text(message)
+                except Exception:
+                    disconnected.add(ws)
+            session.websocket_clients -= disconnected
+        except Exception as exc:
+            logger.warning("push_screenshot_error", error=str(exc))
 
     async def close_all(self) -> None:
         """Close all sessions (app shutdown)."""

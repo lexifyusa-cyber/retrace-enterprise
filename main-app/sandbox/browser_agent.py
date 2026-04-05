@@ -51,6 +51,17 @@ def _start_chromium():
     # Create download directory
     os.makedirs("/workspace/Downloads", exist_ok=True)
 
+    # Create a user data directory so Chromium runs in normal mode (not Incognito)
+    os.makedirs("/workspace/.chrome-profile", exist_ok=True)
+    # Remove stale lock files from previous crashed Chromium
+    for lock in ["SingletonLock", "SingletonSocket", "SingletonCookie"]:
+        lock_path = f"/workspace/.chrome-profile/{lock}"
+        if os.path.exists(lock_path):
+            try:
+                os.remove(lock_path)
+            except Exception:
+                pass
+
     subprocess.Popen(
         [
             chrome_path,
@@ -63,6 +74,7 @@ def _start_chromium():
             "--window-size=1280,900",
             "--download-default-directory=/workspace/Downloads",
             "--disable-popup-blocking",
+            "--user-data-dir=/workspace/.chrome-profile",
         ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -262,10 +274,12 @@ def _connect_and_execute(action_data):
         except Exception as exc:
             result = {"ok": False, "error": str(exc)}
 
-        # Always include screenshot and page info
+        # Save screenshot to shared volume (no SSH transfer needed)
         try:
             screenshot_bytes = page.screenshot(type="jpeg", quality=70, full_page=False)
-            result["screenshot"] = base64.b64encode(screenshot_bytes).decode()
+            with open("/workspace/.browser-screenshot.jpg", "wb") as f:
+                f.write(screenshot_bytes)
+            result["screenshot_file"] = ".browser-screenshot.jpg"
             result["url"] = page.url
             result["title"] = page.title()
         except Exception:

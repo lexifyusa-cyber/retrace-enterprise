@@ -94,10 +94,23 @@ async def browser_websocket(websocket: WebSocket, conversation_id: str):
                 result = await session.go_forward()
             elif msg_type == "refresh":
                 result = await session.refresh()
+            elif msg_type == "screenshot":
+                # Manual screenshot request from user
+                pass
             else:
                 result = {"error": f"Unknown message type: {msg_type}"}
 
             await websocket.send_json({"type": "action_result", "result": result})
+
+            # Push screenshot after every action
+            screenshot = await session.get_screenshot_base64()
+            if screenshot:
+                await websocket.send_json({
+                    "type": "screenshot",
+                    "data": screenshot,
+                    "url": session.current_url,
+                    "title": session.current_title,
+                })
 
     except WebSocketDisconnect:
         logger.info("browser_ws_disconnected", conversation_id=conversation_id)
