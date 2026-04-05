@@ -37,12 +37,55 @@ def get_user_for_conversation(conversation_id: str) -> Optional[str]:
     return _conversation_user_map.get(conversation_id)
 
 
+_restart_lock = False
+_restart_last_time = 0
+
+def _restart_podman_machine():
+    """Restart the Podman machine to fix SSH connection drops.
+
+    Uses a lock so only one restart happens at a time when multiple
+    commands fail simultaneously.
+    """
+    global _restart_lock, _restart_last_time
+    import subprocess as _sp
+
+    # Skip if already restarting or restarted recently (within 30 seconds)
+    if _restart_lock or (time.time() - _restart_last_time < 30):
+        # Wait for ongoing restart to finish
+        for _ in range(20):
+            if not _restart_lock:
+                return True
+            time.sleep(1)
+        return False
+
+    _restart_lock = True
+    env = _podman_env()
+    pb = _podman_bin()
+    try:
+        logger.warning("podman_machine_restarting_auto")
+        _sp.run(["pkill", "-f", "krunkit"], capture_output=True, timeout=5)
+        time.sleep(3)
+        _sp.run([pb, "machine", "start"], capture_output=True, timeout=60, env=env)
+        time.sleep(3)
+        _restart_last_time = time.time()
+        logger.info("podman_machine_restarted_auto")
+        return True
+    except Exception as exc:
+        logger.error("podman_machine_restart_failed_auto", error=str(exc))
+        return False
+    finally:
+        _restart_lock = False
+
+
 def _patch_podman_exec(session):
     """Monkey-patch llm-sandbox's Podman container API to use CLI for exec.
 
     The Podman Python library's exec_run() returns empty stdout due to a
     demux bug. This patch replaces execute_command() with a version that
     calls `podman exec` via subprocess, which works correctly.
+
+    Includes auto-reconnect: if podman exec fails (SSH drop), restarts
+    the machine and retries once.
     """
     import subprocess as _sp
 
@@ -53,22 +96,53 @@ def _patch_podman_exec(session):
         workdir = kwargs.get("workdir")
 
         _podman = _podman_bin()
-        cmd = [_podman, "exec"]
-        if workdir:
-            cmd.extend(["-w", workdir])
-        cmd.append(cid)
-        cmd.extend(["sh", "-c", command])
+        env = _podman_env()
 
-        try:
-            proc = _sp.run(cmd, capture_output=True, text=True, timeout=120, env=_podman_env())
-            # Return format expected by llm-sandbox: (exit_code, (stdout_bytes, stderr_bytes))
-            stdout_bytes = proc.stdout.encode() if proc.stdout else b""
-            stderr_bytes = proc.stderr.encode() if proc.stderr else b""
-            return proc.returncode, (stdout_bytes, stderr_bytes)
-        except _sp.TimeoutExpired:
-            return 124, (b"", b"Command timed out after 120 seconds")
-        except Exception as exc:
-            return 1, (b"", str(exc).encode())
+        def _build_cmd():
+            cmd = [_podman, "exec"]
+            if workdir:
+                cmd.extend(["-w", workdir])
+            cmd.append(cid)
+            cmd.extend(["sh", "-c", command])
+            return cmd
+
+        for attempt in range(2):
+            try:
+                proc = _sp.run(_build_cmd(), capture_output=True, text=True, timeout=30, env=env)
+                stdout_bytes = proc.stdout.encode() if proc.stdout else b""
+                stderr_bytes = proc.stderr.encode() if proc.stderr else b""
+
+                # Check if the error is an SSH connection issue
+                stderr_str = proc.stderr or ""
+                if proc.returncode != 0 and (
+                    "connection reset by peer" in stderr_str
+                    or "connection refused" in stderr_str
+                    or "handshake failed" in stderr_str
+                    or "Cannot connect to Podman" in stderr_str
+                ):
+                    if attempt == 0:
+                        logger.warning("podman_exec_ssh_drop_retrying", command=command[:80])
+                        _restart_podman_machine()
+                        continue
+                    else:
+                        return proc.returncode, (stdout_bytes, stderr_bytes)
+
+                return proc.returncode, (stdout_bytes, stderr_bytes)
+
+            except _sp.TimeoutExpired:
+                if attempt == 0:
+                    logger.warning("podman_exec_timeout_retrying", command=command[:80])
+                    _restart_podman_machine()
+                    continue
+                return 124, (b"", b"Command timed out after retry")
+            except Exception as exc:
+                if attempt == 0:
+                    logger.warning("podman_exec_error_retrying", error=str(exc))
+                    _restart_podman_machine()
+                    continue
+                return 1, (b"", str(exc).encode())
+
+        return 1, (b"", b"Failed after retry")
 
     original_api.execute_command = patched_execute_command
 
