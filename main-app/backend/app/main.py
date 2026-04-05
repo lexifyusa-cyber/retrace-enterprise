@@ -589,20 +589,19 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Request logging middleware (add before CORS) - simplified to avoid blocking
+# Request logging middleware (add before CORS) - uses stderr to avoid polluting agent tool output
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
+    import sys
     start_time = time.time()
-    # Use print for immediate logging (structlog might be blocking)
-    print(f"[REQUEST] {request.method} {request.url.path}")
     try:
         response = await call_next(request)
         process_time = time.time() - start_time
-        print(f"[REQUEST] {request.method} {request.url.path} - {response.status_code} ({process_time:.3f}s)")
+        print(f"[REQUEST] {request.method} {request.url.path} - {response.status_code} ({process_time:.3f}s)", file=sys.stderr)
         return response
     except Exception as e:
         process_time = time.time() - start_time
-        print(f"[ERROR] {request.method} {request.url.path} - {str(e)} ({process_time:.3f}s)")
+        print(f"[ERROR] {request.method} {request.url.path} - {str(e)} ({process_time:.3f}s)", file=sys.stderr)
         raise
 
 # CORS middleware
