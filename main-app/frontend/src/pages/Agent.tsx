@@ -401,19 +401,20 @@ export default function Agent() {
       case 'agent_tools': msg = { type: 'tools', content: `${data.count} tools loaded: ${(data.tools || []).join(', ')}` }; break
       case 'agent_code': {
         msg = { type: 'code', content: data.code, iteration: data.iteration }
-        // Extract tool name for live pipeline
+        // Extract ALL unique tool names used in this code block
         const code = data.code || ''
         const toolMatches = code.match(/(?:read_file|write_file|delete_file|download_file|str_replace|grep|glob_search|web_search|web_fetch|web_advanced|web_research|auto_browser|screenops|todo_write|knowledge_base)\s*\(/g)
-        let toolName = 'terminal'
+        let toolLabel = 'terminal'
         if (toolMatches) {
-          toolName = toolMatches[0].replace(/\s*\($/, '')
+          const unique = [...new Set(toolMatches.map((m: string) => m.replace(/\s*\($/, '')))]
+          toolLabel = unique.join(', ')
         } else if (code.match(/terminal\s*\(/)) {
-          toolName = 'terminal'
+          toolLabel = 'terminal'
         }
-        // Mark previous pipeline entry as done, add new one
+        // One entry per code block (iteration), mark previous as done
         setLivePipeline(prev => {
           const next = prev.map(e => ({ ...e, done: true }))
-          next.push({ name: toolName, code, output: '', done: false })
+          next.push({ name: toolLabel, code, output: '', done: false })
           return next
         })
         break
@@ -1095,22 +1096,15 @@ export default function Agent() {
                   const outputsBefore = sliced.filter(m => m.type === 'output')
                   if (codesBefore.length === 0) return null
 
-                  // Extract tool calls with their outputs — each iteration shown separately
+                  // One entry per code block (iteration), listing all tools used
                   type ToolEntry = { name: string; output: string }
                   const toolEntries: ToolEntry[] = []
                   codesBefore.forEach((m, idx) => {
                     const mm = m.content.match(/(?:read_file|write_file|delete_file|download_file|str_replace|grep|glob_search|web_search|web_fetch|web_advanced|web_research|auto_browser|screenops|todo_write|knowledge_base)\s*\(/g)
                     const output = outputsBefore[idx]?.content || ''
                     if (mm) {
-                      // Deduplicate within same code block, but not across blocks
-                      const seen = new Set<string>()
-                      mm.forEach(x => {
-                        const n = x.replace(/\s*\($/, '')
-                        if (!seen.has(n)) {
-                          seen.add(n)
-                          toolEntries.push({ name: n, output })
-                        }
-                      })
+                      const unique = [...new Set(mm.map((x: string) => x.replace(/\s*\($/, '')))]
+                      toolEntries.push({ name: unique.join(', '), output })
                     } else if (m.content.match(/terminal\s*\(/)) {
                       toolEntries.push({ name: 'terminal', output })
                     }
