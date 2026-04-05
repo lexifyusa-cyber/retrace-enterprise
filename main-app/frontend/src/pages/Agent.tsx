@@ -1421,21 +1421,12 @@ function LiveToolPipeline({ entries }: { entries: { name: string; code: string; 
               )}
             </button>
 
-            {/* Expanded output */}
-            {isExpanded && hasOutput && (
+            {/* Output — shown automatically for active entry, click to expand for done entries */}
+            {(isActive || isExpanded) && hasOutput && (
               <div className="ml-[27px] mb-2">
                 <pre className="text-[11px] text-rt-text-muted/40 font-mono whitespace-pre-wrap max-h-48 overflow-y-auto leading-relaxed border-l border-rt-border/30 pl-3">
                   {entry.output.slice(0, 3000)}{entry.output.length > 3000 ? '\n...' : ''}
                 </pre>
-              </div>
-            )}
-
-            {/* Live output preview for active entry */}
-            {isActive && hasOutput && !isExpanded && (
-              <div className="ml-[27px] mb-1">
-                <p className="text-[11px] text-rt-text-muted/30 font-mono truncate max-w-md">
-                  {entry.output.split('\n')[0]?.slice(0, 100)}
-                </p>
               </div>
             )}
           </div>
