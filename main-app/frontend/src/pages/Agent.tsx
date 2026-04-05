@@ -56,7 +56,8 @@ export default function Agent() {
   const [showWorkspace, setShowWorkspace] = useState(true)
   const [workspaceTab, setWorkspaceTab] = useState<'browser' | 'terminal' | 'files'>('browser')
   const [isSandboxed, setIsSandboxed] = useState(false)
-  const [activeTools, setActiveTools] = useState<string[]>([])  // tools being used right now
+  // Live pipeline — tracks each tool call with code + output as they stream in
+  const [livePipeline, setLivePipeline] = useState<{ name: string; code: string; output: string; done: boolean }[]>([])
 
   // Debug mode — click "Agent" title 6 times → enter password → toggle appears
   const [debugMode, setDebugMode] = useState(() => localStorage.getItem('rt-debug-mode') === 'true')
@@ -313,6 +314,7 @@ export default function Agent() {
     }
 
     setIsRunning(true)
+    setLivePipeline([])
     const userMsg: AgentMessage = { id: `msg_${idCounter.current++}`, type: 'user', content: task }
     setMessages(prev => [...prev, userMsg])
     const currentTask = task
@@ -399,27 +401,40 @@ export default function Agent() {
       case 'agent_tools': msg = { type: 'tools', content: `${data.count} tools loaded: ${(data.tools || []).join(', ')}` }; break
       case 'agent_code': {
         msg = { type: 'code', content: data.code, iteration: data.iteration }
-        // Extract tool names for live pipeline
-        const toolMatches = (data.code || '').match(/(?:read_file|write_file|delete_file|download_file|str_replace|grep|glob_search|web_search|web_fetch|web_advanced|web_research|auto_browser|screenops|todo_write|knowledge_base)\s*\(/g)
+        // Extract tool name for live pipeline
+        const code = data.code || ''
+        const toolMatches = code.match(/(?:read_file|write_file|delete_file|download_file|str_replace|grep|glob_search|web_search|web_fetch|web_advanced|web_research|auto_browser|screenops|todo_write|knowledge_base)\s*\(/g)
+        let toolName = 'terminal'
         if (toolMatches) {
-          setActiveTools(prev => {
-            const next = [...prev]
-            toolMatches.forEach((m: string) => { const n = m.replace(/\s*\($/, ''); if (!next.includes(n)) next.push(n) })
-            return next
-          })
-        } else if ((data.code || '').match(/terminal\s*\(/)) {
-          setActiveTools(prev => prev.includes('terminal') ? prev : [...prev, 'terminal'])
+          toolName = toolMatches[0].replace(/\s*\($/, '')
+        } else if (code.match(/terminal\s*\(/)) {
+          toolName = 'terminal'
         }
+        // Mark previous pipeline entry as done, add new one
+        setLivePipeline(prev => {
+          const next = prev.map(e => ({ ...e, done: true }))
+          next.push({ name: toolName, code, output: '', done: false })
+          return next
+        })
         break
       }
-      case 'tool_output': msg = { type: 'output', content: data.output, iteration: data.iteration }; break
-      case 'agent_answer': msg = { type: 'answer', content: data.content }; setActiveTools([]); break
+      case 'tool_output': {
+        msg = { type: 'output', content: data.output, iteration: data.iteration }
+        // Attach output to the last pipeline entry
+        setLivePipeline(prev => {
+          if (prev.length === 0) return prev
+          const next = [...prev]
+          next[next.length - 1] = { ...next[next.length - 1], output: data.output || '' }
+          return next
+        })
+        break
+      }
+      case 'agent_answer': msg = { type: 'answer', content: data.content }; break
       case 'agent_answer_chunk': {
         setStreamingAnswer(data.chunk)
         if (data.done) {
           msg = { type: 'answer', content: data.chunk }
           setStreamingAnswer(null)
-          setActiveTools([])
         }
         break
       }
@@ -1074,26 +1089,34 @@ export default function Agent() {
                   for (let i = node.index - 1; i >= 0; i--) {
                     if (messages[i]?.type === 'user') { lastUserIdx = i; break }
                   }
-                  // Only get code messages between the last user message and this answer
-                  const codesBefore = messages.slice(lastUserIdx + 1, node.index).filter(m => m.type === 'code')
+                  // Get code and output messages between user message and answer
+                  const sliced = messages.slice(lastUserIdx + 1, node.index)
+                  const codesBefore = sliced.filter(m => m.type === 'code')
+                  const outputsBefore = sliced.filter(m => m.type === 'output')
                   if (codesBefore.length === 0) return null
-                  const names: string[] = []
-                  codesBefore.forEach(m => {
-                    // Extract only the actual tool calls, not "terminal" wrapper
+
+                  // Extract tool calls with their outputs — each iteration shown separately
+                  type ToolEntry = { name: string; output: string }
+                  const toolEntries: ToolEntry[] = []
+                  codesBefore.forEach((m, idx) => {
                     const mm = m.content.match(/(?:read_file|write_file|delete_file|download_file|str_replace|grep|glob_search|web_search|web_fetch|web_advanced|web_research|auto_browser|screenops|todo_write|knowledge_base)\s*\(/g)
-                    if (mm) mm.forEach(x => { const n = x.replace(/\s*\($/, ''); if (!names.includes(n)) names.push(n) })
-                    // Only show "terminal" if it's explicitly called (not the wrapper)
-                    if (!mm && m.content.match(/terminal\s*\(/)) names.push('terminal')
+                    const output = outputsBefore[idx]?.content || ''
+                    if (mm) {
+                      // Deduplicate within same code block, but not across blocks
+                      const seen = new Set<string>()
+                      mm.forEach(x => {
+                        const n = x.replace(/\s*\($/, '')
+                        if (!seen.has(n)) {
+                          seen.add(n)
+                          toolEntries.push({ name: n, output })
+                        }
+                      })
+                    } else if (m.content.match(/terminal\s*\(/)) {
+                      toolEntries.push({ name: 'terminal', output })
+                    }
                   })
-                  if (names.length === 0) return null
-                  return (
-                    <div className="mb-1">
-                      <div className="inline-flex items-center gap-1.5 text-xs text-rt-text-muted/50 cursor-default">
-                        <ChevronRight className="w-3 h-3" />
-                        <span className="font-mono">{names.join(' → ')}</span>
-                      </div>
-                    </div>
-                  )
+                  if (toolEntries.length === 0) return null
+                  return <ToolPipeline entries={toolEntries} />
                 })() : null
                 return (
                   <div key={msg.id}>
@@ -1167,14 +1190,11 @@ export default function Agent() {
                 </div>
               )
             })}
-            {/* Live tool pipeline — shows while agent is working */}
+            {/* Live tool pipeline — shows each tool call + output streaming in real-time */}
             {!debugMode && isRunning && streamingAnswer === null && (
-              <div className="animate-fade-in">
-                {activeTools.length > 0 ? (
-                  <div className="inline-flex items-center gap-1.5 text-xs text-rt-text-muted">
-                    <Loader2 className="w-3 h-3 animate-spin" />
-                    <span className="font-mono">{activeTools.join(' → ')}</span>
-                  </div>
+              <div className="animate-fade-in ml-10">
+                {livePipeline.length > 0 ? (
+                  <LiveToolPipeline entries={livePipeline} />
                 ) : (
                   <div className="flex items-center gap-2 text-xs text-rt-text-muted">
                     <div className="flex gap-1">
@@ -1343,6 +1363,147 @@ export default function Agent() {
         </div>
       )}
       </div>{/* end split container */}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Live tool pipeline — streams tool calls with output in real-time
+// ---------------------------------------------------------------------------
+
+function LiveToolPipeline({ entries }: { entries: { name: string; code: string; output: string; done: boolean }[] }) {
+  const [expandedEntries, setExpandedEntries] = useState<Set<number>>(new Set())
+
+  const toggleEntry = (idx: number) => {
+    setExpandedEntries(prev => {
+      const next = new Set(prev)
+      if (next.has(idx)) next.delete(idx)
+      else next.add(idx)
+      return next
+    })
+  }
+
+  return (
+    <div className="relative">
+      {/* Vertical connecting line */}
+      {entries.length > 1 && (
+        <div
+          className="absolute left-[7px] top-[14px] w-px bg-rt-border/40"
+          style={{ height: `calc(100% - 14px)` }}
+        />
+      )}
+      {entries.map((entry, idx) => {
+        const isActive = !entry.done
+        const isExpanded = expandedEntries.has(idx)
+        const hasOutput = !!entry.output
+
+        return (
+          <div key={idx} className="relative animate-fade-in">
+            {/* Tool header row */}
+            <button
+              onClick={() => hasOutput && toggleEntry(idx)}
+              className={`relative flex items-center gap-2.5 py-1.5 text-left w-full group ${hasOutput ? 'cursor-pointer' : 'cursor-default'}`}
+            >
+              {/* Circle node */}
+              <div className={`relative z-10 w-[15px] h-[15px] rounded-full flex items-center justify-center flex-shrink-0 ${
+                isActive ? 'border border-rt-primary/50 bg-rt-surface' : 'bg-rt-surface'
+              }`}>
+                {isActive ? (
+                  <Loader2 className="w-2.5 h-2.5 animate-spin text-rt-primary" />
+                ) : (
+                  <Check className="w-2.5 h-2.5 text-rt-success/60" />
+                )}
+              </div>
+              <Terminal className="w-3 h-3 text-rt-text-muted/40 flex-shrink-0" />
+              <span className="text-xs font-mono text-rt-text-muted/70">{entry.name}</span>
+              {hasOutput && (
+                <ChevronRight className={`w-3 h-3 text-rt-text-muted/30 transition-transform opacity-0 group-hover:opacity-100 ${isExpanded ? 'rotate-90' : ''}`} />
+              )}
+            </button>
+
+            {/* Expanded output */}
+            {isExpanded && hasOutput && (
+              <div className="ml-[27px] mb-2">
+                <pre className="text-[11px] text-rt-text-muted/40 font-mono whitespace-pre-wrap max-h-48 overflow-y-auto leading-relaxed border-l border-rt-border/30 pl-3">
+                  {entry.output.slice(0, 3000)}{entry.output.length > 3000 ? '\n...' : ''}
+                </pre>
+              </div>
+            )}
+
+            {/* Live output preview for active entry */}
+            {isActive && hasOutput && !isExpanded && (
+              <div className="ml-[27px] mb-1">
+                <p className="text-[11px] text-rt-text-muted/30 font-mono truncate max-w-md">
+                  {entry.output.split('\n')[0]?.slice(0, 100)}
+                </p>
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Tool pipeline — collapsed summary with individually expandable tools
+// ---------------------------------------------------------------------------
+
+function ToolPipeline({ entries }: { entries: { name: string; output: string }[] }) {
+  const [expanded, setExpanded] = useState(false)
+  const [expandedTools, setExpandedTools] = useState<Set<number>>(new Set())
+
+  const toggleTool = (idx: number) => {
+    setExpandedTools(prev => {
+      const next = new Set(prev)
+      if (next.has(idx)) next.delete(idx)
+      else next.add(idx)
+      return next
+    })
+  }
+
+  const count = entries.length
+  return (
+    <div className="mb-2 ml-10">
+      <button
+        onClick={() => setExpanded(prev => !prev)}
+        className="inline-flex items-center gap-1.5 text-xs text-rt-text-muted/50 hover:text-rt-text-muted transition-colors"
+      >
+        <ChevronRight className={`w-3 h-3 transition-transform ${expanded ? 'rotate-90' : ''}`} />
+        <span>{count} tool call{count !== 1 ? 's' : ''}</span>
+      </button>
+      {expanded && (
+        <div className="relative mt-1 ml-1">
+          {/* Vertical connecting line */}
+          {entries.length > 1 && (
+            <div
+              className="absolute left-[7px] top-[14px] w-px bg-rt-border/50"
+              style={{ height: `calc(100% - 18px)` }}
+            />
+          )}
+          {entries.map((entry, idx) => (
+            <div key={idx} className="relative">
+              <button
+                onClick={() => toggleTool(idx)}
+                className="relative flex items-center gap-2.5 py-1 text-xs text-rt-text-muted/60 hover:text-rt-text-muted transition-colors w-full text-left"
+              >
+                {/* Circle node */}
+                <div className="relative z-10 w-[15px] h-[15px] rounded-full bg-rt-surface flex items-center justify-center flex-shrink-0">
+                  {expandedTools.has(idx) ? (
+                    <ChevronDown className="w-2.5 h-2.5" />
+                  ) : (
+                    <Check className="w-2.5 h-2.5 text-rt-success/60" />
+                  )}
+                </div>
+                <span className="font-mono">{entry.name}</span>
+              </button>
+              {expandedTools.has(idx) && entry.output && (
+                <pre className="ml-[27px] mt-0.5 mb-1 text-[11px] text-rt-text-muted/40 font-mono whitespace-pre-wrap max-h-40 overflow-y-auto leading-relaxed border-l border-rt-border/30 pl-3">{entry.output.slice(0, 2000)}{entry.output.length > 2000 ? '\n...' : ''}</pre>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
