@@ -56,37 +56,37 @@ export default function Dashboard() {
               ============================================================ */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8 mb-16">
             <StatCard
-              label="Total Artifacts"
-              value={stats?.total_docs || 0}
-              icon={<Sparkles className="w-5 h-5 text-rt-primary" />}
-              badge={stats?.docs_this_week ? `+${stats.docs_this_week}` : undefined}
-              badgeColor="text-green-700 bg-green-50"
-              href="/docs"
+              label="Products"
+              value={stats?.total_products || 0}
+              icon={<FolderTree className="w-5 h-5 text-rt-primary" />}
+              badge={stats?.total_groups ? `${stats.total_groups} groups` : undefined}
+              badgeColor="text-rt-primary bg-rt-primary-fixed/20"
+              href="/products"
               delay={0}
             />
             <StatCard
-              label="Active Agents"
-              value={stats?.active_automations || 0}
+              label="Conversations"
+              value={stats?.total_conversations || 0}
               icon={<Bot className="w-5 h-5 text-rt-primary" />}
-              badge="Active"
-              badgeColor="text-rt-primary bg-rt-primary-fixed/20"
-              href="/sops"
+              badge={stats?.conversations_today ? `+${stats.conversations_today} today` : undefined}
+              badgeColor="text-green-700 bg-green-50"
+              href="/agent"
               delay={0.05}
             />
             <StatCard
-              label="Knowledge Groups"
-              value={`${stats?.trained_groups || 0}/${stats?.total_groups || 0}`}
-              icon={<FolderTree className="w-5 h-5 text-rt-primary" />}
-              badge={stats?.knowledge_coverage_pct === 100 ? 'Complete' : 'Healthy'}
-              badgeColor="text-rt-primary bg-rt-primary-fixed/20"
-              href="/products"
+              label="PODs Online"
+              value={`${stats?.online_pods || 0}/${stats?.total_pods || 0}`}
+              icon={<Sparkles className="w-5 h-5 text-rt-primary" />}
+              badge={stats?.online_pods ? 'Connected' : 'Offline'}
+              badgeColor={stats?.online_pods ? 'text-green-700 bg-green-50' : 'text-rt-text-muted bg-rt-surface'}
+              href="/pods"
               delay={0.1}
             />
             <StatCard
-              label="Success Rate"
-              value={`${stats?.execution_success_rate || 100}%`}
+              label="Automations"
+              value={stats?.total_automations || 0}
               icon={<TrendingUp className="w-5 h-5 text-rt-primary" />}
-              badge="Optimized"
+              badge={stats?.active_automations ? `${stats.active_automations} active` : undefined}
               badgeColor="text-rt-primary bg-rt-primary-fixed/20"
               href="/sops"
               delay={0.15}
