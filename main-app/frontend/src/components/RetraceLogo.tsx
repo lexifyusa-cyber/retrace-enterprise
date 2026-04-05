@@ -46,7 +46,7 @@ export default function RetraceLogo({ variant = 'md' }: { variant?: Variant }) {
       {/* ── "ReTrace" wordmark ── */}
       {c.text > 0 && (
         <span
-          className="font-headline font-bold tracking-tight text-gray-900 dark:text-rt-text"
+          className="font-headline font-bold tracking-tight text-rt-text"
           style={{ fontSize: c.text, lineHeight: 1, letterSpacing: '-0.02em' }}
         >
           ReTrace

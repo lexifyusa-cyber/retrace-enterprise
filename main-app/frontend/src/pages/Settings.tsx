@@ -590,7 +590,7 @@ export default function Settings() {
       >
         <h1 className="text-4xl font-headline font-bold tracking-tight mb-2">Platform <span className="text-rt-primary-container italic">Settings</span></h1>
         <p className="text-on-surface-variant text-lg">
-          Configure your <span className="font-extrabold bg-gradient-to-r from-indigo-400 via-purple-400 to-violet-400 bg-clip-text text-transparent">ReTrace</span> system
+          Configure your <span className="font-extrabold text-rt-primary-container italic">ReTrace</span> system
         </p>
       </motion.div>
 

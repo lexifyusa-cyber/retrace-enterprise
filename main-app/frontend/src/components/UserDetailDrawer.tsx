@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import {
   X, User, Shield, ShieldCheck, Crown, Mail, Phone, Building2, Clock,
   Globe, Hash, Key, Lock, Unlock, LogOut, RefreshCw, Loader2,
-  Activity, Eye, Settings2, ChevronRight,
+  Activity, Eye, ChevronRight,
 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import axios from 'axios'
@@ -17,7 +17,7 @@ api.interceptors.request.use((config) => {
   return config
 })
 
-type TabId = 'overview' | 'security' | 'activity' | 'permissions'
+type TabId = 'overview' | 'security' | 'activity'
 
 function timeAgo(dateStr: string | null | undefined): string {
   if (!dateStr) return 'Never'
@@ -67,7 +67,8 @@ export default function UserDetailDrawer({ userId, onClose, currentUser }: Props
     queryFn: async () => {
       const [usersRes] = await Promise.all([api.get('/users')])
       const users = usersRes.data?.users ?? (Array.isArray(usersRes.data) ? usersRes.data : [])
-      return users.find((u: any) => u.user_id === userId) || null
+      const found = users.find((u: any) => u.user_id === userId) || null
+      return { user: found, allUsers: users }
     },
     enabled: !!userId,
   })
@@ -148,7 +149,8 @@ export default function UserDetailDrawer({ userId, onClose, currentUser }: Props
     onError: (err: any) => toast.error(err?.response?.data?.detail || 'Failed'),
   })
 
-  const user = userData
+  const user = userData?.user
+  const allUsers: any[] = userData?.allUsers || []
   const isOpen = !!userId
 
   const isAdminRole = checkIsAdmin(currentUser?.role)
@@ -159,7 +161,6 @@ export default function UserDetailDrawer({ userId, onClose, currentUser }: Props
     { id: 'overview', label: 'Overview', icon: Eye },
     { id: 'security', label: 'Security', icon: Key },
     { id: 'activity', label: 'Activity', icon: Activity },
-    { id: 'permissions', label: 'Permissions', icon: Settings2 },
   ]
 
   return (
@@ -231,6 +232,15 @@ export default function UserDetailDrawer({ userId, onClose, currentUser }: Props
                         <InfoRow icon={Clock} label="Last Login" value={timeAgo(user.last_login_at)} />
                         <InfoRow icon={Globe} label="Last IP" value={user.last_login_ip || '—'} />
                         <InfoRow icon={Clock} label="Created" value={user.created_at ? new Date(user.created_at).toLocaleDateString() : '—'} />
+                        {user.role === 'user_admin' && (
+                          <>
+                            <InfoRow icon={Hash} label="Max Products" value={user.max_products !== null && user.max_products !== undefined ? String(user.max_products) : 'Org default'} />
+                            <InfoRow icon={Hash} label="Max Users (can create)" value={user.max_managed_users !== null && user.max_managed_users !== undefined ? String(user.max_managed_users) : 'Org default'} />
+                          </>
+                        )}
+                        {user.manager_id && (
+                          <InfoRow icon={ChevronRight} label="Manager" value={allUsers.find((u: any) => u.user_id === user.manager_id)?.display_name || allUsers.find((u: any) => u.user_id === user.manager_id)?.username || user.manager_id} />
+                        )}
                       </InfoCard>
                       {user.force_password_change && (
                         <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/20">
@@ -389,30 +399,6 @@ export default function UserDetailDrawer({ userId, onClose, currentUser }: Props
                     </div>
                   )}
 
-                  {/* Permissions Tab */}
-                  {activeTab === 'permissions' && (
-                    <div className="space-y-4">
-                      <InfoCard title="Role & Access">
-                        <InfoRow icon={Shield} label="Role" value={roleLabel(user.role)} />
-                        <InfoRow icon={Key} label="Auth Provider" value={user.role === 'zero_admin' ? 'Local' : (user.auth_provider === 'ldap' ? 'LDAP' : 'Local (Email)')} />
-                        {user.role === 'user_admin' && (
-                          <>
-                            <InfoRow icon={Hash} label="Max Products" value={user.max_products !== null && user.max_products !== undefined ? String(user.max_products) : 'Org default'} />
-                            <InfoRow icon={Hash} label="Max Users (can create)" value={user.max_managed_users !== null && user.max_managed_users !== undefined ? String(user.max_managed_users) : 'Org default'} />
-                          </>
-                        )}
-                        {user.manager_id && (
-                          <InfoRow icon={ChevronRight} label="Manager ID" value={user.manager_id} />
-                        )}
-                      </InfoCard>
-                      {currentUser?.role === 'zero_admin' && !isSelf && (
-                        <InfoCard title="Change Role">
-                          <p className="text-xs text-rt-text-muted mb-2">Only Zero Admin can change user roles.</p>
-                          <p className="text-[10px] text-rt-text-muted">Use the role change API endpoint to modify this user's role.</p>
-                        </InfoCard>
-                      )}
-                    </div>
-                  )}
                 </>
               )}
             </div>
