@@ -4,12 +4,15 @@ import RetraceLogo from '@/components/RetraceLogo'
 import {
   LayoutDashboard, FolderTree, Bot, Settings, Search,
   ChevronRight, Command, ClipboardList, FileText,
-  Activity, Zap, PanelLeftClose, PanelLeft, User,
+  Activity, PanelLeftClose, PanelLeft, User,
+  Blocks, Puzzle, Users,
 } from 'lucide-react'
 import { clsx } from 'clsx'
 import { motion } from 'framer-motion'
 import CommandPalette from './CommandPalette'
 import ProfilePanel from './ProfilePanel'
+import { useAuth } from '@/context/AuthContext'
+import { hasRole } from '@/utils/roles'
 
 const navigation = [
   { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard, shortcut: '1' },
@@ -17,6 +20,9 @@ const navigation = [
   { name: 'Agent', href: '/agent', icon: Bot, shortcut: '3' },
   { name: 'Automations', href: '/sops', icon: ClipboardList, shortcut: '4' },
   { name: 'Documentation', href: '/docs', icon: FileText, shortcut: '5' },
+  { name: 'MCP Builder', href: '/mcp-builder', icon: Blocks, shortcut: '6', minRole: 'user_admin' as const },
+  { name: 'MCP Explorer', href: '/extensions', icon: Puzzle, shortcut: '7', minRole: 'user_admin' as const },
+  { name: 'User Management', href: '/users', icon: Users, shortcut: '8', minRole: 'user_admin' as const },
 ]
 
 const breadcrumbMap: Record<string, string> = {
@@ -35,7 +41,10 @@ export default function LayoutCommandCenter() {
   const [profileOpen, setProfileOpen] = useState(false)
   const location = useLocation()
   const navigate = useNavigate()
-  const visibleNav = navigation
+  const { user } = useAuth()
+  const visibleNav = navigation.filter(item =>
+    !item.minRole || hasRole(user?.role, item.minRole)
+  )
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
