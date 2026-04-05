@@ -56,6 +56,7 @@ export default function Agent() {
   const [showWorkspace, setShowWorkspace] = useState(true)
   const [workspaceTab, setWorkspaceTab] = useState<'browser' | 'terminal' | 'files'>('browser')
   const [isSandboxed, setIsSandboxed] = useState(false)
+  const [activeTools, setActiveTools] = useState<string[]>([])  // tools being used right now
 
   // Debug mode — click "Agent" title 6 times → enter password → toggle appears
   const [debugMode, setDebugMode] = useState(() => localStorage.getItem('rt-debug-mode') === 'true')
@@ -396,14 +397,29 @@ export default function Agent() {
         break
       }
       case 'agent_tools': msg = { type: 'tools', content: `${data.count} tools loaded: ${(data.tools || []).join(', ')}` }; break
-      case 'agent_code': msg = { type: 'code', content: data.code, iteration: data.iteration }; break
+      case 'agent_code': {
+        msg = { type: 'code', content: data.code, iteration: data.iteration }
+        // Extract tool names for live pipeline
+        const toolMatches = (data.code || '').match(/(?:read_file|write_file|delete_file|download_file|str_replace|grep|glob_search|web_search|web_fetch|web_advanced|web_research|auto_browser|screenops|todo_write|knowledge_base)\s*\(/g)
+        if (toolMatches) {
+          setActiveTools(prev => {
+            const next = [...prev]
+            toolMatches.forEach((m: string) => { const n = m.replace(/\s*\($/, ''); if (!next.includes(n)) next.push(n) })
+            return next
+          })
+        } else if ((data.code || '').match(/terminal\s*\(/)) {
+          setActiveTools(prev => prev.includes('terminal') ? prev : [...prev, 'terminal'])
+        }
+        break
+      }
       case 'tool_output': msg = { type: 'output', content: data.output, iteration: data.iteration }; break
-      case 'agent_answer': msg = { type: 'answer', content: data.content }; break
+      case 'agent_answer': msg = { type: 'answer', content: data.content }; setActiveTools([]); break
       case 'agent_answer_chunk': {
         setStreamingAnswer(data.chunk)
         if (data.done) {
           msg = { type: 'answer', content: data.chunk }
           setStreamingAnswer(null)
+          setActiveTools([])
         }
         break
       }
@@ -1051,9 +1067,38 @@ export default function Agent() {
             {messageNodes.map((node, nodeIndex) => {
               if (node.kind === 'single') {
                 const msg = messages[node.index]
+                // Inject finished pipeline before the answer message
+                const pipelineBefore = (!debugMode && msg.type === 'answer') ? (() => {
+                  // Find the last user message before this answer
+                  let lastUserIdx = -1
+                  for (let i = node.index - 1; i >= 0; i--) {
+                    if (messages[i]?.type === 'user') { lastUserIdx = i; break }
+                  }
+                  // Only get code messages between the last user message and this answer
+                  const codesBefore = messages.slice(lastUserIdx + 1, node.index).filter(m => m.type === 'code')
+                  if (codesBefore.length === 0) return null
+                  const names: string[] = []
+                  codesBefore.forEach(m => {
+                    // Extract only the actual tool calls, not "terminal" wrapper
+                    const mm = m.content.match(/(?:read_file|write_file|delete_file|download_file|str_replace|grep|glob_search|web_search|web_fetch|web_advanced|web_research|auto_browser|screenops|todo_write|knowledge_base)\s*\(/g)
+                    if (mm) mm.forEach(x => { const n = x.replace(/\s*\($/, ''); if (!names.includes(n)) names.push(n) })
+                    // Only show "terminal" if it's explicitly called (not the wrapper)
+                    if (!mm && m.content.match(/terminal\s*\(/)) names.push('terminal')
+                  })
+                  if (names.length === 0) return null
+                  return (
+                    <div className="mb-1">
+                      <div className="inline-flex items-center gap-1.5 text-xs text-rt-text-muted/50 cursor-default">
+                        <ChevronRight className="w-3 h-3" />
+                        <span className="font-mono">{names.join(' → ')}</span>
+                      </div>
+                    </div>
+                  )
+                })() : null
                 return (
-                  <MessageBubble
-                    key={msg.id}
+                  <div key={msg.id}>
+                    {pipelineBefore}
+                    <MessageBubble
                     message={msg}
                     messages={messages}
                     messageIndex={node.index}
@@ -1070,6 +1115,7 @@ export default function Agent() {
                     hasAnswer={messages.some(m => m.type === 'answer') || streamingAnswer !== null}
                     debugMode={debugMode}
                   />
+                  </div>
                 )
               }
               const toolsMsg = messages[node.toolsIndex]
@@ -1121,6 +1167,26 @@ export default function Agent() {
                 </div>
               )
             })}
+            {/* Live tool pipeline — shows while agent is working */}
+            {!debugMode && isRunning && streamingAnswer === null && (
+              <div className="animate-fade-in">
+                {activeTools.length > 0 ? (
+                  <div className="inline-flex items-center gap-1.5 text-xs text-rt-text-muted">
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    <span className="font-mono">{activeTools.join(' → ')}</span>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 text-xs text-rt-text-muted">
+                    <div className="flex gap-1">
+                      <div className="w-1.5 h-1.5 rounded-full bg-rt-primary/50 animate-bounce" style={{ animationDelay: '0ms' }} />
+                      <div className="w-1.5 h-1.5 rounded-full bg-rt-primary/50 animate-bounce" style={{ animationDelay: '150ms' }} />
+                      <div className="w-1.5 h-1.5 rounded-full bg-rt-primary/50 animate-bounce" style={{ animationDelay: '300ms' }} />
+                    </div>
+                    <span>Thinking...</span>
+                  </div>
+                )}
+              </div>
+            )}
             {streamingAnswer !== null && (
               <div className="flex gap-4 animate-fade-in">
                 <div className="w-8 h-8 rounded-full bg-rt-primary/15 flex items-center justify-center flex-shrink-0 mt-0.5">
