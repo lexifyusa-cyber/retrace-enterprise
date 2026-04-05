@@ -358,7 +358,7 @@ function MyExtensionCard({
       className={`rounded-xl border transition-colors overflow-hidden ${
         ext.is_enabled
           ? 'border-rt-border bg-rt-surface'
-          : 'border-rt-border/50 bg-rt-surface/50 opacity-60'
+          : 'border-rt-border bg-rt-surface'
       }`}
     >
       <div className="p-4">
