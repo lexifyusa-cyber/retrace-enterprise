@@ -1620,8 +1620,13 @@ async def dashboard_stats(
         for p in products
     )
 
-    # PODs — global (no tenant/user scope)
-    pods_result = await session.execute(select(Pod))
+    # PODs — scoped to tenant's products, exclude synthetic __local__
+    pods_stmt = select(Pod).where(Pod.pod_id != "__local__")
+    if product_ids:
+        pods_stmt = pods_stmt.where(Pod.product_id.in_(product_ids))
+    else:
+        pods_stmt = pods_stmt.where(Pod.product_id.is_(None))
+    pods_result = await session.execute(pods_stmt)
     pods = pods_result.scalars().all()
     online_pods = sum(1 for p in pods if p.status == "online")
 
