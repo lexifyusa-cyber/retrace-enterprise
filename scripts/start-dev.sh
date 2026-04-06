@@ -82,7 +82,30 @@ check_python() {
 }
 
 check_python
-check_command node
+install_node() {
+    if ! command -v node &> /dev/null; then
+        echo "📦 Node.js is not installed. Installing via Homebrew..."
+        if ! command -v brew &> /dev/null; then
+            echo "❌ Homebrew is required to install Node.js. Installing Homebrew first..."
+            /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+            if [ -f "/opt/homebrew/bin/brew" ]; then
+                eval "$(/opt/homebrew/bin/brew shellenv)"
+            fi
+        fi
+        brew install node
+        echo "✅ Node.js installed successfully"
+    fi
+}
+
+install_node
+
+# Install uv (required for MCP Builder dependency management)
+if ! command -v uv &> /dev/null && [ ! -f "$HOME/.local/bin/uv" ]; then
+    echo "📦 Installing uv (Python package manager for MCP Builder)..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    echo "✅ uv installed successfully"
+fi
+
 install_go
 
 # Install and setup Podman (for sandbox container isolation)
