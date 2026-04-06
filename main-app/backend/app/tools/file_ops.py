@@ -54,6 +54,10 @@ def write_file(file_path: str, text: str) -> str:
     Returns a confirmation message or an error string.
     """
     try:
+        import html
+        # LLMs sometimes HTML-encode characters like > to &gt; in tool call args
+        text = html.unescape(text)
+
         from app.tools.terminal import _cwd
         file_path = os.path.expanduser(file_path)
         p = Path(file_path)
