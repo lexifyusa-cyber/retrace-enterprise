@@ -1530,46 +1530,50 @@ async def add_user(
     session.add(user)
     await session.flush()
 
-    # Auto-grant access to all existing tenant products
+    # Auto-grant access to manager's products (not all tenant products)
     from app.models.product_access import ProductAccess
     from app.models.product import Product
-    tenant_products_result = await session.execute(
-        select(Product.product_id).where(Product.tenant_id == resolved_tenant_id)
-    )
-    for (pid,) in tenant_products_result.all():
-        # Check not already granted
-        existing_access = await session.execute(
-            select(ProductAccess).where(
-                ProductAccess.product_id == pid,
-                ProductAccess.user_id == user.user_id,
+    manager_products_result = await session.execute(
+        select(Product.product_id).where(Product.created_by == manager_id)
+    ) if manager_id else None
+    if manager_products_result:
+        for (pid,) in manager_products_result.all():
+            existing_access = await session.execute(
+                select(ProductAccess).where(
+                    ProductAccess.product_id == pid,
+                    ProductAccess.user_id == user.user_id,
+                )
             )
-        )
-        if not existing_access.scalar_one_or_none():
-            session.add(ProductAccess(
-                product_id=pid,
-                user_id=user.user_id,
-                permission="view",
-                granted_by=current_user.user_id,
-            ))
-    # Auto-install all existing tenant MCP extensions for the new user
+            if not existing_access.scalar_one_or_none():
+                session.add(ProductAccess(
+                    product_id=pid,
+                    user_id=user.user_id,
+                    permission="view",
+                    granted_by=current_user.user_id,
+                ))
+    # Auto-install manager's MCP extensions for the new user (not all tenant MCPs)
     from app.models.mcp_extension import McpExtension
     from app.models.user_extension import UserExtension
-    tenant_exts_result = await session.execute(
-        select(McpExtension.extension_id).where(
-            McpExtension.tenant_id == resolved_tenant_id,
-            McpExtension.is_enabled == True,
-        )
-    )
-    for (ext_id,) in tenant_exts_result.all():
-        existing_ext = await session.execute(
-            select(UserExtension).where(
-                UserExtension.extension_id == ext_id,
-                UserExtension.user_id == user.user_id,
+    if manager_id:
+        manager_exts_result = await session.execute(
+            select(McpExtension.extension_id).where(
+                McpExtension.created_by == manager_id,
+                McpExtension.is_enabled == True,
             )
         )
-        if not existing_ext.scalar_one_or_none():
-            session.add(UserExtension(
-                extension_id=ext_id,
+    else:
+        manager_exts_result = None
+    if manager_exts_result:
+        for (ext_id,) in manager_exts_result.all():
+            existing_ext = await session.execute(
+                select(UserExtension).where(
+                    UserExtension.extension_id == ext_id,
+                    UserExtension.user_id == user.user_id,
+                )
+            )
+            if not existing_ext.scalar_one_or_none():
+                session.add(UserExtension(
+                    extension_id=ext_id,
                 user_id=user.user_id,
                 tenant_id=resolved_tenant_id,
                 is_enabled=True,

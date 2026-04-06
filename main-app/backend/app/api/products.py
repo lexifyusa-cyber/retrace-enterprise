@@ -102,16 +102,16 @@ async def list_products(
     session: AsyncSession = Depends(get_session),
     current_user: Optional[CurrentUser] = Depends(get_optional_user),
 ):
-    """List products. Admins see all; user_admins see tenant products; users see only products they have access to."""
+    """List products. Admins see all; user_admins see own products; users see manager's products."""
     query = select(Product).options(
         selectinload(Product.folder_groups).selectinload(FolderGroup.folder_paths)
     )
 
     if current_user and current_user.role in ("admin", "super_admin", "tenant_admin", "zero_admin"):
         pass  # Full admins see all products
-    elif current_user and current_user.role == "user_admin" and current_user.tenant_id:
-        # User admins see all products in their tenant
-        query = query.where(Product.tenant_id == current_user.tenant_id)
+    elif current_user and current_user.role == "user_admin":
+        # User admins see only products they created
+        query = query.where(Product.created_by == current_user.user_id)
     elif current_user:
         # Regular users see only products they have explicit access to
         accessible = select(ProductAccess.product_id).where(ProductAccess.user_id == current_user.user_id)
@@ -235,15 +235,14 @@ async def create_product(
         granted_by=current_user.user_id,
     ))
 
-    # Auto-grant access to all users in the same tenant
-    if current_user.tenant_id:
-        tenant_users_result = await session.execute(
+    # Auto-grant access to users managed by this user_admin (not all tenant users)
+    if current_user.role == "user_admin":
+        managed_users_result = await session.execute(
             select(User.user_id).where(
-                User.tenant_id == current_user.tenant_id,
-                User.user_id != current_user.user_id,
+                User.manager_id == current_user.user_id,
             )
         )
-        for (uid,) in tenant_users_result.all():
+        for (uid,) in managed_users_result.all():
             session.add(ProductAccess(
                 product_id=product_id,
                 user_id=uid,

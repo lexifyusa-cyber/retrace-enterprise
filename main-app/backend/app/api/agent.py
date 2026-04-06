@@ -1595,6 +1595,7 @@ async def dashboard_stats(
     from app.models.automation_run import AutomationRun
     from app.models.documentation import Documentation
     from app.models.product import Product
+    from app.models.product_access import ProductAccess
     from app.models.pod import Pod
     from app.models.conversation import Conversation
     from sqlalchemy import func
@@ -1607,10 +1608,17 @@ async def dashboard_stats(
     tenant_id = current_user.tenant_id
     user_id = current_user.user_id
 
-    # Products — filtered by tenant
+    # Products — scoped by role:
+    # admins see all, user_admins see own, users see via ProductAccess
     products_stmt = select(Product).options(selectinload(Product.folder_groups))
-    if tenant_id:
-        products_stmt = products_stmt.where(Product.tenant_id == tenant_id)
+    if current_user.role in ("admin", "super_admin", "tenant_admin", "zero_admin"):
+        pass  # admins see all
+    elif current_user.role == "user_admin":
+        products_stmt = products_stmt.where(Product.created_by == user_id)
+    else:
+        # Regular users — only products they have access to
+        accessible = select(ProductAccess.product_id).where(ProductAccess.user_id == user_id)
+        products_stmt = products_stmt.where(Product.product_id.in_(accessible))
     products_result = await session.execute(products_stmt)
     products = products_result.scalars().all()
     product_ids = [p.product_id for p in products]

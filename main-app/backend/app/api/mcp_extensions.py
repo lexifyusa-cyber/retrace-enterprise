@@ -586,16 +586,15 @@ async def create_extension(
     )
     session.add(user_ext)
 
-    # Auto-install for all users in the same tenant
-    if current_user.tenant_id:
+    # Auto-install for users managed by this user_admin (not all tenant users)
+    if current_user.role == "user_admin":
         from app.models.user import User
-        tenant_users_result = await session.execute(
+        managed_users_result = await session.execute(
             select(User.user_id).where(
-                User.tenant_id == current_user.tenant_id,
-                User.user_id != current_user.user_id,
+                User.manager_id == current_user.user_id,
             )
         )
-        for (uid,) in tenant_users_result.all():
+        for (uid,) in managed_users_result.all():
             session.add(UserExtension(
                 extension_id=ext.extension_id,
                 user_id=uid,
