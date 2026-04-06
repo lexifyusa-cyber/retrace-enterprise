@@ -227,7 +227,6 @@ class ChunkRecord(Base):
     )
     product_id: Mapped[str] = mapped_column(
         String(36),
-        ForeignKey("products.product_id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
@@ -268,7 +267,6 @@ class KnowledgeBase(Base):
     )
     product_id: Mapped[str] = mapped_column(
         String(36),
-        ForeignKey("products.product_id", ondelete="CASCADE"),
         nullable=False,
         unique=True,
         index=True,

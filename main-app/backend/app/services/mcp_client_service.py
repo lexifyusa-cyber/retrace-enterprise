@@ -191,8 +191,15 @@ class McpClientManager:
                 if not command:
                     raise ValueError("command is required for stdio transport")
 
-                # Build subprocess environment
+                # Build subprocess environment with extended PATH
                 env = dict(os.environ)
+                extra_paths = [
+                    os.path.expanduser("~/.local/bin"),
+                    "/opt/homebrew/bin",
+                    "/usr/local/bin",
+                ]
+                current_path = env.get("PATH", "")
+                env["PATH"] = ":".join(extra_paths) + ":" + current_path
                 if env_vars:
                     env.update(env_vars)
 
@@ -576,6 +583,12 @@ class McpClientManager:
                 if not command:
                     return {"status": "error", "error": "command is required for stdio transport"}
                 env = dict(os.environ)
+                extra_paths = [
+                    os.path.expanduser("~/.local/bin"),
+                    "/opt/homebrew/bin",
+                    "/usr/local/bin",
+                ]
+                env["PATH"] = ":".join(extra_paths) + ":" + env.get("PATH", "")
                 if env_vars:
                     env.update(env_vars)
                 server_params = StdioServerParameters(command=command, args=args or [], env=env)

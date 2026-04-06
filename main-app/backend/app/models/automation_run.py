@@ -26,7 +26,7 @@ class AutomationRun(Base):
         nullable=False,
         index=True,
     )
-    product_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    product_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
     trigger: Mapped[str] = mapped_column(
         String(20), nullable=False, default="scheduled"
     )  # scheduled, manual

@@ -68,8 +68,8 @@ function App() {
         <Route path="docs" element={<Documentation />} />
         <Route path="settings" element={<ProtectedRoute minRole="user_admin"><Settings /></ProtectedRoute>} />
         <Route path="users" element={<ProtectedRoute minRole="user_admin"><UserManagement /></ProtectedRoute>} />
-        <Route path="mcp-builder" element={<ProtectedRoute minRole="user_admin"><McpBuilder /></ProtectedRoute>} />
-        <Route path="extensions" element={<ProtectedRoute minRole="user_admin"><McpExtensions /></ProtectedRoute>} />
+        <Route path="mcp-builder" element={<McpBuilder />} />
+        <Route path="extensions" element={<McpExtensions />} />
       </Route>
     </Routes>
   )

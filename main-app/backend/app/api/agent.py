@@ -1586,8 +1586,11 @@ async def edit_doc(
 # ---------------------------------------------------------------------------
 
 @router.get("/dashboard-stats")
-async def dashboard_stats(session: AsyncSession = Depends(get_session)):
-    """Aggregate stats for the dashboard in a single call."""
+async def dashboard_stats(
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Aggregate stats for the dashboard, scoped to the user's tenant."""
     from app.models.sop import SOP
     from app.models.automation_run import AutomationRun
     from app.models.documentation import Documentation
@@ -1601,46 +1604,55 @@ async def dashboard_stats(session: AsyncSession = Depends(get_session)):
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     week_start = today_start - timedelta(days=today_start.weekday())
 
-    # Products (eager-load folder_groups so relationship is available in async context)
-    products_result = await session.execute(
-        select(Product).options(selectinload(Product.folder_groups))
-    )
+    tenant_id = current_user.tenant_id
+    user_id = current_user.user_id
+
+    # Products — filtered by tenant
+    products_stmt = select(Product).options(selectinload(Product.folder_groups))
+    if tenant_id:
+        products_stmt = products_stmt.where(Product.tenant_id == tenant_id)
+    products_result = await session.execute(products_stmt)
     products = products_result.scalars().all()
+    product_ids = [p.product_id for p in products]
     total_groups = sum(len(p.folder_groups) for p in products)
     trained_groups = sum(
         sum(1 for g in p.folder_groups if g.training_status == "completed")
         for p in products
     )
 
-    # PODs
+    # PODs — global (no tenant/user scope)
     pods_result = await session.execute(select(Pod))
     pods = pods_result.scalars().all()
     online_pods = sum(1 for p in pods if p.status == "online")
 
-    # Automations
-    total_sops = (await session.execute(select(func.count(SOP.sop_id)))).scalar() or 0
+    # Automations — scoped to tenant's products + unlinked SOPs
+    if product_ids:
+        sop_filter = (SOP.product_id.in_(product_ids)) | (SOP.product_id.is_(None))
+    else:
+        sop_filter = SOP.product_id.is_(None)
+    total_sops = (await session.execute(select(func.count(SOP.sop_id)).where(sop_filter))).scalar() or 0
     approved_sops = (await session.execute(
-        select(func.count(SOP.sop_id)).where(SOP.status == "approved")
+        select(func.count(SOP.sop_id)).where(sop_filter, SOP.status == "approved")
     )).scalar() or 0
     active_sops = (await session.execute(
-        select(func.count(SOP.sop_id)).where(SOP.status == "approved", SOP.is_active == True)
+        select(func.count(SOP.sop_id)).where(sop_filter, SOP.status == "approved", SOP.is_active == True)
     )).scalar() or 0
 
-    # Automation runs
-    total_runs = (await session.execute(select(func.count(AutomationRun.run_id)))).scalar() or 0
+    # Automation runs — scoped to tenant's SOPs
+    tenant_sop_ids_result = await session.execute(select(SOP.sop_id).where(sop_filter))
+    tenant_sop_ids = [r[0] for r in tenant_sop_ids_result.all()]
+    run_filter = AutomationRun.sop_id.in_(tenant_sop_ids) if tenant_sop_ids else AutomationRun.run_id.is_(None)
+    total_runs = (await session.execute(select(func.count(AutomationRun.run_id)).where(run_filter))).scalar() or 0
     completed_runs = (await session.execute(
-        select(func.count(AutomationRun.run_id)).where(AutomationRun.status == "completed")
+        select(func.count(AutomationRun.run_id)).where(run_filter, AutomationRun.status == "completed")
     )).scalar() or 0
     failed_runs = (await session.execute(
-        select(func.count(AutomationRun.run_id)).where(AutomationRun.status == "failed")
+        select(func.count(AutomationRun.run_id)).where(run_filter, AutomationRun.status == "failed")
     )).scalar() or 0
 
-    # Recent runs (last 10)
-    recent_runs_result = await session.execute(
-        select(AutomationRun)
-        .order_by(AutomationRun.started_at.desc())
-        .limit(10)
-    )
+    # Recent runs (last 10) — scoped
+    recent_runs_stmt = select(AutomationRun).where(run_filter).order_by(AutomationRun.started_at.desc()).limit(10)
+    recent_runs_result = await session.execute(recent_runs_stmt)
     recent_runs = recent_runs_result.scalars().all()
 
     # Map run sop_ids to titles
@@ -1652,25 +1664,33 @@ async def dashboard_stats(session: AsyncSession = Depends(get_session)):
         )
         sop_titles = {row[0]: row[1] for row in sop_result.all()}
 
-    # Documentation
-    total_docs = (await session.execute(select(func.count(Documentation.doc_id)))).scalar() or 0
+    # Documentation — scoped to tenant's products + unlinked docs
+    if product_ids:
+        doc_filter = (Documentation.product_id.in_(product_ids)) | (Documentation.product_id.is_(None))
+    else:
+        doc_filter = Documentation.product_id.is_(None)
+    total_docs = (await session.execute(select(func.count(Documentation.doc_id)).where(doc_filter))).scalar() or 0
     approved_docs = (await session.execute(
-        select(func.count(Documentation.doc_id)).where(Documentation.status == "approved")
+        select(func.count(Documentation.doc_id)).where(doc_filter, Documentation.status == "approved")
     )).scalar() or 0
     docs_this_week = (await session.execute(
-        select(func.count(Documentation.doc_id)).where(Documentation.created_at >= week_start)
+        select(func.count(Documentation.doc_id)).where(doc_filter, Documentation.created_at >= week_start)
     )).scalar() or 0
 
-    # Conversations
-    total_conversations = (await session.execute(select(func.count(Conversation.conversation_id)))).scalar() or 0
+    # Conversations — filtered by user
+    total_conversations = (await session.execute(
+        select(func.count(Conversation.conversation_id)).where(Conversation.user_id == user_id)
+    )).scalar() or 0
     conversations_today = (await session.execute(
-        select(func.count(Conversation.conversation_id)).where(Conversation.created_at >= today_start)
+        select(func.count(Conversation.conversation_id)).where(
+            Conversation.user_id == user_id, Conversation.created_at >= today_start
+        )
     )).scalar() or 0
 
-    # Upcoming scheduled runs
+    # Upcoming scheduled runs — scoped
     upcoming_result = await session.execute(
         select(SOP)
-        .where(SOP.status == "approved", SOP.is_active == True, SOP.next_run_at.isnot(None))
+        .where(sop_filter, SOP.status == "approved", SOP.is_active == True, SOP.next_run_at.isnot(None))
         .order_by(SOP.next_run_at.asc())
         .limit(5)
     )

@@ -20,8 +20,8 @@ const navigation = [
   { name: 'Agent', href: '/agent', icon: Bot, shortcut: '3' },
   { name: 'Automations', href: '/sops', icon: ClipboardList, shortcut: '4' },
   { name: 'Documentation', href: '/docs', icon: FileText, shortcut: '5' },
-  { name: 'MCP Builder', href: '/mcp-builder', icon: Blocks, shortcut: '6', minRole: 'user_admin' as const },
-  { name: 'MCP Explorer', href: '/extensions', icon: Puzzle, shortcut: '7', minRole: 'user_admin' as const },
+  { name: 'MCP Builder', href: '/mcp-builder', icon: Blocks, shortcut: '6' },
+  { name: 'MCP Explorer', href: '/extensions', icon: Puzzle, shortcut: '7' },
   { name: 'User Management', href: '/users', icon: Users, shortcut: '8', minRole: 'user_admin' as const },
 ]
 

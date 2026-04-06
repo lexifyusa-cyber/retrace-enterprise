@@ -185,7 +185,8 @@ class AutomationScheduler:
                     logger.warning("automation_sop_not_found", sop_id=sop_id)
                     return
 
-                steps = sop.sop_json.get("steps", [])
+                sop_data = sop.sop_json if isinstance(sop.sop_json, dict) else json.loads(sop.sop_json)
+                steps = sop_data.get("steps", [])
                 total_steps = len(steps)
 
                 # Create run record

@@ -7,11 +7,11 @@ import { podApi, productApi, groupApi, localFilesApi, emailApi } from '@/utils/a
 import { Product, Pod, FileEntry, FolderGroup } from '@/types'
 import TrainingProgressModal from '@/components/TrainingProgressModal'
 import { useAuth } from '@/context/AuthContext'
-import { isAdmin as checkIsAdmin } from '@/utils/roles'
+import { hasRole } from '@/utils/roles'
 
 export default function Products() {
   const { user: authUser } = useAuth()
-  const isAdmin = checkIsAdmin(authUser?.role)
+  const isAdmin = hasRole(authUser?.role, 'user_admin')
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [trainingProductId, setTrainingProductId] = useState<string | null>(null)
   const [showProgressModal, setShowProgressModal] = useState(false)

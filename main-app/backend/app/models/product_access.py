@@ -16,8 +16,8 @@ class ProductAccess(Base):
     __tablename__ = "product_access"
 
     access_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    product_id: Mapped[str] = mapped_column(String(36), ForeignKey("products.product_id"), nullable=False)
-    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.user_id"), nullable=False)
+    product_id: Mapped[str] = mapped_column(String(36), ForeignKey("products.product_id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False)
     permission: Mapped[str] = mapped_column(String(20), default="view")
     # view | query | edit | admin
     granted_by: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)

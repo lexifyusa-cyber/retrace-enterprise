@@ -81,8 +81,8 @@ const navigation: NavItem[] = [
   { name: 'Agent',           href: '/agent',       icon: Bot },
   { name: 'Automations',     href: '/sops',        icon: ClipboardList },
   { name: 'Documentation',   href: '/docs',        icon: FileText },
-  { name: 'MCP Builder',     href: '/mcp-builder', icon: Blocks,  minRole: 'user_admin' },
-  { name: 'MCP Explorer',    href: '/extensions',  icon: Puzzle,  minRole: 'user_admin' },
+  { name: 'MCP Builder',     href: '/mcp-builder', icon: Blocks },
+  { name: 'MCP Explorer',    href: '/extensions',  icon: Puzzle },
   { name: 'User Management', href: '/users',       icon: Users,   minRole: 'user_admin' },
 ]
 

@@ -102,12 +102,18 @@ async def list_products(
     session: AsyncSession = Depends(get_session),
     current_user: Optional[CurrentUser] = Depends(get_optional_user),
 ):
-    """List products. Admins see all; others see only products they have access to."""
+    """List products. Admins see all; user_admins see tenant products; users see only products they have access to."""
     query = select(Product).options(
         selectinload(Product.folder_groups).selectinload(FolderGroup.folder_paths)
     )
 
-    if current_user and current_user.role not in ("admin", "super_admin", "tenant_admin", "zero_admin"):
+    if current_user and current_user.role in ("admin", "super_admin", "tenant_admin", "zero_admin"):
+        pass  # Full admins see all products
+    elif current_user and current_user.role == "user_admin" and current_user.tenant_id:
+        # User admins see all products in their tenant
+        query = query.where(Product.tenant_id == current_user.tenant_id)
+    elif current_user:
+        # Regular users see only products they have explicit access to
         accessible = select(ProductAccess.product_id).where(ProductAccess.user_id == current_user.user_id)
         query = query.where(Product.product_id.in_(accessible))
 
@@ -221,8 +227,32 @@ async def create_product(
         # Add group to session - relationship maintained via product_id foreign key
         session.add(group)
     
+    # Auto-create ProductAccess for the creator
+    session.add(ProductAccess(
+        product_id=product_id,
+        user_id=current_user.user_id,
+        permission="admin",
+        granted_by=current_user.user_id,
+    ))
+
+    # Auto-grant access to all users in the same tenant
+    if current_user.tenant_id:
+        tenant_users_result = await session.execute(
+            select(User.user_id).where(
+                User.tenant_id == current_user.tenant_id,
+                User.user_id != current_user.user_id,
+            )
+        )
+        for (uid,) in tenant_users_result.all():
+            session.add(ProductAccess(
+                product_id=product_id,
+                user_id=uid,
+                permission="view",
+                granted_by=current_user.user_id,
+            ))
+
     await session.commit()
-    
+
     # Reload with relationships
     result = await session.execute(
         select(Product)
@@ -232,7 +262,7 @@ async def create_product(
         .where(Product.product_id == product_id)
     )
     product = result.scalar_one()
-    
+
     logger.info(
         "Product created",
         product_id=product_id,

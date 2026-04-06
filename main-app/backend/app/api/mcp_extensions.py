@@ -577,7 +577,7 @@ async def create_extension(
     session.add(ext)
     await session.flush()  # Get extension_id before commit
 
-    # Auto-install for the creator so they see it immediately in My Extensions
+    # Auto-install for the creator
     user_ext = UserExtension(
         extension_id=ext.extension_id,
         user_id=current_user.user_id,
@@ -585,6 +585,23 @@ async def create_extension(
         is_enabled=True,
     )
     session.add(user_ext)
+
+    # Auto-install for all users in the same tenant
+    if current_user.tenant_id:
+        from app.models.user import User
+        tenant_users_result = await session.execute(
+            select(User.user_id).where(
+                User.tenant_id == current_user.tenant_id,
+                User.user_id != current_user.user_id,
+            )
+        )
+        for (uid,) in tenant_users_result.all():
+            session.add(UserExtension(
+                extension_id=ext.extension_id,
+                user_id=uid,
+                tenant_id=current_user.tenant_id,
+                is_enabled=True,
+            ))
 
     await session.commit()
     await session.refresh(ext)

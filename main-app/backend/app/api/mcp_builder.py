@@ -8,6 +8,7 @@ from typing import List, Optional, Any
 from fastapi import APIRouter, Depends, HTTPException, File, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 import asyncio
@@ -1369,6 +1370,24 @@ async def generate_mcp_server(
 
         logger.info("mcp_builder_complete", config=mcp_servers_config, status=status)
 
+        # ── Install dependencies with uv sync ─────────────────────
+        try:
+            import subprocess as _sp
+            uv_bin = os.path.expanduser("~/.local/bin/uv")
+            if not os.path.exists(uv_bin):
+                uv_bin = "uv"  # fallback to PATH
+            uv_result = _sp.run(
+                [uv_bin, "sync"],
+                cwd=dest,
+                capture_output=True, text=True, timeout=120,
+            )
+            if uv_result.returncode == 0:
+                logger.info("mcp_builder_uv_sync_ok", dest=dest)
+            else:
+                logger.warning("mcp_builder_uv_sync_failed", stderr=uv_result.stderr[:500])
+        except Exception as uv_err:
+            logger.warning("mcp_builder_uv_sync_error", error=str(uv_err))
+
         # ── Save to registry ─────────────────────────────────────
         try:
             from app.models.mcp_server import McpServer
@@ -1402,14 +1421,12 @@ async def generate_mcp_server(
 
             # Bridge: auto-create extension + user install so it appears in My Extensions
             try:
-                import sys
                 from app.models.mcp_extension import McpExtension
                 from app.models.user_extension import UserExtension
 
-                # Use the MCP server's own venv Python (created by uv sync)
-                # so the subprocess can find the installed module
+                # Use the venv python if uv sync created it, otherwise use uv run
                 venv_python = os.path.join(dest, ".venv", "bin", "python")
-                mcp_command = venv_python if os.path.exists(venv_python) else sys.executable
+                use_venv = os.path.exists(venv_python)
 
                 # Extract expected env var names from generated server.py
                 # so the Edit dialog shows pre-filled field names for the user
@@ -1435,21 +1452,30 @@ async def generate_mcp_server(
                     logger.warning("mcp_bridge_env_vars_extract_failed", error=str(env_err))
 
                 async with async_session_maker() as bridge_session:
+                    if use_venv:
+                        mcp_command = venv_python
+                        mcp_args = ["-m", f"{module_name}.server"]
+                    else:
+                        mcp_command = "uv"
+                        mcp_args = ["run", "--directory", dest, "python", "-m", f"{module_name}.server"]
+
                     ext = McpExtension(
                         name=request.product_name,
                         description=f"Auto-generated MCP server for {request.product_name}",
                         command=mcp_command,
-                        args_json=["-m", f"{module_name}.server"],
+                        args_json=mcp_args,
                         env_vars_json=expected_env_vars if expected_env_vars else {},
                         auth_type=request.auth_type or "none",
                         is_builtin=False,
                         mcp_server_id=new_server.server_id,
                         created_by=current_user.user_id,
+                        tenant_id=current_user.tenant_id,
                         is_enabled=True,
                     )
                     bridge_session.add(ext)
                     await bridge_session.flush()
 
+                    # Auto-install for the creator
                     user_ext = UserExtension(
                         extension_id=ext.extension_id,
                         user_id=current_user.user_id,
@@ -1457,6 +1483,24 @@ async def generate_mcp_server(
                         is_enabled=True,
                     )
                     bridge_session.add(user_ext)
+
+                    # Auto-install for all users in the same tenant
+                    if current_user.tenant_id:
+                        from app.models.user import User
+                        tenant_users_result = await bridge_session.execute(
+                            select(User.user_id).where(
+                                User.tenant_id == current_user.tenant_id,
+                                User.user_id != current_user.user_id,
+                            )
+                        )
+                        for (uid,) in tenant_users_result.all():
+                            bridge_session.add(UserExtension(
+                                extension_id=ext.extension_id,
+                                user_id=uid,
+                                tenant_id=current_user.tenant_id,
+                                is_enabled=True,
+                            ))
+
                     await bridge_session.commit()
                     logger.info("mcp_builder_bridge_created", extension_id=ext.extension_id, user_id=current_user.user_id)
             except Exception as bridge_exc:
