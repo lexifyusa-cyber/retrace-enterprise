@@ -146,7 +146,7 @@ setup_podman() {
     fi
 
     # Initialize Podman machine if not exists
-    if ! podman machine info &> /dev/null; then
+    if ! podman machine inspect podman-machine-default &> /dev/null; then
         echo "📦 Initializing Podman machine (Linux VM, provider: $VM_PROVIDER)..."
         podman machine init
         echo "✅ Podman machine initialized"
