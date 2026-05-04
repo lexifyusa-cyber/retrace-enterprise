@@ -1,9 +1,9 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Plus, Package, Trash2, Play, X, Folder, FolderOpen, ChevronRight, ChevronDown, Check, FolderTree, FileCode, FileText, Image, TicketIcon, AlertTriangle, Database, Layers, File, Brain, Download, Monitor, Server, Loader2, Mail, Copy, CheckCircle } from 'lucide-react'
+import { Plus, Package, Trash2, Play, X, Folder, FolderOpen, ChevronRight, ChevronDown, Check, FolderTree, FileCode, FileText, Image, TicketIcon, AlertTriangle, Database, Layers, File, Brain, Download, Monitor, Server, Loader2, Mail, Copy, CheckCircle, RefreshCw } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import toast from 'react-hot-toast'
-import { podApi, teamApi, groupApi, localFilesApi, emailApi } from '@/utils/api'
+import { podApi, teamApi, groupApi, localFilesApi, emailApi, connectionsApi } from '@/utils/api'
 import { Team, Pod, FileEntry, FolderGroup } from '@/types'
 import TrainingProgressModal from '@/components/TrainingProgressModal'
 import { useAuth } from '@/context/AuthContext'
@@ -1155,6 +1155,10 @@ interface TrainingEntry {
   podId: string
   path: string
   contentType: string
+  // For remote-source entries (SFTP/SMB/S3/Azure): the connection_id used.
+  // null/undefined = local filesystem or remote POD agent.
+  connectionId?: string | null
+  sourceLabel?: string  // e.g. "SFTP: prod" — for display only
 }
 
 const CONTENT_TYPES = [
@@ -1163,6 +1167,13 @@ const CONTENT_TYPES = [
   { value: 'documentation', label: 'Documentation' },
   { value: 'tickets', label: 'Tickets / Issues' },
 ]
+
+const SOURCE_TYPE_LABELS: Record<string, string> = {
+  sftp: 'SFTP',
+  smb: 'SMB',
+  s3: 'S3',
+  azure_blob: 'Azure',
+}
 
 function AddGroupModal({
   teamId,
@@ -1175,12 +1186,28 @@ function AddGroupModal({
 }) {
   const localOption = { pod_id: '__local__', pod_name: 'Local' }
   const podOptions = [localOption, ...pods]
-  const [curPod, setCurPod] = useState(podOptions[0]?.pod_id || '__local__')
+
+  // Stored connections (SFTP/SMB/S3/Azure)
+  const { data: connections = [] } = useQuery({
+    queryKey: ['connections'],
+    queryFn: () => connectionsApi.list(),
+    staleTime: 30000,
+  })
+
+  // Source picker is a single select that lists pods + connections
+  // value = "pod:<id>" or "conn:<id>"
+  const [sourceValue, setSourceValue] = useState<string>(`pod:${podOptions[0]?.pod_id || '__local__'}`)
   const [curType, setCurType] = useState('other')
   const [showBrowser, setShowBrowser] = useState(false)
+  const [showRemoteBrowser, setShowRemoteBrowser] = useState(false)
   const [entries, setEntries] = useState<TrainingEntry[]>([])
   const [submitting, setSubmitting] = useState(false)
   const queryClient = useQueryClient()
+
+  const isPodSource = sourceValue.startsWith('pod:')
+  const podId = isPodSource ? sourceValue.slice(4) : '__local__'
+  const connectionId = !isPodSource ? sourceValue.slice(5) : null
+  const selectedConnection = connections.find(c => c.connection_id === connectionId)
 
   const removeEntry = (index: number) => {
     setEntries(prev => prev.filter((_, i) => i !== index))
@@ -1190,9 +1217,26 @@ function AddGroupModal({
     const existing = new Set(entries.map(e => e.path))
     const newEntries = selectedPaths
       .filter(p => !existing.has(p))
-      .map(p => ({ podId: curPod, path: p, contentType: curType }))
+      .map(p => ({ podId, path: p, contentType: curType, connectionId: null }))
     setEntries(prev => [...prev, ...newEntries])
     setShowBrowser(false)
+  }
+
+  const handleRemoteBrowseConfirm = (selectedPaths: string[]) => {
+    if (!selectedConnection) return
+    const existing = new Set(entries.map(e => e.path))
+    const label = `${SOURCE_TYPE_LABELS[selectedConnection.source_type] || selectedConnection.source_type}: ${selectedConnection.name}`
+    const newEntries = selectedPaths
+      .filter(p => !existing.has(p))
+      .map(p => ({
+        podId: '__local__',  // remote-source training stages locally then ingests
+        path: p,
+        contentType: curType,
+        connectionId: selectedConnection.connection_id,
+        sourceLabel: label,
+      }))
+    setEntries(prev => [...prev, ...newEntries])
+    setShowRemoteBrowser(false)
   }
 
   const handleSubmit = async () => {
@@ -1203,11 +1247,11 @@ function AddGroupModal({
 
     setSubmitting(true)
     try {
-      // Group entries by (podId, contentType) → one folder group per combo
-      const groups: Record<string, { podId: string; contentType: string; paths: string[] }> = {}
+      // Group entries by (podId, contentType, connectionId) → one folder group per combo
+      const groups: Record<string, { podId: string; contentType: string; paths: string[]; connectionId: string | null }> = {}
       for (const e of entries) {
-        const key = `${e.podId}::${e.contentType}`
-        if (!groups[key]) groups[key] = { podId: e.podId, contentType: e.contentType, paths: [] }
+        const key = `${e.podId}::${e.contentType}::${e.connectionId || ''}`
+        if (!groups[key]) groups[key] = { podId: e.podId, contentType: e.contentType, paths: [], connectionId: e.connectionId || null }
         groups[key].paths.push(e.path)
       }
 
@@ -1221,7 +1265,11 @@ function AddGroupModal({
           pod_id: g.podId,
           group_name: shortName,
           group_type: g.contentType,
-          folder_paths: g.paths.map(p => ({ absolute_path: p, scan_recursive: true })),
+          folder_paths: g.paths.map(p => ({
+            absolute_path: p,
+            scan_recursive: true,
+            connection_id: g.connectionId || null,
+          })),
         })
       }
 
@@ -1259,13 +1307,24 @@ function AddGroupModal({
         <div className="space-y-2 mb-3">
           <div className="flex items-center gap-2">
             <select
-              value={curPod}
-              onChange={(e) => setCurPod(e.target.value)}
+              value={sourceValue}
+              onChange={(e) => setSourceValue(e.target.value)}
               className="bg-rt-surface border border-rt-border rounded px-2 py-1.5 text-xs focus:outline-none focus:border-rt-primary flex-1 min-w-0"
             >
-              {podOptions.map((pod) => (
-                <option key={pod.pod_id} value={pod.pod_id}>{pod.pod_name}</option>
-              ))}
+              <optgroup label="Local / POD agents">
+                {podOptions.map((pod) => (
+                  <option key={pod.pod_id} value={`pod:${pod.pod_id}`}>{pod.pod_name}</option>
+                ))}
+              </optgroup>
+              {connections.length > 0 && (
+                <optgroup label="Remote sources">
+                  {connections.map((c) => (
+                    <option key={c.connection_id} value={`conn:${c.connection_id}`}>
+                      {SOURCE_TYPE_LABELS[c.source_type] || c.source_type}: {c.name}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
             </select>
             <select
               value={curType}
@@ -1277,13 +1336,18 @@ function AddGroupModal({
               ))}
             </select>
           </div>
+          {connections.length === 0 && (
+            <div className="text-[11px] text-rt-text-muted bg-rt-surface/30 rounded px-2 py-1.5">
+              💡 Add SFTP, S3, SMB or Azure Blob credentials in <a href="/connections" className="text-rt-primary hover:underline">Connections settings</a> to ingest training data from those sources.
+            </div>
+          )}
           <button
             type="button"
-            onClick={() => setShowBrowser(true)}
+            onClick={() => isPodSource ? setShowBrowser(true) : setShowRemoteBrowser(true)}
             className="w-full py-1.5 rounded bg-rt-primary text-white text-xs hover:bg-rt-primary-dark transition-colors flex items-center justify-center gap-1.5"
           >
             <FolderOpen className="w-3.5 h-3.5" />
-            Browse Folders
+            Browse {isPodSource ? 'Folders' : `${SOURCE_TYPE_LABELS[selectedConnection?.source_type || ''] || 'Remote'} Source`}
           </button>
         </div>
 
@@ -1295,7 +1359,12 @@ function AddGroupModal({
               return (
                 <div key={index} className="flex items-center gap-1.5 px-2 py-1 border-b border-rt-border last:border-b-0 hover:bg-rt-surface/30">
                   <Folder className="w-3 h-3 text-rt-primary flex-shrink-0" />
-                  <span className="flex-1 font-mono truncate text-[11px]" title={entry.path}>{entry.path.split('/').slice(-2).join('/')}</span>
+                  <div className="flex-1 min-w-0">
+                    <div className="font-mono truncate text-[11px]" title={entry.path}>{entry.path.split('/').slice(-2).join('/')}</div>
+                    {entry.sourceLabel && (
+                      <div className="text-[9px] text-rt-text-muted truncate">{entry.sourceLabel}</div>
+                    )}
+                  </div>
                   <span className="text-[10px] text-rt-text-muted flex-shrink-0">{typeLabel}</span>
                   <button onClick={() => removeEntry(index)} className="p-0.5 text-rt-text-muted hover:text-red-400"><X className="w-2.5 h-2.5" /></button>
                 </div>
@@ -1322,10 +1391,20 @@ function AddGroupModal({
         <AnimatePresence>
           {showBrowser && (
             <FileBrowserModal
-              podId={curPod}
+              podId={podId}
               selectedPaths={entries.map(e => e.path)}
               onConfirm={handleBrowseConfirm}
               onClose={() => setShowBrowser(false)}
+            />
+          )}
+          {showRemoteBrowser && selectedConnection && (
+            <RemoteBrowserModal
+              connectionId={selectedConnection.connection_id}
+              connectionName={selectedConnection.name}
+              sourceType={selectedConnection.source_type}
+              selectedPaths={entries.map(e => e.path)}
+              onConfirm={handleRemoteBrowseConfirm}
+              onClose={() => setShowRemoteBrowser(false)}
             />
           )}
         </AnimatePresence>
@@ -2033,6 +2112,179 @@ function FileBrowserModal({
           >
             Add Selected Paths
           </button>
+        </div>
+      </motion.div>
+    </motion.div>
+  )
+}
+
+
+// ---------------------------------------------------------------------------
+// RemoteBrowserModal — browse SFTP / SMB / S3 / Azure via the connections API.
+// Same UX as FileBrowserModal but talks to /api/v1/connections/{id}/list.
+// ---------------------------------------------------------------------------
+
+function RemoteBrowserModal({
+  connectionId,
+  connectionName,
+  sourceType,
+  selectedPaths,
+  onConfirm,
+  onClose,
+}: {
+  connectionId: string
+  connectionName: string
+  sourceType: string
+  selectedPaths: string[]
+  onConfirm: (paths: string[]) => void
+  onClose: () => void
+}) {
+  // Per source-type, the natural starting path varies:
+  //   sftp/smb → "/" or current user's home
+  //   s3/azure → "/" (root of bucket/container)
+  const [currentPath, setCurrentPath] = useState<string>('/')
+  const [selected, setSelected] = useState<Set<string>>(new Set(selectedPaths))
+
+  const { data, isLoading, refetch, error } = useQuery({
+    queryKey: ['conn-list', connectionId, currentPath],
+    queryFn: () => connectionsApi.listDir(connectionId, currentPath),
+    retry: false,
+  })
+
+  const entries = data?.entries ?? []
+  // Show directories first, then files
+  const dirs = entries.filter(e => e.is_dir)
+  const files = entries.filter(e => !e.is_dir)
+
+  const toggleSelect = (path: string) => {
+    setSelected(prev => {
+      const next = new Set(prev)
+      next.has(path) ? next.delete(path) : next.add(path)
+      return next
+    })
+  }
+
+  const goUp = () => {
+    if (currentPath === '/' || currentPath === '') return
+    const parent = currentPath.replace(/\/$/, '').split('/').slice(0, -1).join('/') || '/'
+    setCurrentPath(parent)
+  }
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ scale: 0.95, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.95, opacity: 0 }}
+        className="bg-rt-bg-light border border-rt-border rounded-xl p-5 w-full max-w-2xl flex flex-col h-[70vh]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <h2 className="text-base font-display font-semibold">Browse {SOURCE_TYPE_LABELS[sourceType] || sourceType}: {connectionName}</h2>
+            <p className="text-xs text-rt-text-muted mt-0.5">
+              Pick folders or files to ingest. Sub-folders are scanned recursively.
+            </p>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded hover:bg-rt-surface">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Path bar */}
+        <div className="flex items-center gap-2 mb-3 bg-rt-surface px-2.5 py-1.5 rounded text-xs">
+          <button
+            onClick={goUp}
+            disabled={currentPath === '/' || !currentPath}
+            className="px-2 py-0.5 rounded hover:bg-rt-bg-light disabled:opacity-40"
+          >
+            ↑
+          </button>
+          <span className="font-mono flex-1 truncate text-rt-text-muted">{currentPath || '/'}</span>
+          <button onClick={() => refetch()} className="p-1 rounded hover:bg-rt-bg-light text-rt-text-muted">
+            <RefreshCw className="w-3 h-3" />
+          </button>
+        </div>
+
+        {/* Listing */}
+        <div className="flex-1 overflow-y-auto border border-rt-border rounded">
+          {isLoading ? (
+            <div className="p-6 text-center text-rt-text-muted text-sm">
+              <Loader2 className="w-4 h-4 mx-auto animate-spin" />
+            </div>
+          ) : error ? (
+            <div className="p-4 text-sm text-amber-500">
+              Couldn't load: {(error as any)?.response?.data?.detail || (error as any)?.message || 'unknown error'}
+            </div>
+          ) : entries.length === 0 ? (
+            <div className="p-6 text-center text-rt-text-muted text-sm">Empty</div>
+          ) : (
+            <>
+              {dirs.map(d => (
+                <div
+                  key={d.path}
+                  className="flex items-center gap-2 px-3 py-2 border-b border-rt-border/50 hover:bg-rt-surface/40 cursor-pointer"
+                  onDoubleClick={() => setCurrentPath(d.path)}
+                >
+                  <input
+                    type="checkbox"
+                    checked={selected.has(d.path)}
+                    onChange={() => toggleSelect(d.path)}
+                    onClick={(e) => e.stopPropagation()}
+                    className="cursor-pointer"
+                  />
+                  <Folder className="w-3.5 h-3.5 text-rt-primary flex-shrink-0" />
+                  <span
+                    className="flex-1 font-mono text-xs truncate cursor-pointer"
+                    onClick={() => setCurrentPath(d.path)}
+                  >
+                    {d.name}/
+                  </span>
+                </div>
+              ))}
+              {files.map(f => (
+                <div key={f.path} className="flex items-center gap-2 px-3 py-2 border-b border-rt-border/50 hover:bg-rt-surface/40">
+                  <input
+                    type="checkbox"
+                    checked={selected.has(f.path)}
+                    onChange={() => toggleSelect(f.path)}
+                    className="cursor-pointer"
+                  />
+                  <File className="w-3.5 h-3.5 text-rt-text-muted flex-shrink-0" />
+                  <span className="flex-1 font-mono text-xs truncate">{f.name}</span>
+                  <span className="text-[10px] text-rt-text-muted">
+                    {f.size > 1024 * 1024
+                      ? `${(f.size / (1024 * 1024)).toFixed(1)} MB`
+                      : f.size > 1024
+                      ? `${(f.size / 1024).toFixed(1)} KB`
+                      : `${f.size} B`}
+                  </span>
+                </div>
+              ))}
+            </>
+          )}
+        </div>
+
+        <div className="flex items-center justify-between mt-3">
+          <span className="text-xs text-rt-text-muted">
+            {selected.size === 0 ? 'No selections' : `${selected.size} selected`}
+          </span>
+          <div className="flex gap-2">
+            <button onClick={onClose} className="btn-secondary">Cancel</button>
+            <button
+              onClick={() => onConfirm(Array.from(selected))}
+              disabled={selected.size === 0}
+              className="btn-primary"
+            >
+              Add Selected Paths
+            </button>
+          </div>
         </div>
       </motion.div>
     </motion.div>

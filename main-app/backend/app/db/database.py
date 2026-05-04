@@ -105,6 +105,8 @@ async def _run_migrations() -> None:
         ("tenants", "auto_provision_enabled", "ALTER TABLE tenants ADD COLUMN auto_provision_enabled BOOLEAN DEFAULT 0"),
         ("mcp_extensions", "auto_install", "ALTER TABLE mcp_extensions ADD COLUMN auto_install BOOLEAN DEFAULT 0"),
         ("llm_settings", "screenshot_delay_ms", "ALTER TABLE llm_settings ADD COLUMN screenshot_delay_ms INTEGER DEFAULT 2000"),
+        # Remote source connections — link folder_paths to a Connection (SFTP/SMB/S3/Azure)
+        ("folder_paths", "connection_id", "ALTER TABLE folder_paths ADD COLUMN connection_id VARCHAR(36) DEFAULT NULL"),
     ]
     async with engine.begin() as conn:
         for table, column, ddl in migrations:

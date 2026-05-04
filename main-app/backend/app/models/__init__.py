@@ -10,6 +10,7 @@ from app.models.email_connection import EmailConnection
 from app.models.email_inbox import EmailInbox
 from app.models.email_message import EmailMessage
 from app.models.channel_connection import ChannelConnection
+from app.models.connection import Connection
 
 __all__ = [
     "Pod",
@@ -23,4 +24,5 @@ __all__ = [
     "EmailInbox",
     "EmailMessage",
     "ChannelConnection",
+    "Connection",
 ]

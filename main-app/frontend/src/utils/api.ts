@@ -590,4 +590,71 @@ export const channelApi = {
   },
 }
 
+
+// ─────────────────────────────────────────────────────────────────────
+// Source-data Connections API (SFTP / SMB / S3 / Azure Blob)
+// ─────────────────────────────────────────────────────────────────────
+
+export interface SourceConnection {
+  connection_id: string
+  tenant_id: string | null
+  name: string
+  source_type: 'sftp' | 'smb' | 's3' | 'azure_blob'
+  last_tested_at: string | null
+  last_test_status: 'ok' | 'error' | null
+  last_test_error: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface SourceSchemaField {
+  name: string
+  label: string
+  type: 'string' | 'int' | 'password'
+  required: boolean
+  secret: boolean
+  default?: string | number
+}
+
+export interface SourceDirEntry {
+  name: string
+  path: string
+  is_dir: boolean
+  size: number
+}
+
+export const connectionsApi = {
+  list: async (): Promise<SourceConnection[]> => {
+    const r = await api.get('/connections/')
+    return r.data
+  },
+  schema: async (sourceType: string): Promise<{ source_type: string; fields: SourceSchemaField[] }> => {
+    const r = await api.get(`/connections/schema/${sourceType}`)
+    return r.data
+  },
+  create: async (data: { name: string; source_type: string; config: Record<string, any> }): Promise<SourceConnection> => {
+    const r = await api.post('/connections/', data)
+    return r.data
+  },
+  get: async (id: string) => {
+    const r = await api.get(`/connections/${id}`)
+    return r.data
+  },
+  update: async (id: string, data: { name?: string; config?: Record<string, any> }) => {
+    const r = await api.patch(`/connections/${id}`, data)
+    return r.data
+  },
+  delete: async (id: string) => {
+    await api.delete(`/connections/${id}`)
+  },
+  test: async (id: string): Promise<{ ok: boolean; message: string }> => {
+    const r = await api.post(`/connections/${id}/test`)
+    return r.data
+  },
+  listDir: async (id: string, path: string = '/'): Promise<{ path: string; entries: SourceDirEntry[] }> => {
+    const r = await api.get(`/connections/${id}/list`, { params: { path } })
+    return r.data
+  },
+}
+
 export default api

@@ -6,6 +6,7 @@ import toast from 'react-hot-toast'
 import axios from 'axios'
 import { useLayout } from '@/context/LayoutContext'
 import { useAuth } from '@/context/AuthContext'
+import { ConnectionsManager } from '@/pages/Connections'
 
 interface LLMSettings {
   api_url: string | null
@@ -118,6 +119,7 @@ export default function Settings() {
   const [mcpEditId, setMcpEditId] = useState<string | null>(null)
   const [mcpEditName, setMcpEditName] = useState('')
   const [channelsExpanded, setChannelsExpanded] = useState(false)
+  const [dataConnectionsExpanded, setDataConnectionsExpanded] = useState(false)
   const [channelPlatform, setChannelPlatform] = useState<'slack' | 'teams'>('slack')
   const [channelBotToken, setChannelBotToken] = useState('')
   const [channelName, setChannelName] = useState('')
@@ -1577,6 +1579,44 @@ export default function Settings() {
           </div>
         </div>
       </motion.div>
+
+      {/* Data Source Connections (SFTP / SMB / S3 / Azure) — admin only */}
+      {user?.role && ['admin', 'super_admin', 'tenant_admin', 'user_admin', 'zero_admin'].includes(user.role) && (
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.35 }}
+          className="max-w-4xl mt-6"
+        >
+          <div className="card overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setDataConnectionsExpanded((e) => !e)}
+              className="w-full flex items-center justify-between gap-3 p-3 text-left hover:bg-rt-bg-light/50 transition-colors"
+            >
+              <div className="flex items-center gap-2">
+                {dataConnectionsExpanded ? (
+                  <ChevronDown className="w-4 h-4 text-rt-text-muted" />
+                ) : (
+                  <ChevronRight className="w-4 h-4 text-rt-text-muted" />
+                )}
+                <Plug className="w-4 h-4 text-amber-400" />
+                <span className="text-sm font-headline font-semibold">Data Source Connections</span>
+              </div>
+              <span className="text-xs text-rt-text-muted">SFTP · SMB · S3 · Azure Blob</span>
+            </button>
+            {dataConnectionsExpanded && (
+              <div className="p-4 pt-3 border-t border-rt-border/50">
+                <p className="text-xs text-rt-text-muted mb-3">
+                  Stored credentials for remote sources. Once added, they show up under
+                  the Source dropdown in any team's "Add Training Data" dialog.
+                </p>
+                <ConnectionsManager compact />
+              </div>
+            )}
+          </div>
+        </motion.div>
+      )}
 
 
       {/* Company attribution */}

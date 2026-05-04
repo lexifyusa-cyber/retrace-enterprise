@@ -27,6 +27,7 @@ from app.api import terminal_ws as terminal_ws_api
 from app.api import browser_ws as browser_ws_api
 from app.api import email as email_api
 from app.api import channels as channels_api
+from app.api import connections as connections_api
 from app.services.websocket_manager import websocket_manager
 from app.db.database import init_db
 from app.models.automation_run import AutomationRun  # ensure table creation
@@ -637,6 +638,7 @@ app.include_router(agent_api.router, prefix="/api/v1/agent", tags=["Agent"])
 app.include_router(files_api.router, prefix="/api/v1/files", tags=["Local Files"])
 app.include_router(email_api.router, prefix="/api/v1/email", tags=["Email"])
 app.include_router(channels_api.router, prefix="/api/v1/channels", tags=["Channels"])
+app.include_router(connections_api.router, prefix="/api/v1/connections", tags=["Connections"])
 app.include_router(terminal_ws_api.router, tags=["Terminal WebSocket"])
 app.include_router(browser_ws_api.router, tags=["Browser WebSocket"])
 app.include_router(mcp_builder_api.router, prefix="/api/v1/mcp-builder", tags=["MCP Builder"])

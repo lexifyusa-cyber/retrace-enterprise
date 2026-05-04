@@ -21,6 +21,7 @@ import UserManagement from './pages/UserManagement'
 import McpBuilder from './pages/McpBuilder'
 import McpExtensions from './pages/McpExtensions'
 import LlmLogs from './pages/LlmLogs'
+import Connections from './pages/Connections'
 import { Loader2 } from 'lucide-react'
 import { hasRole } from './utils/roles'
 
@@ -69,6 +70,7 @@ function App() {
         <Route path="sops" element={<SOPs />} />
         <Route path="docs" element={<Documentation />} />
         <Route path="settings" element={<ProtectedRoute minRole="user_admin"><Settings /></ProtectedRoute>} />
+        <Route path="connections" element={<ProtectedRoute minRole="user_admin"><Connections /></ProtectedRoute>} />
         <Route path="users" element={<ProtectedRoute minRole="user_admin"><UserManagement /></ProtectedRoute>} />
         <Route path="llm-logs" element={<LlmLogs />} />
         <Route path="mcp-builder" element={<McpBuilder />} />

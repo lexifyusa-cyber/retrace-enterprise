@@ -32,6 +32,9 @@ class FolderPathCreate(BaseModel):
     """Schema for creating a folder path."""
     absolute_path: str
     scan_recursive: bool = True
+    # Optional remote-source connection. NULL = local filesystem (or remote
+    # POD agent). Non-null = path lives inside a Connection (SFTP/SMB/S3/Azure).
+    connection_id: Optional[str] = None
     file_filters: Optional[dict] = Field(default_factory=lambda: {"include": [], "exclude": []})
 
 
@@ -201,9 +204,14 @@ async def create_team(
                 detail=f"POD {group_data.pod_id} not found"
             )
 
-        # For __local__ pod, validate paths are under allowed browse roots
+        # For __local__ pod, validate paths are under allowed browse roots —
+        # but only for paths NOT coming from a remote source connection.
+        # Remote-source paths (SFTP/SMB/S3/Azure) live inside their connection
+        # and are staged into a temp dir at training time.
         if group_data.pod_id == "__local__":
             for path_data in group_data.folder_paths:
+                if path_data.connection_id:
+                    continue  # validated server-side via connection ACL
                 if not is_path_allowed(path_data.absolute_path):
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
@@ -241,6 +249,7 @@ async def create_team(
                 group_id=group_id,
                 absolute_path=path_data.absolute_path,
                 scan_recursive=path_data.scan_recursive,
+                connection_id=path_data.connection_id,
                 file_filters=path_data.file_filters,
             )
             group.folder_paths.append(folder_path)
@@ -691,8 +700,9 @@ async def train_team(
             detail="Team has no folder groups to train"
         )
 
-    # Collect all active folder paths and group ids
-    folder_paths: list[str] = []
+    # Collect all active folder paths (with optional connection_id for remote sources)
+    # Each item is (absolute_path, connection_id_or_None).
+    folder_specs: list[tuple[str, Optional[str]]] = []
     group_ids: list[str] = []
     for group in team.folder_groups:
         if group.training_status == "training":
@@ -700,9 +710,9 @@ async def train_team(
         group_ids.append(group.group_id)
         for fp in group.folder_paths:
             if fp.is_active:
-                folder_paths.append(fp.absolute_path)
+                folder_specs.append((fp.absolute_path, fp.connection_id))
 
-    if not folder_paths:
+    if not folder_specs:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No active folder paths found (or all groups are already training)."
@@ -714,11 +724,12 @@ async def train_team(
             group.training_status = "training"
     await session.commit()
 
-    # Launch the 4-phase pipeline in the background
+    # Launch the 4-phase pipeline in the background. The wrapper stages any
+    # remote-source paths to a temp dir first, then runs the local pipeline.
     asyncio.create_task(
-        run_team_training(
+        _train_with_remote_staging(
             team_id=team_id,
-            folder_paths=folder_paths,
+            folder_specs=folder_specs,
             group_ids=group_ids,
             team_name=team.team_name,
             team_description=team.description,
@@ -1036,3 +1047,92 @@ async def list_team_chunks(
         "offset": offset,
         "chunks": [],
     }
+
+
+# ---------------------------------------------------------------------------
+# Remote-source staging wrapper
+# ---------------------------------------------------------------------------
+
+async def _train_with_remote_staging(
+    team_id: str,
+    folder_specs: list[tuple[str, Optional[str]]],
+    group_ids: list[str],
+    team_name: str,
+    team_description: Optional[str],
+    force_full: bool,
+):
+    """Stage remote-source paths into a tenant-local temp dir, then run the
+    standard local pipeline against the staged copies.
+
+    For each (absolute_path, connection_id):
+      - connection_id is None  → the path is local; pass it through unchanged.
+      - connection_id is set   → look up the Connection, create a connector,
+                                 download the path into a temp staging dir,
+                                 and pass the staged local path to the pipeline.
+    """
+    import tempfile, asyncio as _aio
+    from app.db.database import async_session_maker
+    from app.models.connection import Connection
+    from app.services.sources import get_connector, decrypt_config
+    from app.rag.pipeline import run_team_training as _run_local
+
+    staging_root = tempfile.mkdtemp(prefix=f"retrace-train-{team_id[:8]}-")
+    local_paths: list[str] = []
+
+    # Cache decoded connectors per connection_id (one connector per source)
+    connectors: dict[str, object] = {}
+
+    async with async_session_maker() as session:
+        # Bulk-load connections referenced by this run
+        connection_ids = {cid for _, cid in folder_specs if cid}
+        if connection_ids:
+            res = await session.execute(
+                select(Connection).where(Connection.connection_id.in_(connection_ids))
+            )
+            for conn in res.scalars().all():
+                try:
+                    config = decrypt_config(conn.config_encrypted)
+                    connectors[conn.connection_id] = get_connector(conn.source_type, config)
+                except Exception as e:
+                    print(f"[STAGING] Failed to init connector {conn.name}: {e}", flush=True)
+
+    # Stage each remote path off the event loop (paramiko/boto3 are blocking)
+    loop = _aio.get_event_loop()
+    for path, connection_id in folder_specs:
+        if not connection_id:
+            local_paths.append(path)
+            continue
+        connector = connectors.get(connection_id)
+        if connector is None:
+            print(f"[STAGING] Skipping {path}: connector unavailable", flush=True)
+            continue
+        try:
+            staged = await loop.run_in_executor(
+                None,
+                lambda c=connector, p=path: c.download_to(p, staging_root, recursive=True),
+            )
+            local_paths.append(staged)
+        except Exception as e:
+            print(f"[STAGING] Failed to stage {path} from connection {connection_id}: {e}", flush=True)
+
+    # Close any connectors that opened persistent sessions
+    for c in connectors.values():
+        try:
+            close = getattr(c, "close", None)
+            if callable(close):
+                close()
+        except Exception:
+            pass
+
+    if not local_paths:
+        print(f"[STAGING] No paths staged for training (team={team_id})", flush=True)
+        return
+
+    await _run_local(
+        team_id=team_id,
+        folder_paths=local_paths,
+        group_ids=group_ids,
+        team_name=team_name,
+        team_description=team_description,
+        force_full=force_full,
+    )
