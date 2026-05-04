@@ -103,6 +103,7 @@ async def _auto_browser(
     seconds: float = 1.0,
     describe_screenshot: bool = False,
     chat_model: Any = None,
+    coord_finder_invoker: Any = None,
     conversation_id: Optional[str] = None,
     output_callback: Optional[Any] = None,
 ) -> str:
@@ -135,7 +136,11 @@ async def _auto_browser(
     try:
         session = await browser_manager.get_or_create(conversation_id)
         page = session.page
-        if not page:
+        logger.debug("host_auto_browser_call", action=action, url=url,
+                      has_page=page is not None,
+                      has_sandbox=session.sandbox_session is not None,
+                      conversation_id=conversation_id)
+        if not page and not session.sandbox_session:
             return json.dumps({"error": "Browser page not available"})
 
         # Notify workspace clients that a tool action is happening
@@ -293,12 +298,54 @@ async def _auto_browser(
             except Exception as exc:
                 return json.dumps({"error": f"screenshot_full_page failed: {exc}"})
 
-        # ── Click at coordinates (DISABLED — use click_element instead) ──
+        # ── Click at coordinates ──────────────────────────────────
         elif action == "click":
-            return json.dumps({
-                "error": "click(x, y) is disabled. Use click_element(selector) instead — "
-                "it is more reliable. Example: auto_browser(action='click_element', selector='a.headline')"
-            })
+            if x is None or y is None:
+                return json.dumps({"error": "x and y are required for click"})
+            try:
+                await page.mouse.click(int(x), int(y))
+                await asyncio.sleep(0.5)
+                session.current_url = page.url
+                session.current_title = await page.title()
+                result["clicked"] = {"x": int(x), "y": int(y)}
+                result["url"] = session.current_url
+                result["title"] = session.current_title
+            except Exception as exc:
+                return json.dumps({"error": f"click failed: {exc}"})
+
+        # ── Vision click — screenshot → coordinate finder → click ──
+        elif action == "vision_click":
+            if not text:
+                return json.dumps({"error": "text is required for vision_click — describe the element to click (e.g. 'blue submit button')"})
+            if not coord_finder_invoker:
+                return json.dumps({
+                    "error": "vision_click requires a coordinate finder API. "
+                    "Configure screenops_api_key in Settings, or use click_element(selector) instead."
+                })
+            try:
+                b64 = await session.get_screenshot_base64()
+                if not b64:
+                    return json.dumps({"error": "Screenshot capture failed for vision_click"})
+                vp = page.viewport_size or {"width": 1280, "height": 900}
+                vp_w, vp_h = vp["width"], vp["height"]
+                coords, usage = await asyncio.to_thread(
+                    coord_finder_invoker, b64, text, vp_w, vp_h, vp_w, vp_h,
+                )
+                if not coords or coords.get("x") is None or coords.get("y") is None:
+                    return json.dumps({"error": f"Could not find element: '{text}'. Try a more specific description or use click_element(selector)."})
+                cx, cy = int(coords["x"]), int(coords["y"])
+                await page.mouse.click(cx, cy)
+                await asyncio.sleep(0.5)
+                session.current_url = page.url
+                session.current_title = await page.title()
+                result["clicked"] = {"x": cx, "y": cy}
+                result["target"] = text
+                result["url"] = session.current_url
+                result["title"] = session.current_title
+                if usage:
+                    result["coord_finder_tokens"] = usage
+            except Exception as exc:
+                return json.dumps({"error": f"vision_click failed: {exc}"})
 
         # ── Click element by CSS selector ──────────────────────────
         elif action == "click_element":
@@ -459,7 +506,7 @@ async def _auto_browser(
                 return json.dumps({"error": f"analyze_page failed: {exc}"})
 
         else:
-            return json.dumps({"error": f"Unknown action: {action}. Valid actions: navigate, analyze_page, screenshot, screenshot_full_page, click_element, type, fill, read_page, scroll, press_key, hover, select_option, wait, evaluate_js, back, forward, refresh, get_url"})
+            return json.dumps({"error": f"Unknown action: {action}. Valid actions: navigate, analyze_page, screenshot, screenshot_full_page, click_element, vision_click, click, type, fill, read_page, scroll, press_key, hover, select_option, wait, evaluate_js, back, forward, refresh, get_url"})
 
         # Force an immediate screenshot push to the workspace so the user
         # sees the result of every tool action in real-time, without waiting
@@ -477,10 +524,15 @@ def build_auto_browser_tool(
     chat_model: Any = None,
     conversation_id: Optional[str] = None,
     output_callback: Optional[Any] = None,
+    coord_finder_invoker: Any = None,
 ) -> Optional[StructuredTool]:
     """Build the AutoBrowser StructuredTool.
 
     Returns None if Playwright is not installed.
+
+    *coord_finder_invoker* — optional callable built by screenops
+    ``_make_coordinate_finder_invoker``.  When provided, the ``vision_click``
+    action is fully functional; when ``None`` it returns a helpful error.
     """
     try:
         import playwright  # noqa: F401
@@ -516,6 +568,7 @@ def build_auto_browser_tool(
             seconds=seconds,
             describe_screenshot=describe_screenshot,
             chat_model=chat_model,
+            coord_finder_invoker=coord_finder_invoker,
             conversation_id=conversation_id,
             output_callback=output_callback,
         )
@@ -531,7 +584,11 @@ def build_auto_browser_tool(
             "  analyze_page             — Compare token costs: read_page vs screenshot vs multi-tile\n"
             "  screenshot(describe_screenshot=True) — Capture viewport + AI-describe\n"
             "  screenshot_full_page     — Capture ALL page tiles, bundle them into ONE LLM vision call\n"
-            "  click_element(selector)  — Click a CSS-selector element\n"
+            "  vision_click(text)       — PREFERRED for clicking: describe the element you see on screen;\n"
+            "                             takes screenshot, uses vision model to find it, clicks at coordinates.\n"
+            "  click_element(selector)  — Click by CSS selector. Only use when you have CONFIRMED the exact\n"
+            "                             selector via evaluate_js or read_page. Never guess a selector.\n"
+            "  click(x, y)             — Click at exact pixel coordinates (low-level fallback)\n"
             "  type(text)               — Type text into the focused element\n"
             "  fill(selector, text)     — Fill a form input by CSS selector\n"
             "  read_page(selector?)     — Extract text from the full page or a specific CSS selector\n"
@@ -556,6 +613,9 @@ def build_auto_browser_tool(
             "  auto_browser(action='analyze_page')  # → read_page=28K tokens, screenshot=500\n"
             "  auto_browser(action='screenshot_full_page')  # → see all tiles, find References\n"
             "  auto_browser(action='read_page', selector='.references')  # → just the links\n\n"
-            "For clicking, ALWAYS use click_element with a CSS selector, never click with x,y."
+            "CLICK PRIORITY: vision_click(text) > click_element(selector) > click(x, y).\n"
+            "Use vision_click whenever you can see and describe the element on screen — do NOT guess CSS selectors.\n"
+            "A wrong selector guess wastes 10 seconds timing out. Only use click_element when you have\n"
+            "confirmed the selector from DOM inspection (evaluate_js or read_page). Use click(x, y) only as last resort."
         ),
     )

@@ -6,7 +6,7 @@ import LayoutCommandCenter from './components/LayoutCommandCenter'
 import Dashboard from './pages/Dashboard'
 import Pods from './pages/Pods'
 import PodDetail from './pages/PodDetail'
-import Products from './pages/Products'
+import Teams from './pages/Teams'
 import Agent from './pages/Agent'
 import SOPs from './pages/SOPs'
 import Documentation from './pages/Documentation'
@@ -20,6 +20,7 @@ import SetupPage from './pages/SetupPage'
 import UserManagement from './pages/UserManagement'
 import McpBuilder from './pages/McpBuilder'
 import McpExtensions from './pages/McpExtensions'
+import LlmLogs from './pages/LlmLogs'
 import { Loader2 } from 'lucide-react'
 import { hasRole } from './utils/roles'
 
@@ -61,13 +62,15 @@ function App() {
         <Route path="dashboard" element={<Dashboard />} />
         <Route path="pods" element={<Pods />} />
         <Route path="pods/:podId" element={<PodDetail />} />
-        <Route path="groups" element={<Navigate to="/products" replace />} />
-        <Route path="products" element={<Products />} />
+        <Route path="groups" element={<Navigate to="/teams" replace />} />
+        <Route path="products" element={<Navigate to="/teams" replace />} />
+        <Route path="teams" element={<Teams />} />
         <Route path="agent" element={<Agent />} />
         <Route path="sops" element={<SOPs />} />
         <Route path="docs" element={<Documentation />} />
         <Route path="settings" element={<ProtectedRoute minRole="user_admin"><Settings /></ProtectedRoute>} />
         <Route path="users" element={<ProtectedRoute minRole="user_admin"><UserManagement /></ProtectedRoute>} />
+        <Route path="llm-logs" element={<LlmLogs />} />
         <Route path="mcp-builder" element={<McpBuilder />} />
         <Route path="extensions" element={<McpExtensions />} />
       </Route>

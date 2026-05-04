@@ -4,7 +4,7 @@ MCP Builder skill prompt supplement.
 Reads the vendored Anthropic MCP Builder reference files and produces a
 system-prompt supplement that the ReTrace CodeAct agent can follow to
 scaffold, implement, and validate a complete MCP server for the user's
-product.
+team.
 """
 
 from pathlib import Path
@@ -60,7 +60,7 @@ guide below exactly.
 
 ## Four-Phase Workflow
 
-### Phase 1 — Understand the Product (6 Mandatory Queries)
+### Phase 1 — Understand the Team (6 Mandatory Queries)
 
 You MUST run ALL 6 queries below in order. Do NOT skip any. Each query targets
 a specific category of information required to generate correct code.
@@ -151,7 +151,7 @@ This eliminates ALL guessing.
    - Store it as a constant: `API_PREFIX = "/api/v1"` (or whatever you found)
    - In the shared API client `request()` method, prepend `API_PREFIX` to every endpoint
    - All tool functions pass ONLY the route-local path (e.g., `/query`, NOT `/api/v1/query`)
-   - This prevents duplication and ensures correctness for every product
+   - This prevents duplication and ensures correctness for every team
 
 4. **CRITICAL AUTH RULE:**
    From Phase 1 Query 3, you discovered the exact auth pattern. Implement it:
@@ -251,7 +251,7 @@ You MUST run ALL validation steps below IN ORDER. Do not skip any. Fix errors be
   so you can see output. Never emit bare `print(...)` or other Python **outside** the fence.
 - **File Writing:** When using the `write_file(filename, content)` tool, you MUST pass the file content as a direct multi-line string literal. Do NOT pass undefined variable names.
 - **CRITICAL ANTI-LAZINESS RULE:** You are building an automated script. DO NOT output source code into the chat response (`Agent Answer`) for the user to copy. You MUST write all code to the disk using the `write_file` tool inside a ````python` block.
-- Do NOT skip Phase 1 — understanding the product is critical to generating
+- Do NOT skip Phase 1 — understanding the team is critical to generating
   relevant tools.
 - If builds fail, read the error output carefully and fix the code.
 - Prefer `str_replace(file, old, new)` for targeted fixes over rewriting
@@ -276,7 +276,7 @@ _EXTERNAL_API_BLOCK_URL = """
 
 ## EXTERNAL API MODE
 
-This MCP server targets an EXTERNAL third-party API, not a local product.
+This MCP server targets an EXTERNAL third-party API, not a local team.
 
 - API Documentation: {api_docs_url}
 - Base URL: {api_base_url}
@@ -308,7 +308,7 @@ _EXTERNAL_API_BLOCK_TEXT = """
 
 ## EXTERNAL API MODE
 
-This MCP server targets an EXTERNAL third-party API, not a local product.
+This MCP server targets an EXTERNAL third-party API, not a local team.
 
 - Base URL: {api_base_url}
 - Auth Type: {auth_type}
@@ -524,11 +524,11 @@ For each endpoint below, add an @mcp.tool() async function that:
 _SLIM_INTERNAL = """\
 # MCP BUILDER MODE
 
-You are building a Python MCP server at `{output_dir}` for an internal product.
+You are building a Python MCP server at `{output_dir}` for an internal team.
 You have these native tools available: `write_file`, `read_file`, `str_replace`, `delete_file`, `terminal`, `knowledge_base`, `web_search`, `web_fetch`.
 Call them directly as tool calls — do NOT write Python code blocks.
 
-## Step 1: Understand the product's API
+## Step 1: Understand the team's API
 
 Call the knowledge_base tool for each of these queries to discover exact routes, parameters, and auth:
 

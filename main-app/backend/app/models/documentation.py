@@ -20,9 +20,9 @@ class Documentation(Base):
     doc_id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=lambda: str(uuid4())
     )
-    product_id: Mapped[Optional[str]] = mapped_column(
+    team_id: Mapped[Optional[str]] = mapped_column(
         String(36),
-        ForeignKey("products.product_id", ondelete="CASCADE"),
+        ForeignKey("teams.team_id", ondelete="CASCADE"),
         nullable=True,
         index=True,
     )
@@ -47,7 +47,7 @@ class Documentation(Base):
     def to_dict(self) -> dict:
         return {
             "doc_id": self.doc_id,
-            "product_id": self.product_id,
+            "team_id": self.team_id,
             "title": self.title,
             "goal": self.goal,
             "doc_json": self.doc_json,

@@ -38,7 +38,7 @@ class User(Base):
     last_login_ip: Mapped[Optional[str]] = mapped_column(String(45), nullable=True)
     invited_by: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
     force_password_change: Mapped[bool] = mapped_column(Boolean, default=False)
-    max_products: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # per-user limit for user_admin; null = use tenant default
+    max_teams: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # per-user limit for user_admin; null = use tenant default
     max_managed_users: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # how many users a user_admin can create; null = use tenant default
     phone: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
     department: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
@@ -72,7 +72,7 @@ class User(Base):
             "is_active": self.is_active,
             "mfa_enabled": self.mfa_enabled,
             "force_password_change": self.force_password_change,
-            "max_products": self.max_products,
+            "max_teams": self.max_teams,
             "max_managed_users": self.max_managed_users,
             "last_login_at": self.last_login_at.isoformat() if self.last_login_at else None,
             "locked_until": self.locked_until.isoformat() if self.locked_until else None,

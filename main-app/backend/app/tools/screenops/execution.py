@@ -12,7 +12,9 @@ import time
 try:
     import pyautogui
     from PIL import Image
-except ImportError:
+except (ImportError, KeyError, Exception):
+    # KeyError: 'DISPLAY' on headless Linux (no X11 display)
+    # Other exceptions from pyautogui init on headless systems
     pyautogui = None  # type: ignore[assignment]
     Image = None  # type: ignore[assignment]
 

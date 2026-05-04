@@ -53,6 +53,46 @@ def create_mfa_pending_token(data: dict[str, Any]) -> str:
     return jwt.encode(to_encode, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
 
 
+# ── Signed download URLs ────────────────────────────────────────────────
+# Used so that the Teams page can hand the browser a plain
+# `<a href download>` URL, which works inside cross-origin iframes
+# (e.g. retrace.me/try). A regular Bearer-header fetch + blob download
+# is blocked there because by the time the synthetic <a>.click() fires
+# after the file has finished downloading into memory, the iframe's
+# transient user-activation flag has expired.
+DOWNLOAD_TOKEN_TTL_SECONDS = 60
+
+
+def create_download_token(user_id: str, pod_id: str) -> str:
+    """Issue a short-lived JWT scoped to a single pod download."""
+    expire = datetime.now(timezone.utc) + timedelta(seconds=DOWNLOAD_TOKEN_TTL_SECONDS)
+    payload = {
+        "sub": user_id,
+        "pod_id": pod_id,
+        "exp": expire,
+        "type": "download",
+    }
+    return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
+
+
+def verify_download_token(token: str, pod_id: str) -> Optional[str]:
+    """Verify a download token and return the user_id, or None if invalid.
+
+    The token is rejected unless the embedded `pod_id` matches *pod_id*,
+    so a token leaked for one pod can't be reused to grab another.
+    """
+    try:
+        payload = jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM])
+    except JWTError:
+        return None
+    if payload.get("type") != "download":
+        return None
+    if payload.get("pod_id") != pod_id:
+        return None
+    sub = payload.get("sub")
+    return sub if isinstance(sub, str) else None
+
+
 def verify_token(token: str, expected_type: str = "access") -> dict[str, Any] | None:
     try:
         payload = jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM])
@@ -204,3 +244,29 @@ def can_reset_password(actor_role: str, target_role: str) -> bool:
     actor_level = ROLES_HIERARCHY.get(actor_role, 0)
     target_level = ROLES_HIERARCHY.get(target_role, 0)
     return actor_level > target_level
+
+
+async def get_tenant_team_ids(current_user: CurrentUser, session: AsyncSession) -> list[str]:
+    """Get team IDs visible to the current user's tenant.
+
+    zero_admin sees all teams. Other users see only their tenant's teams.
+    """
+    from app.models.team import Team
+    from sqlalchemy import or_, text
+    if current_user.role == "zero_admin":
+        result = await session.execute(select(Team.team_id))
+    else:
+        # Include tenant's teams + prebuilt sample teams (tenant_id=None, is_prebuilt=true)
+        result = await session.execute(
+            select(Team.team_id).where(
+                or_(
+                    Team.tenant_id == current_user.tenant_id,
+                    text("json_extract(teams.metadata_json, '$.is_prebuilt') = 1"),
+                )
+            )
+        )
+    return [r[0] for r in result.all()]
+
+
+# Backwards-compatible alias (to be removed once all callers migrate)
+get_tenant_product_ids = get_tenant_team_ids

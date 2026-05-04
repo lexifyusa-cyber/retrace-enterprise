@@ -103,18 +103,18 @@ class PTYManager:
                 # Sandbox ready — spawn shell inside container
                 session = self._spawn_in_container(conversation_id, sandbox_cid)
             else:
-                # No sandbox yet. Always create a pending session.
-                # respawn_in_sandbox() will create the real shell when
-                # the agent starts and creates the sandbox container.
-                # If Podman is not available, the agent will run unsandboxed
-                # and the terminal will stay pending (user can type in chat).
-                session = PTYSession(
-                    conversation_id=conversation_id,
-                    pid=-1, fd=-1, shell="pending",
-                )
-                self._sessions[conversation_id] = session
-                logger.info("pty_pending_sandbox", conversation_id=conversation_id)
-                return session
+                # No sandbox — spawn shell directly on host
+                try:
+                    session = self._spawn_host(conversation_id)
+                    logger.info("pty_spawned_host", conversation_id=conversation_id)
+                except Exception as host_err:
+                    logger.warning("pty_host_spawn_failed", error=str(host_err), conversation_id=conversation_id)
+                    session = PTYSession(
+                        conversation_id=conversation_id,
+                        pid=-1, fd=-1, shell="pending",
+                    )
+                    self._sessions[conversation_id] = session
+                    return session
 
             self._sessions[conversation_id] = session
 
@@ -451,10 +451,9 @@ class PTYManager:
             )
 
     def _spawn_in_container(self, conversation_id: str, container_id: str) -> PTYSession:
-        """Spawn a shell inside a sandbox container."""
-        from app.services.sandbox_manager import _podman_bin
+        """Spawn a shell inside a Docker sandbox container."""
         return self._spawn_pty(conversation_id, "/bin/bash", [
-            _podman_bin(), "exec", "-it",
+            "docker", "exec", "-it",
             "-w", "/workspace",
             container_id,
             "/bin/bash",
@@ -513,9 +512,23 @@ class PTYManager:
 
             session.touch()
 
-            # Broadcast to WebSocket clients
+            # Broadcast to WebSocket clients (filter out internal markers and wrapper commands)
             if session.websocket_clients:
                 text = data.decode("utf-8", errors="replace")
+                import re as _filter_re
+                # Strip prompt setup command
+                text = _filter_re.sub(r"__rtps\(\) \{[^}]+\}; PROMPT_COMMAND=__rtps\r?\n?", '', text)
+                # Strip prompt markers
+                text = _filter_re.sub(r"\r?\n?__RTPS__:\d+:\r?\n?", '', text)
+                # Strip command wrappers: printf '\n__RTSTART_xxx__\n' ; <cmd> ; printf '\n__RTEND_xxx__:%d:\n' $?
+                text = _filter_re.sub(r"printf '\\n\\n' ; ", '', text)
+                text = _filter_re.sub(r" ; \$\?", '', text)
+                text = _filter_re.sub(r"printf '\\n__RTSTART_[a-f0-9]+__\\n' ; ", '', text)
+                text = _filter_re.sub(r" ; printf '\\n__RTEND_[a-f0-9]+__:%d:\\n' \$\?", '', text)
+                text = _filter_re.sub(r"\r?\n?__RTSTART_[a-f0-9]+__\r?\n?", '', text)
+                text = _filter_re.sub(r"\r?\n?__RTEND_[a-f0-9]+__:\d+:\r?\n?", '', text)
+                if not text.strip():
+                    continue
                 loop = self._event_loop
                 if loop is not None and loop.is_running():
                     dead = set()

@@ -50,7 +50,7 @@ _MAX_TOTAL_TEXT = 60_000
 
 _EXPANSION_FALLBACK_KEYWORDS_COUNT = 5
 
-# Cache for structural registries (product_id → registry dict)
+# Cache for structural registries (team_id → registry dict)
 _registry_cache: dict[str, tuple[dict, float]] = {}
 _REGISTRY_CACHE_TTL = 300
 
@@ -63,7 +63,7 @@ _BROAD_QUERY_HINTS = {"what", "how", "overview", "architecture", "explain", "des
 
 async def search_kb(
     query: str,
-    product_id: str,
+    team_id: str,
     api_key: str = "",
     model: str = "",
     base_url: Optional[str] = None,
@@ -77,9 +77,9 @@ async def search_kb(
     quality and come at zero extra latency).
     """
     kb_store = KnowledgeBaseStore()
-    kb_data = await kb_store.load(product_id)
+    kb_data = await kb_store.load(team_id)
     if not kb_data:
-        return "No knowledge base found for this product. Train the product first."
+        return "No knowledge base found for this team. Train the team first."
 
     project_analysis = kb_data.get("project_analysis", {})
     file_analysis: dict = kb_data.get("file_analysis", {})
@@ -109,7 +109,7 @@ async def search_kb(
     )
 
     # ── Stage 0: Structural registry search ───────────────────────
-    registry = _build_structural_registry(kb_data, product_id)
+    registry = _build_structural_registry(kb_data, team_id)
     structural_ranking = _search_structural_registry(
         registry, query, keywords, file_patterns,
     )
@@ -183,15 +183,15 @@ async def search_kb(
 # Additional public helpers for granular KB tools
 # ===================================================================
 
-async def get_product_summary(product_id: str) -> Optional[str]:
-    """Return a short product summary from the KB for embedding in the system prompt.
+async def get_team_summary(team_id: str) -> Optional[str]:
+    """Return a short team summary from the KB for embedding in the system prompt.
 
     Returns None if no KB exists.  The summary is cheap to produce (just reads
     the cached blob's project_analysis) and lets the agent answer overview
     questions without any tool call at all.
     """
     kb_store = KnowledgeBaseStore()
-    kb_data = await kb_store.load(product_id)
+    kb_data = await kb_store.load(team_id)
     if not kb_data:
         return None
 
@@ -223,16 +223,16 @@ async def get_product_summary(product_id: str) -> Optional[str]:
 
 
 async def list_kb_entries(
-    product_id: str,
+    team_id: str,
     category: str = "all",
 ) -> str:
     """List entries in the KB: key_files, directories, files, or all."""
     kb_store = KnowledgeBaseStore()
-    kb_data = await kb_store.load(product_id)
+    kb_data = await kb_store.load(team_id)
     if not kb_data:
-        return "No knowledge base found. Train the product first."
+        return "No knowledge base found. Train the team first."
 
-    registry = _build_structural_registry(kb_data, product_id)
+    registry = _build_structural_registry(kb_data, team_id)
     parts: list[str] = []
 
     if category in ("all", "key_files") and registry.get("key_files"):
@@ -262,12 +262,12 @@ async def list_kb_entries(
     return "\n".join(parts)
 
 
-async def read_kb_file(product_id: str, file_path: str) -> str:
+async def read_kb_file(team_id: str, file_path: str) -> str:
     """Read the full text of a specific file from the KB."""
     kb_store = KnowledgeBaseStore()
-    kb_data = await kb_store.load(product_id)
+    kb_data = await kb_store.load(team_id)
     if not kb_data:
-        return "No knowledge base found. Train the product first."
+        return "No knowledge base found. Train the team first."
 
     files = kb_data.get("files", {})
     file_analysis = kb_data.get("file_analysis", {})
@@ -309,7 +309,7 @@ async def read_kb_file(product_id: str, file_path: str) -> str:
     return "\n".join(parts)
 
 
-async def browse_kb_structure(product_id: str, path: str = "/") -> str:
+async def browse_kb_structure(team_id: str, path: str = "/") -> str:
     """Browse the KB folder structure at a given path.
 
     Handles paths stored with or without leading slashes and supports
@@ -317,9 +317,9 @@ async def browse_kb_structure(product_id: str, path: str = "/") -> str:
     when the KB stores paths as ``/full/repo/docs/experiments/...``.
     """
     kb_store = KnowledgeBaseStore()
-    kb_data = await kb_store.load(product_id)
+    kb_data = await kb_store.load(team_id)
     if not kb_data:
-        return "No knowledge base found. Train the product first."
+        return "No knowledge base found. Train the team first."
 
     file_analysis = kb_data.get("file_analysis", {})
     folder_analysis = kb_data.get("folder_analysis", {})
@@ -445,7 +445,7 @@ _KEY_FILE_NAMES = {
 }
 
 
-def _build_structural_registry(kb_data: dict, product_id: str) -> dict:
+def _build_structural_registry(kb_data: dict, team_id: str) -> dict:
     """Extract a structural registry from the KB blob (cached).
 
     Identifies *key files* generically (READMEs, configs, entry points, and
@@ -453,7 +453,7 @@ def _build_structural_registry(kb_data: dict, product_id: str) -> dict:
     SKILL.md.
     """
     from datetime import datetime
-    cached = _registry_cache.get(product_id)
+    cached = _registry_cache.get(team_id)
     if cached:
         data, ts = cached
         if (datetime.utcnow().timestamp() - ts) < _REGISTRY_CACHE_TTL:
@@ -490,7 +490,7 @@ def _build_structural_registry(kb_data: dict, product_id: str) -> dict:
         "all_paths": sorted(all_paths),
     }
 
-    _registry_cache[product_id] = (registry, datetime.utcnow().timestamp())
+    _registry_cache[team_id] = (registry, datetime.utcnow().timestamp())
     return registry
 
 

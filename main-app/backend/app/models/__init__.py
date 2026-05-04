@@ -2,7 +2,7 @@
 
 from app.models.pod import Pod
 from app.models.folder_group import FolderGroup, FolderPath
-from app.models.product import Product
+from app.models.team import Team
 from app.models.training import TrainingJob
 from app.models.query import QueryHistory
 from app.models.user import User
@@ -14,7 +14,7 @@ from app.models.channel_connection import ChannelConnection
 __all__ = [
     "Pod",
     "FolderGroup",
-    "Product",
+    "Team",
     "FolderPath",
     "TrainingJob",
     "QueryHistory",

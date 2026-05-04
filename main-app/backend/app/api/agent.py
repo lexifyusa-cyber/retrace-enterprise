@@ -19,9 +19,11 @@ import structlog
 from app.db.database import get_session, async_session_maker
 from app.models.agent_session import AgentSession
 from app.models.conversation import Conversation, ConversationMessage
+from app.models.llm_log import LLMLog
 from app.models.sop import SOP
 from app.services.agent_service import agent_service
 from app.core.security import CurrentUser, get_current_user
+from app.core.security import get_tenant_team_ids
 
 logger = structlog.get_logger()
 router = APIRouter()
@@ -32,7 +34,7 @@ router = APIRouter()
 # ---------------------------------------------------------------------------
 
 class AgentExecuteRequest(BaseModel):
-    product_id: Optional[str] = Field(default=None)
+    team_id: Optional[str] = Field(default=None)
     task: str = Field(..., min_length=1)
     max_iterations: int = Field(default=10, ge=1, le=30)
     conversation_id: Optional[str] = None
@@ -40,7 +42,7 @@ class AgentExecuteRequest(BaseModel):
 
 class AgentSessionResponse(BaseModel):
     session_id: str
-    product_id: str
+    team_id: str
     task: str
     status: str
     iterations: int
@@ -62,7 +64,7 @@ class AgentToolInfo(BaseModel):
 # ── Conversation schemas ─────────────────────────────────────────────────
 
 class ConversationCreateRequest(BaseModel):
-    product_id: Optional[str] = Field(default=None)
+    team_id: Optional[str] = Field(default=None)
     title: str = Field(default="New conversation", max_length=255)
 
 
@@ -79,7 +81,7 @@ class MessageSaveRequest(BaseModel):
 
 class LearnThisRequest(BaseModel):
     """Train a Q&A pair from an agent conversation."""
-    product_id: str = Field(..., min_length=1)
+    team_id: str = Field(..., min_length=1)
     question: str = Field(..., min_length=1)
     answer: str = Field(..., min_length=1)
 
@@ -88,7 +90,7 @@ class LearnThisRequest(BaseModel):
 
 class CreateSOPRequest(BaseModel):
     """Create an SOP from current conversation context."""
-    product_id: Optional[str] = Field(default=None)
+    team_id: Optional[str] = Field(default=None)
     goal: str = Field(..., min_length=1)
     messages: List[dict] = Field(..., min_length=1)
     conversation_id: Optional[str] = None
@@ -119,7 +121,7 @@ async def execute_agent_task(
     """Start an agent task execution. Returns an SSE stream."""
     logger.info(
         "agent_execute_start",
-        product_id=request.product_id,
+        team_id=request.team_id,
         task=request.task[:80],
         max_iterations=request.max_iterations,
     )
@@ -133,7 +135,7 @@ async def execute_agent_task(
 
     async def event_generator():
         async for event in agent_service.execute_task(
-            product_id=request.product_id,
+            team_id=request.team_id,
             task=request.task,
             session=session,
             max_iterations=request.max_iterations,
@@ -159,14 +161,17 @@ async def execute_agent_task(
 
 @router.get("/sessions")
 async def list_agent_sessions(
-    product_id: Optional[str] = Query(None),
+    team_id: Optional[str] = Query(None),
     limit: int = Query(20, ge=1, le=100),
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """List past agent sessions, newest first."""
+    tenant_products = await get_tenant_team_ids(current_user, session)
     q = select(AgentSession).order_by(AgentSession.created_at.desc()).limit(limit)
-    if product_id:
-        q = q.where(AgentSession.product_id == product_id)
+    q = q.where(AgentSession.team_id.in_(tenant_products))
+    if team_id:
+        q = q.where(AgentSession.team_id == team_id)
 
     result = await session.execute(q)
     sessions = result.scalars().all()
@@ -177,6 +182,7 @@ async def list_agent_sessions(
 async def get_agent_session(
     session_id: str,
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """Get a specific agent session."""
     result = await session.execute(
@@ -241,7 +247,7 @@ async def list_agent_tools(
         AgentToolInfo(name="todo_write", description="Plan and track multi-step tasks", available=True),
         AgentToolInfo(name="screenops", description="Screen-based computer automation (click, type, press)", requires_key="screenops_api_key", available=screenops_available),
         AgentToolInfo(name="auto_browser", description="Granular browser control: navigate, click, type, read pages, screenshots", available=has_playwright),
-        AgentToolInfo(name="knowledge_base", description="Product knowledge base: search, list, read, browse", available=True),
+        AgentToolInfo(name="knowledge_base", description="Team knowledge base: search, list, read, browse", available=True),
     ]
 
     for t in tools:
@@ -344,26 +350,26 @@ async def _warmup_mcp_background(user_auth_context: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Conversations — persistent per-product chat threads
+# Conversations — persistent per-team chat threads
 # ---------------------------------------------------------------------------
 
 @router.get("/conversations")
 async def list_conversations(
-    product_id: Optional[str] = Query(None),
+    team_id: Optional[str] = Query(None),
     session: AsyncSession = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    """List conversations for the current user, optionally filtered by product."""
+    """List conversations for the current user, optionally filtered by team."""
     q = (
         select(Conversation)
         .options(selectinload(Conversation.messages))
         .where(Conversation.user_id == current_user.user_id)
         .order_by(Conversation.updated_at.desc())
     )
-    if product_id == "__none__":
-        q = q.where(Conversation.product_id.is_(None))
-    elif product_id:
-        q = q.where(Conversation.product_id == product_id)
+    if team_id == "__none__":
+        q = q.where(Conversation.team_id.is_(None))
+    elif team_id:
+        q = q.where(Conversation.team_id == team_id)
     result = await session.execute(q)
     convos = result.scalars().all()
     return [c.to_dict(include_messages=False) for c in convos]
@@ -375,10 +381,10 @@ async def create_conversation(
     session: AsyncSession = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    """Create a new conversation for a product, owned by the current user."""
+    """Create a new conversation for a team, owned by the current user."""
     convo = Conversation(
         conversation_id=str(uuid4()),
-        product_id=data.product_id,
+        team_id=data.team_id,
         user_id=current_user.user_id,
         title=data.title,
     )
@@ -398,12 +404,14 @@ async def create_conversation(
 async def get_conversation(
     conversation_id: str,
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """Get a conversation with all its messages."""
     result = await session.execute(
         select(Conversation)
         .options(selectinload(Conversation.messages))
         .where(Conversation.conversation_id == conversation_id)
+        .where(Conversation.user_id == current_user.user_id)
     )
     convo = result.scalar_one_or_none()
     if not convo:
@@ -416,12 +424,14 @@ async def rename_conversation(
     conversation_id: str,
     data: ConversationRenameRequest,
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """Rename a conversation."""
     result = await session.execute(
         select(Conversation)
         .options(selectinload(Conversation.messages))
         .where(Conversation.conversation_id == conversation_id)
+        .where(Conversation.user_id == current_user.user_id)
     )
     convo = result.scalar_one_or_none()
     if not convo:
@@ -432,15 +442,53 @@ async def rename_conversation(
     return convo.to_dict(include_messages=False)
 
 
+async def _cleanup_conversation_browser(conversation_id: str) -> None:
+    """Close browser context and remove per-conversation workspace directory."""
+    import asyncio as _asyncio
+
+    # 1. Close the BrowserManager session (stops screenshot loop, notifies WS clients)
+    try:
+        from app.services.browser_manager import browser_manager
+        await browser_manager.close_session(conversation_id)
+    except Exception:
+        pass
+
+    # 2. Tell the daemon to close the browser context + remove workspace dir inside container
+    try:
+        from app.services.sandbox_manager import get_session_for_conversation
+        sandbox = get_session_for_conversation(conversation_id)
+        if sandbox:
+            import json
+            # Close browser context
+            payload = json.dumps({"action": "close_context", "conversation_id": conversation_id})
+            escaped = payload.replace("'", "'\\''")
+            await _asyncio.to_thread(
+                sandbox.execute_command,
+                f"python3 /opt/browser_control.py '{escaped}'"
+            )
+            # Remove per-conversation workspace directory inside container
+            # (also removes from host since it's a bind mount)
+            await _asyncio.to_thread(
+                sandbox.execute_command,
+                f"rm -rf '/workspace/{conversation_id}'"
+            )
+    except Exception:
+        pass
+
+
 @router.delete("/conversations/{conversation_id}")
 async def delete_conversation(
     conversation_id: str,
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """Delete a conversation, its messages, and its terminal session."""
-    result = await session.execute(
-        select(Conversation).where(Conversation.conversation_id == conversation_id)
-    )
+    query = select(Conversation).where(Conversation.conversation_id == conversation_id)
+    # Users can only delete their own conversations
+    if current_user.role != "zero_admin":
+        query = query.where(Conversation.user_id == current_user.user_id)
+
+    result = await session.execute(query)
     convo = result.scalar_one_or_none()
     if not convo:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -449,24 +497,27 @@ async def delete_conversation(
     from app.services.pty_manager import pty_manager
     pty_manager.destroy(conversation_id)
 
+    # Clean up browser context and per-conversation workspace
+    await _cleanup_conversation_browser(conversation_id)
+
     await session.delete(convo)
     return {"status": "deleted", "conversation_id": conversation_id}
 
 
 @router.delete("/conversations")
 async def delete_all_conversations(
-    product_id: Optional[str] = Query(None),
+    team_id: Optional[str] = Query(None),
     session: AsyncSession = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    """Delete all conversations for the current user, optionally filtered by product."""
+    """Delete all conversations for the current user, optionally filtered by team."""
     from app.services.pty_manager import pty_manager
 
     q = select(Conversation).where(Conversation.user_id == current_user.user_id)
-    if product_id == "__none__":
-        q = q.where(Conversation.product_id.is_(None))
-    elif product_id:
-        q = q.where(Conversation.product_id == product_id)
+    if team_id == "__none__":
+        q = q.where(Conversation.team_id.is_(None))
+    elif team_id:
+        q = q.where(Conversation.team_id == team_id)
 
     result = await session.execute(q)
     convos = result.scalars().all()
@@ -474,13 +525,17 @@ async def delete_all_conversations(
 
     for convo in convos:
         pty_manager.destroy(convo.conversation_id)
+        await _cleanup_conversation_browser(convo.conversation_id)
         await session.delete(convo)
 
     return {"status": "deleted", "count": count}
 
 
 @router.get("/conversations/{conversation_id}/terminal")
-async def get_terminal_status(conversation_id: str):
+async def get_terminal_status(
+    conversation_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
     """Check whether a PTY session is active for a conversation."""
     from app.services.pty_manager import pty_manager
     session = pty_manager.get(conversation_id)
@@ -495,12 +550,14 @@ async def save_messages(
     conversation_id: str,
     data: MessageSaveRequest,
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """Bulk save messages to a conversation (appends to existing messages)."""
     result = await session.execute(
         select(Conversation)
         .options(selectinload(Conversation.messages))
         .where(Conversation.conversation_id == conversation_id)
+        .where(Conversation.user_id == current_user.user_id)
     )
     convo = result.scalar_one_or_none()
     if not convo:
@@ -537,10 +594,13 @@ async def save_messages(
 async def clear_messages(
     conversation_id: str,
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """Clear all messages from a conversation (keeps the conversation)."""
     result = await session.execute(
-        select(Conversation).where(Conversation.conversation_id == conversation_id)
+        select(Conversation)
+        .where(Conversation.conversation_id == conversation_id)
+        .where(Conversation.user_id == current_user.user_id)
     )
     convo = result.scalar_one_or_none()
     if not convo:
@@ -668,6 +728,7 @@ def _sop_json_to_markdown(sop: dict) -> str:
 async def create_sop(
     data: CreateSOPRequest,
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """Create an SOP from the current conversation context. Returns SSE stream."""
     import json as json_mod
@@ -747,7 +808,7 @@ async def create_sop(
         sop_id = str(uuid4())
         sop = SOP(
             sop_id=sop_id,
-            product_id=data.product_id,
+            team_id=data.team_id,
             title=sop_data.get("title", data.goal[:100]),
             goal=data.goal,
             sop_json=sop_data,
@@ -757,7 +818,7 @@ async def create_sop(
         session.add(sop)
         await session.flush()
 
-        logger.info("sop_created", sop_id=sop_id, product_id=data.product_id, title=sop.title)
+        logger.info("sop_created", sop_id=sop_id, team_id=data.team_id, title=sop.title)
         yield _sse("sop_done", {"sop_id": sop_id, "title": sop_data.get("title", data.goal[:100]), "sop_markdown": sop_markdown})
 
     return StreamingResponse(
@@ -769,17 +830,20 @@ async def create_sop(
 
 @router.get("/sops")
 async def list_sops(
-    product_id: Optional[str] = Query(None),
+    team_id: Optional[str] = Query(None),
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
-    """List all SOPs for a product, newest first. product_id=__none__ lists product-less (general) automations."""
+    """List all SOPs for a team, newest first. team_id=__none__ lists team-less (general) automations."""
+    tenant_products = await get_tenant_team_ids(current_user, session)
     q = select(SOP)
-    if product_id == "__none__":
-        q = q.where(SOP.product_id.is_(None))
-    elif product_id:
-        q = q.where(SOP.product_id == product_id)
+    q = q.where(SOP.team_id.in_(tenant_products))
+    if team_id == "__none__":
+        q = q.where(SOP.team_id.is_(None))
+    elif team_id:
+        q = q.where(SOP.team_id == team_id)
     else:
-        raise HTTPException(status_code=422, detail="product_id is required (use a product UUID or __none__ for general)")
+        raise HTTPException(status_code=422, detail="team_id is required (use a team UUID or __none__ for general)")
     result = await session.execute(q.order_by(SOP.created_at.desc()))
     sops = result.scalars().all()
     return [s.to_dict() for s in sops]
@@ -789,6 +853,7 @@ async def list_sops(
 async def get_sop(
     sop_id: str,
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """Get a specific SOP."""
     result = await session.execute(
@@ -804,6 +869,7 @@ async def get_sop(
 async def delete_sop(
     sop_id: str,
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """Delete an SOP."""
     result = await session.execute(
@@ -821,6 +887,7 @@ async def approve_sop(
     sop_id: str,
     data: ApproveAutomationRequest = ApproveAutomationRequest(),
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """Approve an automation with optional scheduling."""
     result = await session.execute(
@@ -850,7 +917,7 @@ async def approve_sop(
     # Add/remove scheduler job
     from app.services.scheduler_service import automation_scheduler
     if data.schedule_type != "none" and data.schedule_config:
-        automation_scheduler.add_automation_job(sop_id, sop.product_id, data.schedule_type, data.schedule_config)
+        automation_scheduler.add_automation_job(sop_id, sop.team_id, data.schedule_type, data.schedule_config)
     else:
         automation_scheduler.remove_automation_job(sop_id)
 
@@ -923,6 +990,7 @@ def _calculate_next_run(schedule_type: str, config: dict) -> "datetime":
 async def manual_run_automation(
     sop_id: str,
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """Trigger a manual run of an automation."""
     from app.models.sop import SOP
@@ -934,7 +1002,7 @@ async def manual_run_automation(
         raise HTTPException(status_code=400, detail="Automation has no steps to execute")
 
     from app.services.scheduler_service import automation_scheduler
-    await automation_scheduler.run_now(sop_id, sop.product_id)
+    await automation_scheduler.run_now(sop_id, sop.team_id, user_id=current_user.user_id)
     return {"status": "started", "sop_id": sop_id}
 
 
@@ -985,7 +1053,7 @@ async def update_schedule(
 
     from app.services.scheduler_service import automation_scheduler
     if data.schedule_type != "none" and data.schedule_config:
-        automation_scheduler.add_automation_job(sop_id, sop.product_id, data.schedule_type, data.schedule_config)
+        automation_scheduler.add_automation_job(sop_id, sop.team_id, data.schedule_type, data.schedule_config)
     else:
         automation_scheduler.remove_automation_job(sop_id)
 
@@ -1156,7 +1224,7 @@ def _extract_key_phrases(text: str) -> str:
 
 class CreateDocRequest(BaseModel):
     """Create a documentation article from current conversation context."""
-    product_id: Optional[str] = Field(default=None)
+    team_id: Optional[str] = Field(default=None)
     goal: str = Field(..., min_length=1)
     messages: List[dict] = Field(..., min_length=1)
     conversation_id: Optional[str] = None
@@ -1296,6 +1364,7 @@ def _build_doc_context(messages: list[dict]) -> str:
 async def create_doc(
     data: CreateDocRequest,
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """Create a documentation article from the conversation's Q&A content. Returns SSE stream."""
     import json as json_mod
@@ -1384,7 +1453,7 @@ async def create_doc(
         doc_id = str(uuid4())
         doc = Documentation(
             doc_id=doc_id,
-            product_id=data.product_id,
+            team_id=data.team_id,
             title=doc_data.get("title", data.goal[:100]),
             goal=data.goal,
             doc_json=doc_data,
@@ -1394,7 +1463,7 @@ async def create_doc(
         session.add(doc)
         await session.flush()
 
-        logger.info("doc_created", doc_id=doc_id, product_id=data.product_id, title=doc.title)
+        logger.info("doc_created", doc_id=doc_id, team_id=data.team_id, title=doc.title)
         yield _sse("doc_done", {"doc_id": doc_id, "title": doc_data.get("title", data.goal[:100]), "doc_markdown": doc_markdown})
 
     return StreamingResponse(
@@ -1406,18 +1475,21 @@ async def create_doc(
 
 @router.get("/docs")
 async def list_docs(
-    product_id: Optional[str] = Query(None),
+    team_id: Optional[str] = Query(None),
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
-    """List documentation for a product, newest first. product_id=__none__ lists general (no product) articles."""
+    """List documentation for a team, newest first. team_id=__none__ lists general (no team) articles."""
     from app.models.documentation import Documentation
+    tenant_products = await get_tenant_team_ids(current_user, session)
     q = select(Documentation)
-    if product_id == "__none__":
-        q = q.where(Documentation.product_id.is_(None))
-    elif product_id:
-        q = q.where(Documentation.product_id == product_id)
+    q = q.where(Documentation.team_id.in_(tenant_products))
+    if team_id == "__none__":
+        q = q.where(Documentation.team_id.is_(None))
+    elif team_id:
+        q = q.where(Documentation.team_id == team_id)
     else:
-        raise HTTPException(status_code=422, detail="product_id is required (use a product UUID or __none__ for general)")
+        raise HTTPException(status_code=422, detail="team_id is required (use a team UUID or __none__ for general)")
     result = await session.execute(q.order_by(Documentation.created_at.desc()))
     docs = result.scalars().all()
     return [d.to_dict() for d in docs]
@@ -1427,6 +1499,7 @@ async def list_docs(
 async def get_doc(
     doc_id: str,
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """Get a specific documentation article."""
     from app.models.documentation import Documentation
@@ -1443,6 +1516,7 @@ async def get_doc(
 async def delete_doc(
     doc_id: str,
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """Delete a documentation article."""
     from app.models.documentation import Documentation
@@ -1460,6 +1534,7 @@ async def delete_doc(
 async def approve_doc(
     doc_id: str,
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """Approve a documentation article (draft → approved)."""
     from app.models.documentation import Documentation
@@ -1482,6 +1557,7 @@ async def approve_doc(
 async def edit_doc(
     data: EditDocRequest,
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """Edit an existing documentation article based on user instructions. Returns SSE stream."""
     import json as json_mod
@@ -1594,8 +1670,8 @@ async def dashboard_stats(
     from app.models.sop import SOP
     from app.models.automation_run import AutomationRun
     from app.models.documentation import Documentation
-    from app.models.product import Product
-    from app.models.product_access import ProductAccess
+    from app.models.team import Team
+    from app.models.team_access import TeamAccess
     from app.models.pod import Pod
     from app.models.conversation import Conversation
     from sqlalchemy import func
@@ -1608,41 +1684,53 @@ async def dashboard_stats(
     tenant_id = current_user.tenant_id
     user_id = current_user.user_id
 
-    # Products — scoped by role:
-    # admins see all, user_admins see own, users see via ProductAccess
-    products_stmt = select(Product).options(selectinload(Product.folder_groups))
-    if current_user.role in ("admin", "super_admin", "tenant_admin", "zero_admin"):
-        pass  # admins see all
+    # Products — scoped by tenant + role:
+    # zero_admin sees all; other admins see their tenant; user_admins see own;
+    # regular users see via TeamAccess
+    from sqlalchemy import or_, text
+    _prebuilt_filter = text("json_extract(teams.metadata_json, '$.is_prebuilt') = 1")
+    products_stmt = select(Team).options(selectinload(Team.folder_groups))
+    if current_user.role == "zero_admin":
+        pass  # zero_admin sees all tenants
+    elif current_user.role in ("admin", "super_admin", "tenant_admin"):
+        products_stmt = products_stmt.where(or_(Team.tenant_id == tenant_id, _prebuilt_filter))
     elif current_user.role == "user_admin":
-        products_stmt = products_stmt.where(Product.created_by == user_id)
+        products_stmt = products_stmt.where(or_(
+            (Team.tenant_id == tenant_id) & (Team.created_by == user_id),
+            _prebuilt_filter,
+        ))
     else:
-        # Regular users — only products they have access to
-        accessible = select(ProductAccess.product_id).where(ProductAccess.user_id == user_id)
-        products_stmt = products_stmt.where(Product.product_id.in_(accessible))
+        # Regular users — only teams they have access to + prebuilt
+        accessible = select(TeamAccess.team_id).where(TeamAccess.user_id == user_id)
+        products_stmt = products_stmt.where(or_(
+            (Team.tenant_id == tenant_id) & Team.team_id.in_(accessible),
+            _prebuilt_filter,
+        ))
     products_result = await session.execute(products_stmt)
-    products = products_result.scalars().all()
-    product_ids = [p.product_id for p in products]
-    total_groups = sum(len(p.folder_groups) for p in products)
+    teams = products_result.scalars().all()
+    team_ids = [p.team_id for p in teams]
+    total_groups = sum(len(p.folder_groups) for p in teams)
     trained_groups = sum(
         sum(1 for g in p.folder_groups if g.training_status == "completed")
-        for p in products
+        for p in teams
     )
 
-    # PODs — scoped to tenant's products, exclude synthetic __local__
+    # PODs — scoped to tenant's teams, exclude synthetic __local__
     pods_stmt = select(Pod).where(Pod.pod_id != "__local__")
-    if product_ids:
-        pods_stmt = pods_stmt.where(Pod.product_id.in_(product_ids))
+    if team_ids:
+        pods_stmt = pods_stmt.where(Pod.team_id.in_(team_ids))
     else:
-        pods_stmt = pods_stmt.where(Pod.product_id.is_(None))
+        pods_stmt = pods_stmt.where(Pod.team_id.is_(None))
     pods_result = await session.execute(pods_stmt)
     pods = pods_result.scalars().all()
     online_pods = sum(1 for p in pods if p.status == "online")
 
-    # Automations — scoped to tenant's products + unlinked SOPs
-    if product_ids:
-        sop_filter = (SOP.product_id.in_(product_ids)) | (SOP.product_id.is_(None))
+    # Automations — scoped to tenant's teams only
+    if team_ids:
+        sop_filter = SOP.team_id.in_(team_ids)
     else:
-        sop_filter = SOP.product_id.is_(None)
+        # No teams for this tenant — show nothing
+        sop_filter = SOP.team_id.is_(None)
     total_sops = (await session.execute(select(func.count(SOP.sop_id)).where(sop_filter))).scalar() or 0
     approved_sops = (await session.execute(
         select(func.count(SOP.sop_id)).where(sop_filter, SOP.status == "approved")
@@ -1677,11 +1765,12 @@ async def dashboard_stats(
         )
         sop_titles = {row[0]: row[1] for row in sop_result.all()}
 
-    # Documentation — scoped to tenant's products + unlinked docs
-    if product_ids:
-        doc_filter = (Documentation.product_id.in_(product_ids)) | (Documentation.product_id.is_(None))
+    # Documentation — scoped to tenant's teams only
+    if team_ids:
+        doc_filter = Documentation.team_id.in_(team_ids)
     else:
-        doc_filter = Documentation.product_id.is_(None)
+        # No teams for this tenant — show nothing
+        doc_filter = Documentation.team_id.is_(None)
     total_docs = (await session.execute(select(func.count(Documentation.doc_id)).where(doc_filter))).scalar() or 0
     approved_docs = (await session.execute(
         select(func.count(Documentation.doc_id)).where(doc_filter, Documentation.status == "approved")
@@ -1690,13 +1779,17 @@ async def dashboard_stats(
         select(func.count(Documentation.doc_id)).where(doc_filter, Documentation.created_at >= week_start)
     )).scalar() or 0
 
-    # Conversations — filtered by user
+    # Conversations — user's own conversations + conversations on their teams
+    conv_filter = or_(
+        Conversation.user_id == user_id,
+        Conversation.team_id.in_(team_ids) if team_ids else Conversation.conversation_id.is_(None),
+    )
     total_conversations = (await session.execute(
-        select(func.count(Conversation.conversation_id)).where(Conversation.user_id == user_id)
+        select(func.count(Conversation.conversation_id)).where(conv_filter)
     )).scalar() or 0
     conversations_today = (await session.execute(
         select(func.count(Conversation.conversation_id)).where(
-            Conversation.user_id == user_id, Conversation.created_at >= today_start
+            conv_filter, Conversation.created_at >= today_start
         )
     )).scalar() or 0
 
@@ -1711,13 +1804,13 @@ async def dashboard_stats(
 
     # Products with coverage data
     product_coverage = []
-    for p in products:
+    for p in teams:
         total = len(p.folder_groups)
         trained = sum(1 for g in p.folder_groups if g.training_status == "completed")
         in_progress = sum(1 for g in p.folder_groups if g.training_status == "training")
         product_coverage.append({
-            "product_id": p.product_id,
-            "product_name": p.product_name,
+            "team_id": p.team_id,
+            "team_name": p.team_name,
             "total_groups": total,
             "trained_groups": trained,
             "in_progress_groups": in_progress,
@@ -1743,7 +1836,7 @@ async def dashboard_stats(
             "total_pods": len(pods),
             "total_conversations": total_conversations,
             "conversations_today": conversations_today,
-            "total_products": len(products),
+            "total_teams": len(teams),
         },
         "recent_runs": [
             {
@@ -1756,14 +1849,14 @@ async def dashboard_stats(
             {
                 "sop_id": s.sop_id,
                 "title": s.title,
-                "product_id": s.product_id,
+                "team_id": s.team_id,
                 "schedule_type": s.schedule_type,
                 "schedule_config": s.schedule_config,
                 "next_run_at": s.next_run_at.isoformat() if s.next_run_at else None,
             }
             for s in upcoming
         ],
-        "product_coverage": product_coverage,
+        "team_coverage": product_coverage,
     }
 
 
@@ -1864,3 +1957,80 @@ async def sandbox_status(
     """Check if sandboxing is available (Podman installed + image built)."""
     from app.services.sandbox_manager import is_sandbox_available
     return is_sandbox_available()
+
+
+# ---------------------------------------------------------------------------
+# LLM Logs — developer-mode viewer for every LLM request/response
+# ---------------------------------------------------------------------------
+
+@router.get("/llm-logs/conversations")
+async def list_llm_log_conversations(
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """List conversations (with metadata) that have at least one LLM log entry
+    for the current user. Used to populate the conversation dropdown in the
+    dev-mode LLM Logs viewer."""
+    # Get distinct conversation_ids from llm_logs for this user
+    log_result = await session.execute(
+        select(LLMLog.conversation_id)
+        .where(LLMLog.user_id == current_user.user_id)
+        .where(LLMLog.conversation_id.is_not(None))
+        .distinct()
+    )
+    conv_ids = [row[0] for row in log_result.fetchall() if row[0]]
+
+    if not conv_ids:
+        return []
+
+    # Fetch conversation metadata (title, timestamps) for those IDs
+    conv_result = await session.execute(
+        select(Conversation)
+        .where(Conversation.conversation_id.in_(conv_ids))
+        .where(Conversation.user_id == current_user.user_id)
+        .order_by(Conversation.updated_at.desc())
+    )
+    conversations = conv_result.scalars().all()
+    convs_by_id = {c.conversation_id: c for c in conversations}
+
+    # Also count logs per conversation
+    from sqlalchemy import func
+    count_result = await session.execute(
+        select(LLMLog.conversation_id, func.count(LLMLog.log_id))
+        .where(LLMLog.user_id == current_user.user_id)
+        .where(LLMLog.conversation_id.in_(conv_ids))
+        .group_by(LLMLog.conversation_id)
+    )
+    counts = {row[0]: row[1] for row in count_result.fetchall()}
+
+    out = []
+    for cid in conv_ids:
+        conv = convs_by_id.get(cid)
+        out.append({
+            "conversation_id": cid,
+            "title": conv.title if conv else "(deleted)",
+            "team_id": conv.team_id if conv else None,
+            "updated_at": conv.updated_at.isoformat() if conv and conv.updated_at else None,
+            "log_count": counts.get(cid, 0),
+        })
+    # Sort: most recently updated first, then by log count
+    out.sort(key=lambda x: (x["updated_at"] or ""), reverse=True)
+    return out
+
+
+@router.get("/llm-logs")
+async def get_llm_logs(
+    conversation_id: str = Query(...),
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Get all LLM log entries for a specific conversation (owned by current user).
+    Returns entries sorted by creation time (oldest first for timeline view)."""
+    result = await session.execute(
+        select(LLMLog)
+        .where(LLMLog.user_id == current_user.user_id)
+        .where(LLMLog.conversation_id == conversation_id)
+        .order_by(LLMLog.created_at.asc())
+    )
+    logs = result.scalars().all()
+    return [log.to_dict() for log in logs]

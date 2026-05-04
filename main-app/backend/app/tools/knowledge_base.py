@@ -52,7 +52,7 @@ class KnowledgeBaseToolInput(BaseModel):
 
 def _knowledge_base_dispatcher(
     action: str,
-    product_id: str,
+    team_id: str,
     api_key: str,
     model: str,
     base_url: Optional[str],
@@ -69,7 +69,7 @@ def _knowledge_base_dispatcher(
             return "Error: action='search' requires a non-empty 'query'."
         return search_knowledge_base(
             query=query.strip(),
-            product_id=product_id,
+            team_id=team_id,
             api_key=api_key,
             model=model,
             base_url=base_url,
@@ -77,13 +77,13 @@ def _knowledge_base_dispatcher(
             agent_keywords=keywords,
         )
     if action == "list":
-        return list_kb_entries_tool(product_id=product_id, category=category or "all")
+        return list_kb_entries_tool(team_id=team_id, category=category or "all")
     if action == "read_file":
         if not (file_path or "").strip():
             return "Error: action='read_file' requires a non-empty 'file_path'."
-        return read_kb_file_tool(product_id=product_id, file_path=file_path.strip())
+        return read_kb_file_tool(team_id=team_id, file_path=file_path.strip())
     if action == "browse":
-        return browse_kb_structure_tool(product_id=product_id, path=(path or "/").strip())
+        return browse_kb_structure_tool(team_id=team_id, path=(path or "/").strip())
     return f"Error: unknown action '{action}'. Use one of: search, list, read_file, browse."
 
 
@@ -93,14 +93,14 @@ def _knowledge_base_dispatcher(
 
 def search_knowledge_base(
     query: str,
-    product_id: str,
+    team_id: str,
     api_key: str = "",
     model: str = "",
     base_url: Optional[str] = None,
     top_k: int = 10,
     agent_keywords: Optional[list[str]] = None,
 ) -> str:
-    """Search the product's trained knowledge base using fast hybrid retrieval.
+    """Search the team's trained knowledge base using fast hybrid retrieval.
 
     Uses deterministic keyword expansion (+ optional agent-provided keywords),
     structural registry, keyword search, and RRF fusion.  No internal LLM calls.
@@ -112,7 +112,7 @@ def search_knowledge_base(
             from app.rag.kb_search import search_kb
             return await search_kb(
                 query=query,
-                product_id=product_id,
+                team_id=team_id,
                 api_key=api_key,
                 model=model,
                 base_url=base_url,
@@ -120,7 +120,7 @@ def search_knowledge_base(
                 agent_keywords=agent_keywords,
             )
         except Exception as exc:
-            logger.error("knowledge_base_search_error", query=query, product_id=product_id, error=str(exc))
+            logger.error("knowledge_base_search_error", query=query, team_id=team_id, error=str(exc))
             return f"Error searching knowledge base: {str(exc)}"
 
     return _run_async(_async_search())
@@ -131,16 +131,16 @@ def search_knowledge_base(
 # ---------------------------------------------------------------------------
 
 def list_kb_entries_tool(
-    product_id: str,
+    team_id: str,
     category: str = "all",
 ) -> str:
     """List entries in the knowledge base: key_files, directories, files, or all."""
     async def _async_list() -> str:
         try:
             from app.rag.kb_search import list_kb_entries
-            return await list_kb_entries(product_id=product_id, category=category)
+            return await list_kb_entries(team_id=team_id, category=category)
         except Exception as exc:
-            logger.error("kb_list_entries_error", product_id=product_id, error=str(exc))
+            logger.error("kb_list_entries_error", team_id=team_id, error=str(exc))
             return f"Error listing KB entries: {str(exc)}"
 
     return _run_async(_async_list())
@@ -151,7 +151,7 @@ def list_kb_entries_tool(
 # ---------------------------------------------------------------------------
 
 def read_kb_file_tool(
-    product_id: str,
+    team_id: str,
     file_path: str,
 ) -> str:
     """Read the full content of a specific file from the knowledge base.
@@ -162,9 +162,9 @@ def read_kb_file_tool(
     async def _async_read() -> str:
         try:
             from app.rag.kb_search import read_kb_file
-            return await read_kb_file(product_id=product_id, file_path=file_path)
+            return await read_kb_file(team_id=team_id, file_path=file_path)
         except Exception as exc:
-            logger.error("kb_read_file_error", product_id=product_id, file_path=file_path, error=str(exc))
+            logger.error("kb_read_file_error", team_id=team_id, file_path=file_path, error=str(exc))
             return f"Error reading KB file: {str(exc)}"
 
     return _run_async(_async_read())
@@ -175,7 +175,7 @@ def read_kb_file_tool(
 # ---------------------------------------------------------------------------
 
 def browse_kb_structure_tool(
-    product_id: str,
+    team_id: str,
     path: str = "/",
 ) -> str:
     """Browse the knowledge base folder structure at a given path.
@@ -186,9 +186,9 @@ def browse_kb_structure_tool(
     async def _async_browse() -> str:
         try:
             from app.rag.kb_search import browse_kb_structure
-            return await browse_kb_structure(product_id=product_id, path=path)
+            return await browse_kb_structure(team_id=team_id, path=path)
         except Exception as exc:
-            logger.error("kb_browse_error", product_id=product_id, path=path, error=str(exc))
+            logger.error("kb_browse_error", team_id=team_id, path=path, error=str(exc))
             return f"Error browsing KB structure: {str(exc)}"
 
     return _run_async(_async_browse())
@@ -199,24 +199,24 @@ def browse_kb_structure_tool(
 # ---------------------------------------------------------------------------
 
 def make_knowledge_base_tools(
-    product_id: str,
-    product_description: Optional[str] = None,
+    team_id: str,
+    team_description: Optional[str] = None,
     api_key: str = "",
     model: str = "",
     base_url: Optional[str] = None,
 ) -> list:
-    """Create the single knowledge_base StructuredTool for a product."""
+    """Create the single knowledge_base StructuredTool for a team."""
     from langchain_core.tools import StructuredTool
 
     description = (
-        "Product knowledge base tool with four actions (use the 'action' parameter):\n"
+        "Team knowledge base tool with four actions (use the 'action' parameter):\n"
         "- **search**: Fast hybrid search. Requires 'query'; also provide 'keywords' (list of synonyms/related terms) for better recall. Optional 'top_k' (1-20).\n"
         "- **list**: List what's in the KB. Use 'category': 'all' | 'key_files' | 'directories' | 'files'.\n"
         "- **read_file**: Read full content of a file by 'file_path'. Use after search. Supports fuzzy path matching.\n"
         "- **browse**: Browse folder structure. Use 'path' (default '/'). Like 'ls' for the KB."
     )
-    if product_description:
-        description += f"\n\nProduct: {product_description[:300]}"
+    if team_description:
+        description += f"\n\nTeam: {team_description[:300]}"
 
     def _kb_tool(
         action: str,
@@ -229,7 +229,7 @@ def make_knowledge_base_tools(
     ) -> str:
         return _knowledge_base_dispatcher(
             action=action,
-            product_id=product_id,
+            team_id=team_id,
             api_key=api_key,
             model=model,
             base_url=base_url,

@@ -1,7 +1,7 @@
 """
-Product-assistant query API.
+Team-assistant query API.
 
-POST /api/v1/product-assistant/query
+POST /api/v1/team-assistant/query
   → retrieve the most relevant knowledge for a question using
     LLM-expanded semantic search over the encrypted KB blob.
 """
@@ -21,22 +21,22 @@ router = APIRouter()
 
 # ── Request / Response schemas ────────────────────────────────────────────
 
-class ProductAssistantQuery(BaseModel):
+class TeamAssistantQuery(BaseModel):
     question: str = Field(..., min_length=1, max_length=5000)
-    product_id: str = Field(..., min_length=1)
+    team_id: str = Field(..., min_length=1)
     top_k: int = Field(default=10, ge=1, le=50)
 
 
-class ProductAssistantResponse(BaseModel):
+class TeamAssistantResponse(BaseModel):
     result: str
     query: str
 
 
 # ── Endpoint ──────────────────────────────────────────────────────────────
 
-@router.post("/query", response_model=ProductAssistantResponse)
-async def product_assistant_query(
-    body: ProductAssistantQuery,
+@router.post("/query", response_model=TeamAssistantResponse)
+async def team_assistant_query(
+    body: TeamAssistantQuery,
     session: AsyncSession = Depends(get_session),
 ):
     """Retrieve the most relevant knowledge for a question."""
@@ -50,7 +50,7 @@ async def product_assistant_query(
 
     result = await search_kb(
         query=body.question,
-        product_id=body.product_id,
+        team_id=body.team_id,
         api_key=api_key,
         model=llm.get("model_name", "gpt-4o-mini"),
         base_url=llm.get("api_url"),
@@ -58,10 +58,10 @@ async def product_assistant_query(
     )
 
     logger.info(
-        "product_assistant_query",
-        product_id=body.product_id,
+        "team_assistant_query",
+        team_id=body.team_id,
         question=body.question[:80],
         result_len=len(result),
     )
 
-    return ProductAssistantResponse(result=result, query=body.question)
+    return TeamAssistantResponse(result=result, query=body.question)

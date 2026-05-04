@@ -21,7 +21,7 @@ logger = structlog.get_logger()
 _CLASSIFIER_SYSTEM = """\
 You are a query routing engine for a knowledge management system.
 
-The system contains indexed knowledge about a software product organized into
+The system contains indexed knowledge about a software team organized into
 these content types:
   • "code"              — source code chunks (functions, classes, modules)
   • "doc"               — documentation (markdown, PDF, docx, HTML)
@@ -146,8 +146,8 @@ class QueryClassifier:
                 strategy="broad",
             )
 
-    async def get_available_components(self, product_ids: list[str]) -> list[str]:
-        """Return distinct component values for the given products.
+    async def get_available_components(self, team_ids: list[str]) -> list[str]:
+        """Return distinct component values for the given teams.
 
         Previously read from ChromaDB; now returns an empty list since
         embeddings have been removed.

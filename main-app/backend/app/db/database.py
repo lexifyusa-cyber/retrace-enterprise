@@ -81,12 +81,12 @@ async def _run_migrations() -> None:
         ("users", "force_password_change", "ALTER TABLE users ADD COLUMN force_password_change BOOLEAN DEFAULT 0"),
         ("users", "updated_at", "ALTER TABLE users ADD COLUMN updated_at DATETIME DEFAULT NULL"),
         # Tenant scoping
-        ("products", "tenant_id", "ALTER TABLE products ADD COLUMN tenant_id VARCHAR(36) DEFAULT NULL"),
-        ("products", "created_by", "ALTER TABLE products ADD COLUMN created_by VARCHAR(36) DEFAULT NULL"),
+        ("teams", "tenant_id", "ALTER TABLE teams ADD COLUMN tenant_id VARCHAR(36) DEFAULT NULL"),
+        ("teams", "created_by", "ALTER TABLE teams ADD COLUMN created_by VARCHAR(36) DEFAULT NULL"),
         ("email_connections", "tenant_id", "ALTER TABLE email_connections ADD COLUMN tenant_id VARCHAR(36) DEFAULT NULL"),
         ("channel_connections", "tenant_id", "ALTER TABLE channel_connections ADD COLUMN tenant_id VARCHAR(36) DEFAULT NULL"),
-        ("tenants", "max_products_per_user_admin", "ALTER TABLE tenants ADD COLUMN max_products_per_user_admin INTEGER DEFAULT 10"),
-        ("users", "max_products", "ALTER TABLE users ADD COLUMN max_products INTEGER DEFAULT NULL"),
+        ("tenants", "max_teams_per_user_admin", "ALTER TABLE tenants ADD COLUMN max_teams_per_user_admin INTEGER DEFAULT 10"),
+        ("users", "max_teams", "ALTER TABLE users ADD COLUMN max_teams INTEGER DEFAULT NULL"),
         ("tenants", "ldap_require_ssl", "ALTER TABLE tenants ADD COLUMN ldap_require_ssl BOOLEAN DEFAULT 0"),
         ("tenants", "smtp_config", "ALTER TABLE tenants ADD COLUMN smtp_config JSON DEFAULT NULL"),
         ("users", "phone", "ALTER TABLE users ADD COLUMN phone VARCHAR(30) DEFAULT NULL"),
@@ -104,6 +104,7 @@ async def _run_migrations() -> None:
         ("tenants", "max_managed_users_per_user_admin", "ALTER TABLE tenants ADD COLUMN max_managed_users_per_user_admin INTEGER DEFAULT 50"),
         ("tenants", "auto_provision_enabled", "ALTER TABLE tenants ADD COLUMN auto_provision_enabled BOOLEAN DEFAULT 0"),
         ("mcp_extensions", "auto_install", "ALTER TABLE mcp_extensions ADD COLUMN auto_install BOOLEAN DEFAULT 0"),
+        ("llm_settings", "screenshot_delay_ms", "ALTER TABLE llm_settings ADD COLUMN screenshot_delay_ms INTEGER DEFAULT 2000"),
     ]
     async with engine.begin() as conn:
         for table, column, ddl in migrations:
@@ -117,12 +118,12 @@ async def _run_migrations() -> None:
             "UPDATE mcp_extensions SET auto_install = 1 WHERE is_builtin = 1 AND name = 'ServiceNow'"
         ))
 
-        # Make product_id nullable on tables that previously required it
+        # Make team_id nullable on tables that previously required it
         nullable_migrations = [
-            ("conversations", "product_id"),
-            ("agent_sessions", "product_id"),
-            ("sops", "product_id"),
-            ("documentation", "product_id"),
+            ("conversations", "team_id"),
+            ("agent_sessions", "team_id"),
+            ("sops", "team_id"),
+            ("documentation", "team_id"),
             ("users", "username"),
             ("users", "hashed_password"),
         ]

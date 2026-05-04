@@ -25,11 +25,12 @@ import {
   Blocks,
   Users,
   Puzzle,
+  Code2,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { clsx } from 'clsx'
 import { useAuth } from '@/context/AuthContext'
-import { agentApi, productApi, AGENT_GENERAL_SCOPE } from '@/utils/api'
+import { agentApi, teamApi, AGENT_GENERAL_SCOPE } from '@/utils/api'
 import { hasRole } from '@/utils/roles'
 import ProfilePanel from './ProfilePanel'
 
@@ -56,7 +57,12 @@ function UserMenu({ onOpenProfile }: { onOpenProfile?: () => void }) {
       <button
         onClick={async () => {
           await logout()
-          navigate('/login')
+          // If inside an iframe (trial mode), tell parent to navigate back
+          if (window.self !== window.top) {
+            window.parent.postMessage({ type: 'retrace-logout' }, '*')
+          } else {
+            navigate('/login')
+          }
         }}
         className="text-rt-text-muted hover:text-rt-accent transition-colors p-1"
         title="Sign out"
@@ -73,17 +79,20 @@ interface NavItem {
   icon: LucideIcon
   /** Minimum role required to see this item. Omit = visible to all. */
   minRole?: string
+  /** Only show when developer mode is enabled (via Settings easter egg). */
+  devModeOnly?: boolean
 }
 
 const navigation: NavItem[] = [
   { name: 'Dashboard',       href: '/dashboard',   icon: LayoutDashboard },
-  { name: 'Products',        href: '/products',    icon: FolderTree },
+  { name: 'Teams',        href: '/teams',    icon: FolderTree },
   { name: 'Agent',           href: '/agent',       icon: Bot },
   { name: 'Automations',     href: '/sops',        icon: ClipboardList },
   { name: 'Documentation',   href: '/docs',        icon: FileText },
   { name: 'MCP Builder',     href: '/mcp-builder', icon: Blocks },
   { name: 'MCP Explorer',    href: '/extensions',  icon: Puzzle },
   { name: 'User Management', href: '/users',       icon: Users,   minRole: 'user_admin' },
+  { name: 'LLM Logs',        href: '/llm-logs',    icon: Code2,   devModeOnly: true },
 ]
 
 // ---------------------------------------------------------------------------
@@ -228,14 +237,14 @@ interface SearchResult {
   id: string
   title: string
   subtitle: string
-  type: 'product' | 'automation' | 'documentation' | 'page' | 'setting'
+  type: 'team' | 'automation' | 'documentation' | 'page' | 'setting'
   icon: LucideIcon
   href: string
 }
 
 const staticPages: SearchResult[] = [
   { id: 'page-dashboard', title: 'Dashboard', subtitle: 'Overview and stats', type: 'page', icon: LayoutDashboard, href: '/dashboard' },
-  { id: 'page-products', title: 'Products', subtitle: 'Manage your products', type: 'page', icon: FolderTree, href: '/products' },
+  { id: 'page-teams', title: 'Teams', subtitle: 'Manage your teams', type: 'page', icon: FolderTree, href: '/teams' },
   { id: 'page-agent', title: 'Agent', subtitle: 'AI-powered task execution', type: 'page', icon: Bot, href: '/agent' },
   { id: 'page-automations', title: 'Automations', subtitle: 'Manage workflows', type: 'page', icon: ClipboardList, href: '/sops' },
   { id: 'page-docs', title: 'Documentation', subtitle: 'Knowledge articles', type: 'page', icon: FileText, href: '/docs' },
@@ -263,21 +272,21 @@ function GlobalSearch() {
     setLoaded(true)
     try {
       const items: SearchResult[] = []
-      // Products
-      const products = await productApi.list()
-      for (const p of products) {
+      // Teams
+      const teams = await teamApi.list()
+      for (const p of teams) {
         items.push({
-          id: `product-${p.product_id}`,
-          title: p.product_name,
-          subtitle: `Product · ${p.folder_groups?.length || 0} folder groups`,
-          type: 'product',
+          id: `team-${p.team_id}`,
+          title: p.team_name,
+          subtitle: `Team · ${p.folder_groups?.length || 0} folder groups`,
+          type: 'team',
           icon: Package,
-          href: `/products`,
+          href: `/teams`,
         })
       }
       // SOPs
-      const trainedProducts = products.filter((p: any) => p.folder_groups?.some((g: any) => g.training_status === 'completed'))
-      const sopScopes = [AGENT_GENERAL_SCOPE, ...trainedProducts.map((p: any) => p.product_id)]
+      const trainedTeams = teams.filter((p: any) => p.folder_groups?.some((g: any) => g.training_status === 'completed'))
+      const sopScopes = [AGENT_GENERAL_SCOPE, ...trainedTeams.map((p: any) => p.team_id)]
       for (const scope of sopScopes) {
         try {
           const sops = await agentApi.listSOPs(scope)
@@ -379,7 +388,7 @@ function GlobalSearch() {
 
   const typeColors: Record<string, string> = {
     page: 'bg-rt-primary-container/20 text-rt-primary-container border border-rt-primary-container/30',
-    product: 'bg-blue-500/15 text-blue-400 border border-blue-500/30',
+    team: 'bg-blue-500/15 text-blue-400 border border-blue-500/30',
     automation: 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30',
     documentation: 'bg-indigo-500/15 text-indigo-400 border border-indigo-500/30',
     setting: 'bg-rt-surface/80 text-rt-text border border-rt-border/50',
@@ -506,9 +515,29 @@ export default function Layout() {
   const [profileOpen, setProfileOpen] = useState(false)
   const [notifOpen, setNotifOpen] = useState(false)
   const { user } = useAuth()
-  const visibleNav = navigation.filter(item =>
-    !item.minRole || hasRole(user?.role, item.minRole)
+
+  // Track developer mode (set via Settings page easter egg: 10 clicks on
+  // the Intelligence Engine icon + password). Stored in localStorage as
+  // 'rt-dev-mode' = 'true'. Listen for changes via storage events.
+  const [devMode, setDevMode] = useState(
+    () => localStorage.getItem('rt-dev-mode') === 'true'
   )
+  useEffect(() => {
+    const onStorage = () => setDevMode(localStorage.getItem('rt-dev-mode') === 'true')
+    window.addEventListener('storage', onStorage)
+    // Also poll every second to catch same-tab changes (since storage event only fires cross-tab)
+    const interval = setInterval(onStorage, 1000)
+    return () => {
+      window.removeEventListener('storage', onStorage)
+      clearInterval(interval)
+    }
+  }, [])
+
+  const visibleNav = navigation.filter(item => {
+    if (item.minRole && !hasRole(user?.role, item.minRole)) return false
+    if (item.devModeOnly && !devMode) return false
+    return true
+  })
   const canAccessSettings = hasRole(user?.role, 'user_admin')
 
   return (
@@ -567,7 +596,7 @@ export default function Layout() {
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Top App Bar — glassmorphism */}
-        <header className="h-20 flex items-center justify-between px-10 bg-rt-bg/70 backdrop-blur-md flex-shrink-0 z-30 relative">
+        <header className="h-12 flex items-center justify-between px-10 bg-rt-bg/70 backdrop-blur-md flex-shrink-0 z-30 relative">
           {/* Global Search */}
           <GlobalSearch />
 
@@ -599,6 +628,7 @@ export default function Layout() {
           <Outlet />
         </main>
       </div>
+
     </div>
   )
 }

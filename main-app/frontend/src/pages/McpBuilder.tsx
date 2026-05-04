@@ -5,9 +5,9 @@ import { FolderTree, Blocks, AlertCircle, Copy, CheckCircle2, ChevronDown, Chevr
 import { localFilesApi } from '../utils/api'
 import type { FileEntry } from '../types'
 
-interface Product {
-  product_id: string
-  product_name: string
+interface Team {
+  team_id: string
+  team_name: string
 }
 
 interface EndpointParam {
@@ -31,7 +31,7 @@ interface EndpointInfo {
 interface McpServerEntry {
   server_id: string
   name: string
-  product_name: string
+  team_name: string
   destination_folder: string
   module_name: string
   mcp_config_json: any
@@ -40,7 +40,7 @@ interface McpServerEntry {
   api_docs_url?: string
   api_base_url?: string
   auth_type?: string
-  kb_product_id?: string
+  kb_team_id?: string
   selected_endpoints_json?: any[]
   status: string // running | stopped | error
   created_at: string
@@ -83,8 +83,8 @@ export default function McpBuilder() {
   const _saved = loadSessionState()
 
   const navigate = useNavigate()
-  const [products, setProducts] = useState<Product[]>([])
-  const [selectedProductId, setSelectedProductId] = useState<string>(_saved.selectedProductId ?? '')
+  const [teams, setTeams] = useState<Team[]>([])
+  const [selectedTeamId, setSelectedTeamId] = useState<string>(_saved.selectedTeamId ?? '')
 
   const [endpoints, setEndpoints] = useState<EndpointInfo[] | null>(_saved.endpoints ?? null)
   const [isAnalyzing, setIsAnalyzing] = useState(false)
@@ -116,7 +116,7 @@ export default function McpBuilder() {
   const [detectedBaseUrl, setDetectedBaseUrl] = useState<string | null>(_saved.detectedBaseUrl ?? null)
   const [detectedAuthType, setDetectedAuthType] = useState<string | null>(_saved.detectedAuthType ?? null)
   const [detectedAuthDetails, setDetectedAuthDetails] = useState<string | null>(_saved.detectedAuthDetails ?? null)
-  const [kbProductId, setKbProductId] = useState<string | null>(null)
+  const [kbTeamId, setKbTeamId] = useState<string | null>(null)
   const [pagesCrawled, setPagesCrawled] = useState<number>(_saved.pagesCrawled ?? 0)
   const [analyzePhase, setAnalyzePhase] = useState<string>('')
   // MCP Server registry
@@ -170,9 +170,9 @@ export default function McpBuilder() {
     setDetectedAuthType('')
     setDetectedAuthDetails('')
     setPagesCrawled(0)
-    setKbProductId(null)
+    setKbTeamId(null)
     setDestinationFolder('')
-    setSelectedProductId(null)
+    setSelectedTeamId(null)
     setCopiedCmd(false)
     sessionStorage.removeItem('mcp_builder_state')
   }, [])
@@ -255,14 +255,14 @@ export default function McpBuilder() {
   // Persist key state to sessionStorage on every change
   useEffect(() => {
     saveSessionState({
-      selectedProductId, endpoints, result,
+      selectedTeamId, endpoints, result,
       generationPhase, generationLogs, sourceMode, externalApiName,
       externalSourceType, apiDocsUrl, apiDocsText, detectedBaseUrl,
       detectedAuthType, detectedAuthDetails, pagesCrawled,
       currentStep,
     })
   }, [
-    selectedProductId, endpoints, result,
+    selectedTeamId, endpoints, result,
     generationPhase, generationLogs, sourceMode, externalApiName,
     externalSourceType, apiDocsUrl, apiDocsText, detectedBaseUrl,
     detectedAuthType, detectedAuthDetails, pagesCrawled,
@@ -288,7 +288,7 @@ export default function McpBuilder() {
           setDetectedBaseUrl(analysisResult.detectedBaseUrl)
           setDetectedAuthType(analysisResult.detectedAuthType)
           setDetectedAuthDetails(analysisResult.detectedAuthDetails)
-          setKbProductId(analysisResult.kbProductId)
+          setKbTeamId(analysisResult.kbTeamId)
           setPagesCrawled(analysisResult.pagesCrawled)
           saveSessionState({
             ...loadSessionState(),
@@ -296,7 +296,7 @@ export default function McpBuilder() {
             detectedBaseUrl: analysisResult.detectedBaseUrl,
             detectedAuthType: analysisResult.detectedAuthType,
             detectedAuthDetails: analysisResult.detectedAuthDetails,
-            kbProductId: analysisResult.kbProductId,
+            kbTeamId: analysisResult.kbTeamId,
             pagesCrawled: analysisResult.pagesCrawled,
           })
         }
@@ -345,12 +345,12 @@ export default function McpBuilder() {
     text: string
   } | null>(null)
 
-  // Fetch products on mount
+  // Fetch teams on mount
   useEffect(() => {
-    async function fetchProducts() {
+    async function fetchTeams() {
       try {
         const token = localStorage.getItem('rt_access_token')
-        const res = await fetch('/api/v1/products', {
+        const res = await fetch('/api/v1/teams', {
           headers: { 'Authorization': `Bearer ${token}` }
         })
         if (res.ok) {
@@ -358,14 +358,14 @@ export default function McpBuilder() {
           const trained = data.filter((p: any) =>
             p.folder_groups?.some((g: any) => g.training_status === 'completed')
           )
-          setProducts(trained)
-          if (trained.length > 0) setSelectedProductId(trained[0].product_id)
+          setTeams(trained)
+          if (trained.length > 0) setSelectedTeamId(trained[0].team_id)
         }
       } catch (e) {
-        console.error("Failed to load products", e)
+        console.error("Failed to load teams", e)
       }
     }
-    fetchProducts()
+    fetchTeams()
   }, [])
 
   // Auto-scroll terminal logs
@@ -388,7 +388,7 @@ export default function McpBuilder() {
   }
 
   const handleAnalyze = async () => {
-    if (sourceMode === 'internal' && !selectedProductId) return
+    if (sourceMode === 'internal' && !selectedTeamId) return
     if (sourceMode === 'external') {
       if (!externalApiName) return
       if (externalSourceType === 'url' && !apiDocsUrl) return
@@ -420,7 +420,7 @@ export default function McpBuilder() {
         const response = await fetch('/api/v1/mcp-builder/discover', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-          body: JSON.stringify({ product_id: selectedProductId })
+          body: JSON.stringify({ team_id: selectedTeamId })
         })
         if (!response.ok) {
           const err = await response.json()
@@ -434,7 +434,7 @@ export default function McpBuilder() {
         saveSessionState({ ...loadSessionState(), endpoints: mapped })
         return result
       } else {
-        let effectiveKbId = kbProductId
+        let effectiveKbId = kbTeamId
         if (!effectiveKbId) {
           const body = {
             api_name: externalApiName,
@@ -453,14 +453,14 @@ export default function McpBuilder() {
             throw new Error(err.detail || 'Failed to fetch documentation')
           }
           const crawlData = await response.json()
-          effectiveKbId = crawlData.kb_product_id
+          effectiveKbId = crawlData.kb_team_id
         }
 
         const kbId = effectiveKbId!
         const analyzeResponse = await fetch('/api/v1/mcp-builder/analyze-kb', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-          body: JSON.stringify({ api_name: externalApiName, kb_product_id: kbId })
+          body: JSON.stringify({ api_name: externalApiName, kb_team_id: kbId })
         })
         if (!analyzeResponse.ok) {
           const err = await analyzeResponse.json()
@@ -475,7 +475,7 @@ export default function McpBuilder() {
           detectedBaseUrl: data.base_url || null,
           detectedAuthType: data.auth_type || 'none',
           detectedAuthDetails: data.auth_details || null,
-          kbProductId: data.kb_product_id || kbId,
+          kbTeamId: data.kb_team_id || kbId,
           pagesCrawled: data.endpoints?.length || 0,
           error: mapped.length === 0 ? 'No API endpoints were discovered. Try a different documentation URL.' : null,
         }
@@ -497,7 +497,7 @@ export default function McpBuilder() {
         setDetectedBaseUrl(analysisResult.detectedBaseUrl)
         setDetectedAuthType(analysisResult.detectedAuthType)
         setDetectedAuthDetails(analysisResult.detectedAuthDetails)
-        setKbProductId(analysisResult.kbProductId)
+        setKbTeamId(analysisResult.kbTeamId)
         setPagesCrawled(analysisResult.pagesCrawled)
       }
       if (analysisResult.error) {
@@ -537,8 +537,8 @@ export default function McpBuilder() {
     setGenerationLogs([])
 
     const isExternal = sourceMode === 'external'
-    const prod = products.find(p => p.product_id === selectedProductId)
-    const prodName = isExternal ? externalApiName : (prod ? prod.product_name : 'Unknown Product')
+    const prod = teams.find(p => p.team_id === selectedTeamId)
+    const prodName = isExternal ? externalApiName : (prod ? prod.team_name : 'Unknown Team')
     const safeName = prodName.toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_')
 
     // Save generation flag to sessionStorage so we can resume on remount
@@ -548,7 +548,7 @@ export default function McpBuilder() {
       const token = localStorage.getItem('rt_access_token')
 
       const payload: any = {
-        product_name: prodName,
+        team_name: prodName,
         selected_endpoints: selectedEndpoints,
         destination_folder: destinationFolder || `~/mcp-servers/${safeName}`
       }
@@ -565,9 +565,9 @@ export default function McpBuilder() {
         payload.api_base_url = detectedBaseUrl
         payload.auth_type = detectedAuthType
         payload.auth_details = detectedAuthDetails
-        payload.kb_product_id = kbProductId
+        payload.kb_team_id = kbTeamId
       } else {
-        payload.product_id = selectedProductId
+        payload.team_id = selectedTeamId
       }
 
       const response = await fetch('/api/v1/mcp-builder/generate', {
@@ -734,10 +734,10 @@ export default function McpBuilder() {
 
   const getEffectiveDestFolder = useCallback(() => {
     // Find the destination folder from the most recent built server or from form input
-    const safeName = (sourceMode === 'external' ? externalApiName : products.find(p => p.product_id === selectedProductId)?.product_name || '')
+    const safeName = (sourceMode === 'external' ? externalApiName : teams.find(p => p.team_id === selectedTeamId)?.team_name || '')
       .toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_')
     return destinationFolder || `~/mcp-servers/${safeName}`
-  }, [destinationFolder, sourceMode, externalApiName, products, selectedProductId])
+  }, [destinationFolder, sourceMode, externalApiName, teams, selectedTeamId])
 
   // Auto-browse when switching to files tab
   useEffect(() => {
@@ -768,7 +768,7 @@ export default function McpBuilder() {
   // Step summary text for completed steps
   const getStepSummary = (step: number) => {
     if (step === 1 && endpoints) {
-      const name = sourceMode === 'external' ? externalApiName : products.find(p => p.product_id === selectedProductId)?.product_name
+      const name = sourceMode === 'external' ? externalApiName : teams.find(p => p.team_id === selectedTeamId)?.team_name
       return `${name || 'API'} — ${endpoints.length} endpoints`
     }
     if (step === 2 && endpoints) {
@@ -949,7 +949,7 @@ export default function McpBuilder() {
                       }`}
                     >
                       <Blocks className="w-3.5 h-3.5" />
-                      Internal Product
+                      Internal Team
                     </button>
                     <button
                       onClick={() => { setSourceMode('external'); setEndpoints(null); setResult(null); setAnalyzeError('') }}
@@ -967,16 +967,16 @@ export default function McpBuilder() {
                   <div className="space-y-4">
                     {sourceMode === 'internal' ? (
                       <div className="space-y-1.5">
-                        <label className="text-sm font-medium text-rt-text-muted">Target Retrace Product</label>
+                        <label className="text-sm font-medium text-rt-text-muted">Target Retrace Team</label>
                         <div className="relative">
                           <select
-                            value={selectedProductId}
-                            onChange={(e) => setSelectedProductId(e.target.value)}
+                            value={selectedTeamId}
+                            onChange={(e) => setSelectedTeamId(e.target.value)}
                             className="w-full bg-rt-bg border border-rt-border rounded-lg px-4 py-3 text-sm focus:ring-2 focus:ring-rt-primary/20 focus:border-rt-primary transition-all text-rt-text appearance-none cursor-pointer"
                           >
-                            {products.length === 0 && <option value="">Loading products...</option>}
-                            {products.map(p => (
-                              <option key={p.product_id} value={p.product_id}>{p.product_name}</option>
+                            {teams.length === 0 && <option value="">Loading teams...</option>}
+                            {teams.map(p => (
+                              <option key={p.team_id} value={p.team_id}>{p.team_name}</option>
                             ))}
                           </select>
                           <ChevronDown className="w-4 h-4 text-rt-text-muted absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none" />
@@ -1144,7 +1144,7 @@ export default function McpBuilder() {
                       <button
                         type="button"
                         onClick={handleAnalyze}
-                        disabled={isAnalyzing || (sourceMode === 'internal' ? !selectedProductId : !externalApiName || (externalSourceType === 'url' ? !apiDocsUrl : !apiDocsText && !uploadedFile))}
+                        disabled={isAnalyzing || (sourceMode === 'internal' ? !selectedTeamId : !externalApiName || (externalSourceType === 'url' ? !apiDocsUrl : !apiDocsText && !uploadedFile))}
                         className="w-full h-11 bg-rt-primary hover:bg-rt-primary-dark text-white rounded-lg font-medium shadow-sm disabled:opacity-50 transition-all flex items-center justify-center gap-2 group"
                       >
                         {isAnalyzing ? (
@@ -1155,7 +1155,7 @@ export default function McpBuilder() {
                         ) : (
                           <>
                             <Search className="w-4 h-4 group-hover:scale-110 transition-transform" />
-                            {sourceMode === 'external' && !kbProductId ? 'Fetch & Analyze API' : 'Analyze API Capabilities'}
+                            {sourceMode === 'external' && !kbTeamId ? 'Fetch & Analyze API' : 'Analyze API Capabilities'}
                           </>
                         )}
                       </button>

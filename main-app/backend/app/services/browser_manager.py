@@ -51,10 +51,19 @@ class BrowserSession:
     is_navigating: bool = False
 
     def _run_browser_agent(self, action_json: str) -> dict:
-        """Run browser_agent.py inside the sandbox container."""
+        """Run a browser action inside the sandbox container via browser_control.py
+        (a thin HTTP client that forwards to the persistent browser_daemon.py).
+        Injects conversation_id so the daemon uses the correct browser context."""
+        # Inject conversation_id into the payload for multi-context isolation
+        try:
+            payload = json.loads(action_json)
+            payload["conversation_id"] = self.conversation_id
+            action_json = json.dumps(payload)
+        except (json.JSONDecodeError, TypeError):
+            pass
         escaped = action_json.replace("'", "'\\''")
         result = self.sandbox_session.execute_command(
-            f"python3 /opt/browser_agent.py '{escaped}'"
+            f"python3 /opt/browser_control.py '{escaped}'"
         )
         stdout = (result.stdout or "").strip()
         if not stdout:
@@ -70,22 +79,55 @@ class BrowserSession:
             return {"ok": False, "error": f"Invalid JSON: {stdout[:200]}"}
 
     def _read_screenshot_from_volume(self) -> Optional[str]:
-        """Read screenshot directly from the shared volume (no SSH)."""
+        """Read screenshot from per-conversation path on the shared volume."""
         try:
-            from app.services.sandbox_manager import SANDBOX_BASE, get_user_for_conversation
+            from app.services.sandbox_manager import SANDBOX_BASE, get_user_for_conversation, _active_sessions
             user_id = get_user_for_conversation(self.conversation_id)
             if not user_id:
-                # Try any active session
-                from app.services.sandbox_manager import _active_sessions
+                # Fallback 1: try any active session
                 for uid in _active_sessions:
                     user_id = uid
                     break
             if not user_id:
+                # Fallback 2: look up user_id from conversations table in DB
+                try:
+                    import asyncio
+                    from sqlalchemy import text as sa_text
+                    from app.db.database import async_session_maker
+
+                    async def _lookup():
+                        async with async_session_maker() as session:
+                            result = await session.execute(
+                                sa_text("SELECT user_id FROM conversations WHERE conversation_id = :cid"),
+                                {"cid": self.conversation_id},
+                            )
+                            row = result.fetchone()
+                            return row[0] if row else None
+
+                    # We're in a thread (called via asyncio.to_thread), so run a new loop
+                    user_id = asyncio.run(_lookup())
+                except Exception:
+                    pass
+            if not user_id:
+                # Fallback 3: scan SANDBOX_BASE for matching conversation subdirectory
+                try:
+                    for entry in os.listdir(SANDBOX_BASE):
+                        candidate = os.path.join(SANDBOX_BASE, entry, self.conversation_id, ".browser-screenshot.jpg")
+                        if os.path.isfile(candidate):
+                            user_id = entry
+                            break
+                except Exception:
+                    pass
+            if not user_id:
                 return None
-            screenshot_path = os.path.join(SANDBOX_BASE, user_id, ".browser-screenshot.jpg")
-            if os.path.isfile(screenshot_path):
-                with open(screenshot_path, "rb") as f:
-                    return base64.b64encode(f.read()).decode()
+            # Try per-conversation path first, then volume root (Fly.io writes to root)
+            for _ss_candidate in [
+                os.path.join(SANDBOX_BASE, user_id, self.conversation_id, ".browser-screenshot.jpg"),
+                os.path.join(SANDBOX_BASE, user_id, ".browser-screenshot.jpg"),
+            ]:
+                if os.path.isfile(_ss_candidate):
+                    with open(_ss_candidate, "rb") as f:
+                        return base64.b64encode(f.read()).decode()
         except Exception:
             pass
         return None

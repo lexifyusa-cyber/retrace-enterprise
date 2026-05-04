@@ -66,10 +66,10 @@ class TrainingPipeline:
 
     async def run(
         self,
-        product_id: str,
+        team_id: str,
         folder_paths: list[str],
-        product_name: str,
-        product_description: str,
+        team_name: str,
+        team_description: str,
         on_progress: ProgressCallback = None,
         force_full: bool = False,
         debug_logging: bool = False,
@@ -169,8 +169,8 @@ class TrainingPipeline:
 
         project_analysis = await self.filter.analyse_and_filter(
             trees=trees,
-            product_name=product_name,
-            product_description=product_description,
+            team_name=team_name,
+            team_description=team_description,
             on_progress=_filter_progress,
             on_debug_prompt=_on_debug_prompt if debug_logging else None,
         )
@@ -479,7 +479,7 @@ class TrainingPipeline:
         await _report({"phase": "phase4", "message": "Phase 4d: Compressing and encrypting KB…"})
 
         kb_stats = await self.kb_store.build_and_store(
-            product_id=product_id,
+            team_id=team_id,
             trees=trees,
             project_analysis=project_analysis,
             folder_analysis=folder_analysis,
@@ -552,7 +552,7 @@ class TrainingPipeline:
         _log("🎉 Training complete!")
         await _report({"phase": "completed", "message": "Training complete!", **stats})
 
-        logger.info("pipeline_complete", product_id=product_id, stats={
+        logger.info("pipeline_complete", team_id=team_id, stats={
             k: v for k, v in stats.items() if k != "logs"
         })
         return stats
@@ -562,12 +562,12 @@ class TrainingPipeline:
 # Background-task helper (called from the /train endpoint)
 # ---------------------------------------------------------------------------
 
-async def run_product_training(
-    product_id: str,
+async def run_team_training(
+    team_id: str,
     folder_paths: list[str],
     group_ids: list[str],
-    product_name: str,
-    product_description: str = "",
+    team_name: str,
+    team_description: str = "",
     force_full: bool = False,
 ) -> None:
     """Run the full pipeline in a background asyncio.Task."""
@@ -575,7 +575,7 @@ async def run_product_training(
     from app.models.folder_group import FolderGroup
     from app.api.settings import get_active_llm_settings
 
-    _active_training_tasks[product_id] = asyncio.current_task()  # type: ignore
+    _active_training_tasks[team_id] = asyncio.current_task()  # type: ignore
     _last_progress: dict = {}
 
     async def _write_progress(progress_data: dict):
@@ -617,10 +617,10 @@ async def run_product_training(
         max_parallel_files = max(1, min(32, int(llm.get("max_parallel_files", 1) or 1)))
 
         stats = await pipeline.run(
-            product_id=product_id,
+            team_id=team_id,
             folder_paths=folder_paths,
-            product_name=product_name,
-            product_description=product_description or "",
+            team_name=team_name,
+            team_description=team_description or "",
             on_progress=_write_progress,
             force_full=force_full,
             debug_logging=debug_logging,
@@ -641,26 +641,26 @@ async def run_product_training(
             )
             await session.commit()
 
-            # Auto-generate product description if enabled
+            # Auto-generate team description if enabled
             try:
-                from app.models.product import Product
+                from app.models.team import Team
                 result = await session.execute(
-                    select(Product).where(Product.product_id == product_id)
+                    select(Team).where(Team.team_id == team_id)
                 )
-                product = result.scalar_one_or_none()
-                auto_gen = getattr(product, "auto_generate_description", True) if product else True
-                if product and auto_gen:
-                    from app.services.product_description_generator import generate_product_description
-                    await generate_product_description(product_id, session)
-                    logger.info("product_description_auto_generated", product_id=product_id)
+                team = result.scalar_one_or_none()
+                auto_gen = getattr(team, "auto_generate_description", True) if team else True
+                if team and auto_gen:
+                    from app.services.team_description_generator import generate_team_description
+                    await generate_team_description(team_id, session)
+                    logger.info("team_description_auto_generated", team_id=team_id)
             except Exception as exc:
-                logger.warning("product_description_generation_skipped",
-                               product_id=product_id, error=str(exc))
+                logger.warning("team_description_generation_skipped",
+                               team_id=team_id, error=str(exc))
 
-        logger.info("product_training_success", product_id=product_id)
+        logger.info("team_training_success", team_id=team_id)
 
     except (asyncio.CancelledError, TrainingCancelled):
-        logger.info("product_training_cancelled", product_id=product_id)
+        logger.info("team_training_cancelled", team_id=team_id)
         try:
             last_logs = _last_progress.get("logs", []) if _last_progress else []
             cancel_meta = {
@@ -681,7 +681,7 @@ async def run_product_training(
             pass
 
     except Exception as exc:
-        logger.error("product_training_failed", product_id=product_id, error=str(exc))
+        logger.error("team_training_failed", team_id=team_id, error=str(exc))
         try:
             last_logs = _last_progress.get("logs", []) if _last_progress else []
             fail_meta = {
@@ -702,4 +702,4 @@ async def run_product_training(
             pass
 
     finally:
-        _active_training_tasks.pop(product_id, None)
+        _active_training_tasks.pop(team_id, None)

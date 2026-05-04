@@ -87,7 +87,12 @@ export default function McpExtensions() {
   return (
     <div className="min-h-screen bg-rt-bg text-rt-text">
       {/* Header */}
-      <div className="px-8 pt-8 pb-2">
+      <motion.div
+        initial={{ opacity: 0, y: -20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4 }}
+        className="px-8 pt-8 pb-2"
+      >
         <div className="flex items-center gap-3 mb-4">
           <Puzzle className="w-6 h-6 text-rt-primary" />
           <div>
@@ -118,13 +123,18 @@ export default function McpExtensions() {
             )
           })}
         </div>
-      </div>
+      </motion.div>
 
       {/* Tab Content */}
-      <div className="px-8 pb-8 pt-4">
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4, delay: 0.1 }}
+        className="px-8 pb-8 pt-4"
+      >
         {activeTab === 'my' && <MyExtensionsTab />}
         {activeTab === 'marketplace' && <MarketplaceTab />}
-      </div>
+      </motion.div>
     </div>
   )
 }

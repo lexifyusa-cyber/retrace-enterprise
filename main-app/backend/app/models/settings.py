@@ -33,6 +33,8 @@ class LLMSettingsModel(Base):
     screenops_mouse_timeout: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=30)
     # ScreenOps screenshot scale 25–100: percentage of original size sent to vision model (reduces tokens)
     screenops_image_scale: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=100)
+    # Central delay (ms) before every screenshot capture — lets dynamic content settle before screenshot
+    screenshot_delay_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=2000)
     
     # Web Search — Serper API key for enhanced web search
     serper_api_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -63,6 +65,7 @@ class LLMSettingsModel(Base):
             "screenops_model": self.screenops_model,
             "screenops_mouse_timeout": self.screenops_mouse_timeout if self.screenops_mouse_timeout is not None else 30,
             "screenops_image_scale": self.screenops_image_scale if self.screenops_image_scale is not None else 100,
+            "screenshot_delay_ms": self.screenshot_delay_ms if self.screenshot_delay_ms is not None else 2000,
             "serper_api_key": self.serper_api_key,
             "agent_tools_config": self.agent_tools_config,
             "agent_max_iterations": self.agent_max_iterations if self.agent_max_iterations is not None else 10,

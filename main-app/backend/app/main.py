@@ -9,14 +9,19 @@ import asyncio
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
+import os
+from pathlib import Path
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 import structlog
 import time
 
 from app.core.config import settings
 from app.core.logging import setup_logging
-from app.api import pods, groups, products, training, query, health, settings as settings_api, files as files_api
+from app.api import pods, groups, products, teams, training, query, health, settings as settings_api, files as files_api
 from app.api import agent as agent_api
 from app.api import terminal_ws as terminal_ws_api
 from app.api import browser_ws as browser_ws_api
@@ -26,8 +31,9 @@ from app.services.websocket_manager import websocket_manager
 from app.db.database import init_db
 from app.models.automation_run import AutomationRun  # ensure table creation
 # Import models to ensure they're registered with Base
-from app.models import pod, folder_group, product, query as query_model, settings as settings_model
+from app.models import pod, folder_group, team, query as query_model, settings as settings_model
 from app.models import agent_session as agent_session_model  # noqa: F401  – registers AgentSession table
+from app.models import llm_log as llm_log_model  # noqa: F401  – registers LLMLog table
 from app.models import terminal_session as terminal_session_model  # noqa: F401  – registers TerminalSession table
 from app.models import sop as sop_model  # noqa: F401  – registers SOP table
 from app.models import documentation as documentation_model  # noqa: F401  – registers Documentation table
@@ -42,7 +48,7 @@ from app.models import mcp_extension as mcp_extension_model  # noqa: F401  – r
 from app.models import user_extension as user_extension_model  # noqa: F401  – registers UserExtension table
 from app.models import tenant as tenant_model  # noqa: F401
 from app.models import user_session as user_session_model  # noqa: F401
-from app.models import product_access as product_access_model  # noqa: F401
+from app.models import team_access as team_access_model  # noqa: F401
 from app.models import audit_log as audit_log_model  # noqa: F401
 from app.api import auth as auth_api
 from app.api import mcp_builder as mcp_builder_api
@@ -604,6 +610,10 @@ async def log_requests(request: Request, call_next):
         print(f"[ERROR] {request.method} {request.url.path} - {str(e)} ({process_time:.3f}s)", file=sys.stderr)
         raise
 
+# Gzip compression — reduces JS bundle from 1.5MB to ~568KB
+from starlette.middleware.gzip import GZipMiddleware
+app.add_middleware(GZipMiddleware, minimum_size=500)
+
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
@@ -618,7 +628,8 @@ app.include_router(auth_api.router, prefix="/api/v1/auth", tags=["Auth"])
 app.include_router(health.router, tags=["Health"])
 app.include_router(pods.router, prefix="/api/v1/pods", tags=["PODs"])
 app.include_router(groups.router, prefix="/api/v1/groups", tags=["Folder Groups"])
-app.include_router(products.router, prefix="/api/v1/products", tags=["Products"])
+app.include_router(teams.router, prefix="/api/v1/teams", tags=["Teams"])
+app.include_router(products.router, prefix="/api/v1/products", tags=["Products (deprecated)"])
 app.include_router(training.router, prefix="/api/v1/training", tags=["Training"])
 app.include_router(query.router, prefix="/api/v1/query", tags=["Query"])
 app.include_router(settings_api.router, prefix="/api/v1/settings", tags=["Settings"])
@@ -630,21 +641,36 @@ app.include_router(terminal_ws_api.router, tags=["Terminal WebSocket"])
 app.include_router(browser_ws_api.router, tags=["Browser WebSocket"])
 app.include_router(mcp_builder_api.router, prefix="/api/v1/mcp-builder", tags=["MCP Builder"])
 app.include_router(mcp_extensions_api.router, prefix="/api/v1/mcp-extensions", tags=["MCP Extensions"])
-app.include_router(email_api.product_email_router, prefix="/api/v1/products", tags=["Product Email"])
+app.include_router(email_api.team_email_router, prefix="/api/v1/teams", tags=["Team Email"])
+app.include_router(email_api.team_email_router, prefix="/api/v1/products", tags=["Team Email (deprecated)"])
 
-# RAG product-assistant router
+# RAG team-assistant router
 from app.rag.api import router as rag_router
-app.include_router(rag_router, prefix="/api/v1/product-assistant", tags=["Product Assistant"])
+app.include_router(rag_router, prefix="/api/v1/team-assistant", tags=["Team Assistant"])
 
+# ── Serve built React frontend (production only) ────────────────────
+_static_dir = Path(__file__).parent.parent / "static"
+if _static_dir.is_dir():
+    # Serve static assets (JS, CSS, images)
+    app.mount("/assets", StaticFiles(directory=str(_static_dir / "assets")), name="static-assets")
 
-@app.get("/")
-async def root():
-    """Root endpoint."""
-    return {
-        "name": "ReTrace API",
-        "version": settings.APP_VERSION,
-        "status": "running"
-    }
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        """Serve the React SPA. API routes are handled by routers above."""
+        file_path = _static_dir / full_path
+        if file_path.is_file():
+            return FileResponse(str(file_path))
+        # Fallback to index.html for client-side routing
+        return FileResponse(str(_static_dir / "index.html"))
+else:
+    @app.get("/")
+    async def root():
+        """Root endpoint."""
+        return {
+            "name": "ReTrace API",
+            "version": settings.APP_VERSION,
+            "status": "running"
+        }
 
 
 if __name__ == "__main__":

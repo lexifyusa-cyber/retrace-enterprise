@@ -23,8 +23,8 @@ interface MCPBuilderConfig {
 }
 
 interface MCPBuilderDialogProps {
-  productId: string
-  productName: string
+  teamId: string
+  teamName: string
   onClose: () => void
   onBuild: (config: MCPBuilderConfig, task: string) => void
 }
@@ -46,8 +46,8 @@ const METHOD_COLORS: Record<string, string> = {
 // ---------------------------------------------------------------------------
 
 export default function MCPBuilderDialog({
-  productId,
-  productName,
+  teamId,
+  teamName,
   onClose,
   onBuild,
 }: MCPBuilderDialogProps) {
@@ -68,7 +68,7 @@ export default function MCPBuilderDialog({
         const response = await fetch('/api/v1/agent/mcp-builder/discover', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ product_id: productId }),
+          body: JSON.stringify({ team_id: teamId }),
         })
         if (!response.ok) {
           const errData = await response.json().catch(() => ({ detail: 'Discovery failed' }))
@@ -88,7 +88,7 @@ export default function MCPBuilderDialog({
     }
     discover()
     return () => { cancelled = true }
-  }, [productId])
+  }, [teamId])
 
   const toggleEndpoint = useCallback((idx: number) => {
     setSelected(prev => {
@@ -118,8 +118,8 @@ export default function MCPBuilderDialog({
       transport,
       selected_endpoints: selectedEndpoints,
     }
-    onBuild(config, `Build the MCP server for ${productName} with the selected tools.`)
-  }, [selected, endpoints, language, transport, productName, onBuild])
+    onBuild(config, `Build the MCP server for ${teamName} with the selected tools.`)
+  }, [selected, endpoints, language, transport, teamName, onBuild])
 
   return (
     <AnimatePresence>
@@ -146,7 +146,7 @@ export default function MCPBuilderDialog({
               </div>
               <div>
                 <h2 className="text-lg font-semibold">Build MCP Server</h2>
-                <p className="text-xs text-rt-text-muted">for {productName}</p>
+                <p className="text-xs text-rt-text-muted">for {teamName}</p>
               </div>
             </div>
             <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-rt-surface transition-colors text-rt-text-muted hover:text-rt-text">
@@ -186,7 +186,7 @@ export default function MCPBuilderDialog({
                     <div className="p-4 rounded-lg border border-rt-border bg-rt-surface text-center">
                       <p className="text-sm text-rt-text-muted">No API endpoints found in the knowledge base.</p>
                       <p className="text-xs text-rt-text-muted mt-1">
-                        Try training the product with API docs, OpenAPI specs, or source code with route definitions.
+                        Try training the team with API docs, OpenAPI specs, or source code with route definitions.
                       </p>
                     </div>
                   ) : (

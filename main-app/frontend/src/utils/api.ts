@@ -1,5 +1,5 @@
 import axios from 'axios'
-import { Pod, FolderGroup, Product, TrainingJob, QueryResponse, DirectoryListing, AgentSession, AgentTool, Conversation } from '@/types'
+import { Pod, FolderGroup, Team, TrainingJob, QueryResponse, DirectoryListing, AgentSession, AgentTool, Conversation } from '@/types'
 
 const api = axios.create({
   baseURL: '/api/v1',
@@ -16,7 +16,7 @@ api.interceptors.request.use((config) => {
   return config
 })
 
-/** Backend `product_id` query value for agent docs/SOPs not tied to a product. */
+/** Backend `team_id` query value for agent docs/SOPs not tied to a team. */
 export const AGENT_GENERAL_SCOPE = '__none__'
 
 api.interceptors.response.use(
@@ -79,6 +79,22 @@ export const podApi = {
     const response = await api.get(`/pods/${podId}/status`)
     return response.data
   },
+
+  /**
+   * Mint a short-lived signed URL for downloading the pod installer.
+   *
+   * The signed URL embeds a 60s JWT in a query parameter, so the actual
+   * download can be triggered with a plain `<a href download>` click —
+   * no Authorization header needed. This is the only pattern that works
+   * inside the cross-origin iframe at retrace.me/try, where the
+   * "fetch + blob + synthetic click" pattern is silently blocked by
+   * Chrome's iframe download intervention after the fetch's await
+   * consumes the iframe's transient user activation.
+   */
+  getDownloadUrl: async (podId: string): Promise<string> => {
+    const response = await api.post(`/pods/${podId}/download-token`)
+    return response.data.url
+  },
 }
 
 // Local filesystem browse (backend server)
@@ -89,20 +105,20 @@ export const localFilesApi = {
   },
 }
 
-// Product APIs
-export const productApi = {
-  list: async (): Promise<Product[]> => {
-    const response = await api.get('/products')
+// Team APIs
+export const teamApi = {
+  list: async (): Promise<Team[]> => {
+    const response = await api.get('/teams')
     return response.data
   },
   
-  get: async (productId: string): Promise<Product> => {
-    const response = await api.get(`/products/${productId}`)
+  get: async (teamId: string): Promise<Team> => {
+    const response = await api.get(`/teams/${teamId}`)
     return response.data
   },
   
   create: async (data: {
-    product_name: string
+    team_name: string
     description?: string
     auto_generate_description?: boolean
     folder_groups?: Array<{
@@ -115,25 +131,25 @@ export const productApi = {
         file_filters?: { include: string[]; exclude: string[] }
       }>
     }>
-  }): Promise<Product> => {
-    const response = await api.post('/products', data)
+  }): Promise<Team> => {
+    const response = await api.post('/teams', data)
     return response.data
   },
   
-  update: async (productId: string, data: Partial<{
-    product_name: string
+  update: async (teamId: string, data: Partial<{
+    team_name: string
     description: string
-  }>): Promise<Product> => {
-    const response = await api.put(`/products/${productId}`, data)
+  }>): Promise<Team> => {
+    const response = await api.put(`/teams/${teamId}`, data)
     return response.data
   },
   
-  delete: async (productId: string) => {
-    const response = await api.delete(`/products/${productId}`)
+  delete: async (teamId: string) => {
+    const response = await api.delete(`/teams/${teamId}`)
     return response.data
   },
   
-  addFolderGroup: async (productId: string, data: {
+  addFolderGroup: async (teamId: string, data: {
     pod_id: string
     group_name: string
     group_type: string
@@ -143,49 +159,49 @@ export const productApi = {
       file_filters?: { include: string[]; exclude: string[] }
     }>
   }): Promise<FolderGroup> => {
-    const response = await api.post(`/products/${productId}/groups`, data)
+    const response = await api.post(`/teams/${teamId}/groups`, data)
     return response.data
   },
   
-  removeFolderGroup: async (productId: string, groupId: string) => {
-    const response = await api.delete(`/products/${productId}/groups/${groupId}`)
+  removeFolderGroup: async (teamId: string, groupId: string) => {
+    const response = await api.delete(`/teams/${teamId}/groups/${groupId}`)
     return response.data
   },
   
-  trainAll: async (productId: string) => {
-    const response = await api.post(`/products/${productId}/train`)
+  trainAll: async (teamId: string) => {
+    const response = await api.post(`/teams/${teamId}/train`)
     return response.data
   },
   
-  getTrainingStatus: async (productId: string) => {
-    const response = await api.get(`/products/${productId}/training-status`)
+  getTrainingStatus: async (teamId: string) => {
+    const response = await api.get(`/teams/${teamId}/training-status`)
     return response.data
   },
   
-  stopTraining: async (productId: string) => {
-    const response = await api.post(`/products/${productId}/stop-training`)
+  stopTraining: async (teamId: string) => {
+    const response = await api.post(`/teams/${teamId}/stop-training`)
     return response.data
   },
 
-  syncQA: async (productId: string, qaPairs: { question: string; answer: string }[]) => {
-    const response = await api.post(`/products/${productId}/sync-qa`, { qa_pairs: qaPairs })
+  syncQA: async (teamId: string, qaPairs: { question: string; answer: string }[]) => {
+    const response = await api.post(`/teams/${teamId}/sync-qa`, { qa_pairs: qaPairs })
     return response.data
   },
 
-  getTrainingTree: async (productId: string) => {
-    const response = await api.get(`/products/${productId}/training-tree`)
+  getTrainingTree: async (teamId: string) => {
+    const response = await api.get(`/teams/${teamId}/training-tree`)
     return response.data
   },
 
-  generatePod: async (productId: string, targetOs: string, agentName?: string) => {
-    const response = await api.post(`/products/${productId}/generate-pod`, null, {
+  generatePod: async (teamId: string, targetOs: string, agentName?: string) => {
+    const response = await api.post(`/teams/${teamId}/generate-pod`, null, {
       params: { target_os: targetOs, agent_name: agentName }
     })
     return response.data
   },
 
-  listPods: async (productId: string) => {
-    const response = await api.get(`/products/${productId}/pods`)
+  listPods: async (teamId: string) => {
+    const response = await api.get(`/teams/${teamId}/pods`)
     return response.data
   },
 
@@ -225,8 +241,8 @@ export const trainingApi = {
 
 // Query APIs
 export const queryApi = {
-  ask: async (question: string, productIds: string[]): Promise<QueryResponse> => {
-    const response = await api.post('/query', { question, product_ids: productIds })
+  ask: async (question: string, teamIds: string[]): Promise<QueryResponse> => {
+    const response = await api.post('/query', { question, team_ids: teamIds })
     return response.data
   },
   
@@ -251,8 +267,8 @@ export const agentApi = {
     await api.post('/agent/warmup-mcp').catch(() => {})
   },
 
-  listSessions: async (productId?: string): Promise<AgentSession[]> => {
-    const response = await api.get('/agent/sessions', { params: { product_id: productId } })
+  listSessions: async (teamId?: string): Promise<AgentSession[]> => {
+    const response = await api.get('/agent/sessions', { params: { team_id: teamId } })
     return response.data
   },
 
@@ -272,14 +288,14 @@ export const agentApi = {
   },
 
   // Conversations
-  listConversations: async (productId: string): Promise<Conversation[]> => {
-    const response = await api.get('/agent/conversations', { params: { product_id: productId || '__none__' } })
+  listConversations: async (teamId: string): Promise<Conversation[]> => {
+    const response = await api.get('/agent/conversations', { params: { team_id: teamId || '__none__' } })
     return response.data
   },
 
-  createConversation: async (productId: string, title?: string): Promise<Conversation> => {
+  createConversation: async (teamId: string, title?: string): Promise<Conversation> => {
     const response = await api.post('/agent/conversations', {
-      product_id: productId || null,
+      team_id: teamId || null,
       title: title || 'New conversation',
     })
     return response.data
@@ -300,8 +316,8 @@ export const agentApi = {
     return response.data
   },
 
-  deleteAllConversations: async (productId: string) => {
-    const response = await api.delete(`/agent/conversations`, { params: { product_id: productId } })
+  deleteAllConversations: async (teamId: string) => {
+    const response = await api.delete(`/agent/conversations`, { params: { team_id: teamId } })
     return response.data
   },
 
@@ -313,14 +329,14 @@ export const agentApi = {
   },
 
   // Learn This — train Q&A as expert knowledge
-  learnThis: async (productId: string, question: string, answer: string) => {
-    const response = await api.post('/agent/learn', { product_id: productId, question, answer })
+  learnThis: async (teamId: string, question: string, answer: string) => {
+    const response = await api.post('/agent/learn', { team_id: teamId, question, answer })
     return response.data
   },
 
   // SOPs (Automations)
-  listSOPs: async (productId: string) => {
-    const response = await api.get('/agent/sops', { params: { product_id: productId } })
+  listSOPs: async (teamId: string) => {
+    const response = await api.get('/agent/sops', { params: { team_id: teamId } })
     return response.data
   },
 
@@ -356,8 +372,8 @@ export const agentApi = {
   },
 
   // Documentation
-  listDocs: async (productId: string) => {
-    const response = await api.get('/agent/docs', { params: { product_id: productId } })
+  listDocs: async (teamId: string) => {
+    const response = await api.get('/agent/docs', { params: { team_id: teamId } })
     return response.data
   },
 
@@ -376,6 +392,46 @@ export const agentApi = {
     const response = await api.get('/agent/dashboard-stats')
     return response.data
   },
+
+  // LLM Logs (developer mode)
+  listLlmLogConversations: async (): Promise<LlmLogConversation[]> => {
+    const response = await api.get('/agent/llm-logs/conversations')
+    return response.data
+  },
+  getLlmLogs: async (conversationId: string): Promise<LlmLog[]> => {
+    const response = await api.get('/agent/llm-logs', { params: { conversation_id: conversationId } })
+    return response.data
+  },
+}
+
+export interface LlmLogConversation {
+  conversation_id: string
+  title: string
+  team_id: string | null
+  updated_at: string | null
+  log_count: number
+}
+
+export interface LlmLog {
+  log_id: string
+  user_id: string | null
+  conversation_id: string | null
+  iteration: number
+  request_messages: string | null  // JSON string
+  response_content: string | null
+  tokens: {
+    input: number
+    output: number
+    total: number
+    cache_read: number
+    cache_creation: number
+    reasoning: number
+  }
+  model_provider: string | null
+  model_name: string | null
+  latency_ms: number
+  error: string | null
+  created_at: string | null
 }
 
 // Email API
@@ -427,60 +483,60 @@ export const emailApi = {
     return response.data
   },
 
-  // Inboxes (per product)
-  getInbox: async (productId: string) => {
-    const response = await api.get(`/products/${productId}/inbox`)
+  // Inboxes (per team)
+  getInbox: async (teamId: string) => {
+    const response = await api.get(`/teams/${teamId}/inbox`)
     return response.data
   },
-  createInbox: async (productId: string, data: {
+  createInbox: async (teamId: string, data: {
     connection_id: string
     display_name?: string
     action_config?: Record<string, any>
   }) => {
-    const response = await api.post(`/products/${productId}/inbox`, data)
+    const response = await api.post(`/teams/${teamId}/inbox`, data)
     return response.data
   },
-  updateInbox: async (productId: string, data: {
+  updateInbox: async (teamId: string, data: {
     is_active?: boolean
     action_config?: Record<string, any>
   }) => {
-    const response = await api.patch(`/products/${productId}/inbox`, data)
+    const response = await api.patch(`/teams/${teamId}/inbox`, data)
     return response.data
   },
-  deleteInbox: async (productId: string) => {
-    const response = await api.delete(`/products/${productId}/inbox`)
+  deleteInbox: async (teamId: string) => {
+    const response = await api.delete(`/teams/${teamId}/inbox`)
     return response.data
   },
 
   // Drafts
-  listDrafts: async (productId: string) => {
-    const response = await api.get(`/products/${productId}/inbox/drafts`)
+  listDrafts: async (teamId: string) => {
+    const response = await api.get(`/teams/${teamId}/inbox/drafts`)
     return response.data
   },
-  listUnread: async (productId: string) => {
-    const response = await api.get(`/products/${productId}/inbox/unread`)
+  listUnread: async (teamId: string) => {
+    const response = await api.get(`/teams/${teamId}/inbox/unread`)
     return response.data
   },
-  approveDraft: async (productId: string, messageId: string, editedResponse?: string) => {
-    const response = await api.post(`/products/${productId}/inbox/drafts/${messageId}/approve`, {
+  approveDraft: async (teamId: string, messageId: string, editedResponse?: string) => {
+    const response = await api.post(`/teams/${teamId}/inbox/drafts/${messageId}/approve`, {
       edited_response: editedResponse,
     })
     return response.data
   },
-  rejectDraft: async (productId: string, messageId: string) => {
-    const response = await api.post(`/products/${productId}/inbox/drafts/${messageId}/reject`)
+  rejectDraft: async (teamId: string, messageId: string) => {
+    const response = await api.post(`/teams/${teamId}/inbox/drafts/${messageId}/reject`)
     return response.data
   },
-  editDraft: async (productId: string, messageId: string, editedResponse: string) => {
-    const response = await api.patch(`/products/${productId}/inbox/drafts/${messageId}`, {
+  editDraft: async (teamId: string, messageId: string, editedResponse: string) => {
+    const response = await api.patch(`/teams/${teamId}/inbox/drafts/${messageId}`, {
       edited_response: editedResponse,
     })
     return response.data
   },
 
   // Message log
-  listMessages: async (productId: string, limit = 50, offset = 0) => {
-    const response = await api.get(`/products/${productId}/inbox/messages`, {
+  listMessages: async (teamId: string, limit = 50, offset = 0) => {
+    const response = await api.get(`/teams/${teamId}/inbox/messages`, {
       params: { limit, offset },
     })
     return response.data
@@ -489,14 +545,14 @@ export const emailApi = {
 
 // Channel API (Slack / Teams)
 export const channelApi = {
-  listConnections: async (productId?: string) => {
+  listConnections: async (teamId?: string) => {
     const response = await api.get('/channels/connections', {
-      params: productId ? { product_id: productId } : {},
+      params: teamId ? { team_id: teamId } : {},
     })
     return response.data
   },
   createConnection: async (data: {
-    product_id: string
+    team_id: string
     platform: string
     channel_name: string
     channel_id: string

@@ -24,21 +24,21 @@ class EncryptedChunk(Base):
     __tablename__ = "encrypted_chunks"
 
     chunk_id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    product_id: Mapped[str] = mapped_column(String(36), index=True)
+    team_id: Mapped[str] = mapped_column(String(36), index=True)
     ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
 
 
 class ChunkStoreService:
     """Read/write encrypted chunk text."""
 
-    async def put_many(self, product_id: str, items: list[tuple[str, str]]) -> int:
+    async def put_many(self, team_id: str, items: list[tuple[str, str]]) -> int:
         """Store [(chunk_id, plaintext), ...].  Returns count stored."""
         if not items:
             return 0
         rows = [
             EncryptedChunk(
                 chunk_id=cid,
-                product_id=product_id,
+                team_id=team_id,
                 ciphertext=encrypt_text(text),
             )
             for cid, text in items
@@ -46,7 +46,7 @@ class ChunkStoreService:
         async with async_session_maker() as session:
             session.add_all(rows)
             await session.commit()
-        logger.info("chunk_store_put", product_id=product_id, count=len(rows))
+        logger.info("chunk_store_put", team_id=team_id, count=len(rows))
         return len(rows)
 
     async def get_many(self, chunk_ids: list[str]) -> dict[str, str]:
@@ -71,18 +71,18 @@ class ChunkStoreService:
         result = await self.get_many([chunk_id])
         return result.get(chunk_id)
 
-    async def delete_product(self, product_id: str) -> int:
-        """Delete all encrypted chunks for a product."""
+    async def delete_team(self, team_id: str) -> int:
+        """Delete all encrypted chunks for a team."""
         async with async_session_maker() as session:
             result = await session.execute(
-                delete(EncryptedChunk).where(EncryptedChunk.product_id == product_id)
+                delete(EncryptedChunk).where(EncryptedChunk.team_id == team_id)
             )
             await session.commit()
             count = result.rowcount or 0
-        logger.info("chunk_store_cleared", product_id=product_id, count=count)
+        logger.info("chunk_store_cleared", team_id=team_id, count=count)
         return count
 
-    async def delete_by_paths(self, product_id: str, source_paths: list[str]) -> int:
+    async def delete_by_paths(self, team_id: str, source_paths: list[str]) -> int:
         """Delete encrypted chunks whose chunk_ids came from certain files.
 
         Since we don't store source_path here, we accept chunk_ids directly

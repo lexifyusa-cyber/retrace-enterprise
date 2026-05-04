@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ClipboardList, Loader2, Trash2, CheckCircle2, Clock,
   Package, ChevronDown, ChevronRight, Play, Send,
@@ -8,13 +8,14 @@ import {
 import { motion, AnimatePresence } from 'framer-motion'
 import ReactMarkdown from 'react-markdown'
 import toast from 'react-hot-toast'
-import { productApi, agentApi, AGENT_GENERAL_SCOPE } from '@/utils/api'
-import { Product } from '@/types'
+import { teamApi, agentApi, AGENT_GENERAL_SCOPE } from '@/utils/api'
+import { Team } from '@/types'
 
 export default function SOPs() {
-  const [sopsByProduct, setSopsByProduct] = useState<Record<string, any[]>>({})
+  const queryClient = useQueryClient()
+  const [sopsByTeam, setSopsByTeam] = useState<Record<string, any[]>>({})
   const [isLoading, setIsLoading] = useState(false)
-  const [expandedProducts, setExpandedProducts] = useState<Set<string>>(new Set())
+  const [expandedTeams, setExpandedTeams] = useState<Set<string>>(new Set())
   const [expandedSopId, setExpandedSopId] = useState<string | null>(null)
   const [expandedSection, setExpandedSection] = useState<'steps' | 'logs' | 'schedule' | null>('steps')
   const [runLogs, setRunLogs] = useState<Record<string, any[]>>({})
@@ -33,12 +34,12 @@ export default function SOPs() {
   const [scheduleType, setScheduleType] = useState('none')
   const [scheduleConfig, setScheduleConfig] = useState<Record<string, any>>({})
 
-  const { data: products = [] } = useQuery({
-    queryKey: ['products'],
-    queryFn: () => productApi.list(),
+  const { data: teams = [] } = useQuery({
+    queryKey: ['teams'],
+    queryFn: () => teamApi.list(),
   })
 
-  const trainedProducts = products.filter((p: Product) =>
+  const trainedTeams = teams.filter((p: Team) =>
     p.folder_groups?.some(g => g.training_status === 'completed') === true
   )
 
@@ -53,46 +54,47 @@ export default function SOPs() {
         results[AGENT_GENERAL_SCOPE] = []
       }
       await Promise.all(
-        trainedProducts.map(async (p: Product) => {
+        trainedTeams.map(async (p: Team) => {
           try {
-            const sops = await agentApi.listSOPs(p.product_id)
-            results[p.product_id] = Array.isArray(sops) ? sops : []
+            const sops = await agentApi.listSOPs(p.team_id)
+            results[p.team_id] = Array.isArray(sops) ? sops : []
           } catch {
-            results[p.product_id] = []
+            results[p.team_id] = []
           }
         })
       )
-      setSopsByProduct(results)
+      setSopsByTeam(results)
     } catch {
       toast.error('Failed to load automations')
     } finally {
       setIsLoading(false)
     }
-  }, [trainedProducts.map(p => p.product_id).join(',')])
+  }, [trainedTeams.map(p => p.team_id).join(',')])
 
   useEffect(() => {
     loadAllSOPs()
   }, [loadAllSOPs])
 
-  const handleDelete = useCallback(async (sopId: string, productId: string) => {
+  const handleDelete = useCallback(async (sopId: string, teamId: string) => {
     try {
       await agentApi.deleteSOP(sopId)
-      setSopsByProduct(prev => ({
+      setSopsByTeam(prev => ({
         ...prev,
-        [productId]: (prev[productId] || []).filter(s => s.sop_id !== sopId),
+        [teamId]: (prev[teamId] || []).filter(s => s.sop_id !== sopId),
       }))
+      queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] })
       toast.success('Automation deleted')
     } catch {
       toast.error('Failed to delete automation')
     }
-  }, [])
+  }, [queryClient])
 
-  const handleApprove = useCallback(async (sopId: string, productId: string) => {
+  const handleApprove = useCallback(async (sopId: string, teamId: string) => {
     try {
       await agentApi.approveSOP(sopId)
-      setSopsByProduct(prev => ({
+      setSopsByTeam(prev => ({
         ...prev,
-        [productId]: (prev[productId] || []).map(s =>
+        [teamId]: (prev[teamId] || []).map(s =>
           s.sop_id === sopId ? { ...s, status: 'approved' } : s
         ),
       }))
@@ -107,13 +109,17 @@ export default function SOPs() {
     try {
       await agentApi.manualRun(sopId)
       toast.success('Automation run started!')
-      setTimeout(() => loadRunLogs(sopId), 2000)
+      queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] })
+      setTimeout(() => {
+        loadRunLogs(sopId)
+        queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] })
+      }, 2000)
     } catch (err: any) {
       toast.error(err?.response?.data?.detail || 'Failed to start run')
     } finally {
       setRunningManual(null)
     }
-  }, [])
+  }, [queryClient])
 
   const loadRunLogs = useCallback(async (sopId: string) => {
     setLoadingLogs(sopId)
@@ -127,12 +133,12 @@ export default function SOPs() {
     }
   }, [])
 
-  const handleSaveSchedule = useCallback(async (sopId: string, productId: string) => {
+  const handleSaveSchedule = useCallback(async (sopId: string, teamId: string) => {
     try {
       const result = await agentApi.updateSchedule(sopId, scheduleType, scheduleType !== 'none' ? scheduleConfig : undefined)
-      setSopsByProduct(prev => ({
+      setSopsByTeam(prev => ({
         ...prev,
-        [productId]: (prev[productId] || []).map(s => s.sop_id === sopId ? { ...s, ...result } : s),
+        [teamId]: (prev[teamId] || []).map(s => s.sop_id === sopId ? { ...s, ...result } : s),
       }))
       setEditingScheduleId(null)
       toast.success('Schedule updated!')
@@ -141,7 +147,7 @@ export default function SOPs() {
     }
   }, [scheduleType, scheduleConfig])
 
-  const handleEditSop = useCallback(async (sopId: string, productId: string) => {
+  const handleEditSop = useCallback(async (sopId: string, teamId: string) => {
     if (!editInstructions.trim()) return
     setIsEditingSop(true)
     try {
@@ -182,9 +188,9 @@ export default function SOPs() {
           }
         }
       }
-      setSopsByProduct(prev => ({
+      setSopsByTeam(prev => ({
         ...prev,
-        [productId]: (prev[productId] || []).map(s =>
+        [teamId]: (prev[teamId] || []).map(s =>
           s.sop_id === sopId ? { ...s, sop_markdown: editResult.sop_markdown, title: editResult.title } : s
         ),
       }))
@@ -199,28 +205,28 @@ export default function SOPs() {
     }
   }, [editInstructions])
 
-  const generalSopsList = sopsByProduct[AGENT_GENERAL_SCOPE] || []
+  const generalSopsList = sopsByTeam[AGENT_GENERAL_SCOPE] || []
   const displaySopSections: { sectionId: string; sectionName: string; isGeneral: boolean }[] = []
   if (generalSopsList.length > 0) {
     displaySopSections.push({ sectionId: AGENT_GENERAL_SCOPE, sectionName: 'General', isGeneral: true })
   }
-  for (const p of trainedProducts) {
-    if ((sopsByProduct[p.product_id] || []).length > 0) {
-      displaySopSections.push({ sectionId: p.product_id, sectionName: p.product_name, isGeneral: false })
+  for (const p of trainedTeams) {
+    if ((sopsByTeam[p.team_id] || []).length > 0) {
+      displaySopSections.push({ sectionId: p.team_id, sectionName: p.team_name, isGeneral: false })
     }
   }
   const totalSOPs =
     generalSopsList.length +
-    trainedProducts.reduce((sum, p) => sum + (sopsByProduct[p.product_id] || []).length, 0)
+    trainedTeams.reduce((sum, p) => sum + (sopsByTeam[p.team_id] || []).length, 0)
   const sopSectionCount =
     (generalSopsList.length > 0 ? 1 : 0) +
-    trainedProducts.filter((p: Product) => (sopsByProduct[p.product_id] || []).length > 0).length
+    trainedTeams.filter((p: Team) => (sopsByTeam[p.team_id] || []).length > 0).length
 
-  const toggleProduct = (productId: string) => {
-    setExpandedProducts(prev => {
+  const toggleTeam = (teamId: string) => {
+    setExpandedTeams(prev => {
       const next = new Set(prev)
-      if (next.has(productId)) next.delete(productId)
-      else next.add(productId)
+      if (next.has(teamId)) next.delete(teamId)
+      else next.add(teamId)
       return next
     })
   }
@@ -239,7 +245,12 @@ export default function SOPs() {
   return (
     <div className="h-full flex flex-col">
       {/* Header — match Documentation */}
-      <div className="p-8 pb-4 border-b border-rt-border">
+      <motion.div
+        initial={{ opacity: 0, y: -20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4 }}
+        className="p-8 pb-4 border-b border-rt-border"
+      >
         <div className="flex items-center gap-3 mb-2">
           <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-emerald-500/20 to-teal-500/20 flex items-center justify-center">
             <ClipboardList className="w-5 h-5 text-emerald-400" />
@@ -249,18 +260,28 @@ export default function SOPs() {
             <p className="text-rt-text-muted text-sm">Automated workflows generated from agent conversations</p>
           </div>
         </div>
-      </div>
+      </motion.div>
 
       {/* Sub-header — match Documentation */}
-      <div className="px-8 py-3 border-b border-rt-border bg-rt-bg-light flex items-center gap-4">
+      <motion.div
+        initial={{ opacity: 0, y: -10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4, delay: 0.05 }}
+        className="px-8 py-3 border-b border-rt-border bg-rt-bg-light flex items-center gap-4"
+      >
         <span className="text-xs text-rt-text-muted">
           {totalSOPs} automation{totalSOPs !== 1 ? 's' : ''}
           {sopSectionCount > 0 ? ` · ${sopSectionCount} section${sopSectionCount !== 1 ? 's' : ''}` : ''}
         </span>
-      </div>
+      </motion.div>
 
       {/* Grouped automation list — match Documentation */}
-      <div className="flex-1 overflow-auto p-8">
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4, delay: 0.1 }}
+        className="flex-1 overflow-auto p-8"
+      >
         {isLoading ? (
           <div className="flex items-center justify-center gap-2 text-rt-text-muted py-16">
             <Loader2 className="w-5 h-5 animate-spin" /> Loading automations...
@@ -269,20 +290,20 @@ export default function SOPs() {
           <div className="text-center py-16">
             <ClipboardList className="w-12 h-12 mx-auto mb-4 text-rt-text-muted/30" />
             <p className="text-rt-text-muted max-w-md mx-auto">
-              No automations yet. In the Agent, get an answer then use <strong>Build Automation</strong> — with a product or under <strong>General</strong> when no product is selected.
+              No automations yet. In the Agent, get an answer then use <strong>Build Automation</strong> — with a team or under <strong>General</strong> when no team is selected.
             </p>
           </div>
         ) : (
           <div className="max-w-6xl mx-auto space-y-6">
             {displaySopSections.map((section) => {
-              const productSOPs = sopsByProduct[section.sectionId] || []
-              const isExpanded = expandedProducts.has(section.sectionId)
+              const teamSOPs = sopsByTeam[section.sectionId] || []
+              const isExpanded = expandedTeams.has(section.sectionId)
               return (
                 <div key={section.sectionId}>
-                  {/* Product group header */}
+                  {/* Team group header */}
                   <button
                     type="button"
-                    onClick={() => toggleProduct(section.sectionId)}
+                    onClick={() => toggleTeam(section.sectionId)}
                     className="w-full flex items-center gap-3 px-4 py-2.5 rounded-lg hover:bg-rt-surface/50 transition-colors mb-2"
                   >
                     <ChevronDown className={`w-4 h-4 text-rt-text-muted transition-transform ${isExpanded ? '' : '-rotate-90'}`} />
@@ -293,7 +314,7 @@ export default function SOPs() {
                     )}
                     <span className="text-sm font-semibold">{section.sectionName}</span>
                     <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-rt-surface text-rt-text-muted">
-                      {productSOPs.length}
+                      {teamSOPs.length}
                     </span>
                   </button>
 
@@ -306,7 +327,7 @@ export default function SOPs() {
                         className="overflow-hidden"
                       >
                         <div className="pl-4 space-y-3">
-                          {productSOPs.map(sop => (
+                          {teamSOPs.map(sop => (
                             <div key={sop.sop_id} className="rounded-xl border border-rt-border bg-rt-surface/20 overflow-hidden hover:border-rt-border/80 transition-colors">
                               <div
                                 className="flex items-center gap-4 px-5 py-3.5 cursor-pointer hover:bg-rt-surface/30 transition-colors"
@@ -579,7 +600,7 @@ export default function SOPs() {
             })}
           </div>
         )}
-      </div>
+      </motion.div>
     </div>
   )
 }

@@ -234,7 +234,7 @@ export default function UserDetailDrawer({ userId, onClose, currentUser }: Props
                         <InfoRow icon={Clock} label="Created" value={user.created_at ? new Date(user.created_at).toLocaleDateString() : '—'} />
                         {user.role === 'user_admin' && (
                           <>
-                            <InfoRow icon={Hash} label="Max Products" value={user.max_products !== null && user.max_products !== undefined ? String(user.max_products) : 'Org default'} />
+                            <InfoRow icon={Hash} label="Max Teams" value={user.max_teams !== null && user.max_teams !== undefined ? String(user.max_teams) : 'Org default'} />
                             <InfoRow icon={Hash} label="Max Users (can create)" value={user.max_managed_users !== null && user.max_managed_users !== undefined ? String(user.max_managed_users) : 'Org default'} />
                           </>
                         )}

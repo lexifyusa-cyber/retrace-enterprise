@@ -15,6 +15,7 @@ interface Tab {
 interface BrowserWorkspaceProps {
   conversationId: string | null
   isVisible: boolean
+  isAgentRunning?: boolean
 }
 
 let tabIdCounter = 0
@@ -24,7 +25,7 @@ function makeStandaloneId(): string {
   return `standalone_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
 }
 
-export default function BrowserWorkspace({ conversationId, isVisible }: BrowserWorkspaceProps) {
+export default function BrowserWorkspace({ conversationId, isVisible, isAgentRunning = false }: BrowserWorkspaceProps) {
   // If no conversation, create a standalone session so user can still browse
   const standaloneIdRef = useRef<string>(makeStandaloneId())
   const effectiveSessionId = conversationId || standaloneIdRef.current
@@ -40,10 +41,15 @@ export default function BrowserWorkspace({ conversationId, isVisible }: BrowserW
   const [statusMessage, setStatusMessage] = useState('')
   const [showTypeInput, setShowTypeInput] = useState(false)
   const [typeText, setTypeText] = useState('')
+  const [browserTouched, setBrowserTouched] = useState(false)
+  const [clickIndicators, setClickIndicators] = useState<Array<{ id: number; x: number; y: number }>>([])
+  const [isBrowserControlled, setIsBrowserControlled] = useState(false)
+  const [controlAction, setControlAction] = useState('')
   const wsRef = useRef<WebSocket | null>(null)
   const imgRef = useRef<HTMLImageElement>(null)
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const connectAttemptRef = useRef(0)
+  const clickIdCounter = useRef(0)
 
   const activeTab = tabs.find(t => t.id === activeTabId) || tabs[0]
 
@@ -88,6 +94,29 @@ export default function BrowserWorkspace({ conversationId, isVisible }: BrowserW
                 : t
             ))
             if (msg.url) setUrlInput(msg.url)
+            // Mark browser as touched — glow stays on until agent finishes
+            setBrowserTouched(true)
+            break
+          case 'click_indicator': {
+            // Agent or user click — show dot+ripple at coordinates
+            const img = imgRef.current
+            if (img && msg.x != null && msg.y != null) {
+              const rect = img.getBoundingClientRect()
+              const container = img.parentElement?.getBoundingClientRect()
+              if (container) {
+                // Scale from natural image coords to display coords, offset by image position within container
+                const displayX = (msg.x / img.naturalWidth) * rect.width + (rect.left - container.left)
+                const displayY = (msg.y / img.naturalHeight) * rect.height + (rect.top - container.top)
+                const id = ++clickIdCounter.current
+                setClickIndicators(prev => [...prev, { id, x: displayX, y: displayY }])
+                setTimeout(() => setClickIndicators(prev => prev.filter(c => c.id !== id)), 700)
+              }
+            }
+            break
+          }
+          case 'browser_control':
+            setIsBrowserControlled(!!msg.active)
+            setControlAction(msg.action || '')
             break
           case 'status':
             setStatusMessage(msg.message || '')
@@ -128,6 +157,13 @@ export default function BrowserWorkspace({ conversationId, isVisible }: BrowserW
     }
   }, [effectiveSessionId, isVisible])
 
+  // Reset browserTouched when agent stops running
+  useEffect(() => {
+    if (!isAgentRunning) {
+      setBrowserTouched(false)
+    }
+  }, [isAgentRunning])
+
   // Connect on mount / visibility change
   useEffect(() => {
     if (isVisible) {
@@ -151,12 +187,20 @@ export default function BrowserWorkspace({ conversationId, isVisible }: BrowserW
     // which is handled by the connect effect above).
     if (conversationId !== prevConversationIdRef.current) {
       prevConversationIdRef.current = conversationId
+      // Reset browser state so stale screenshots don't bleed through.
+      const newTabId = `tab_${tabIdCounter++}`
+      setTabs([{ id: newTabId, title: 'New Tab', url: '', screenshot: null }])
+      setActiveTabId(newTabId)
+      setUrlInput('')
+      setIsBrowserControlled(false)
+      setControlAction('')
+      setBrowserTouched(false)
+      connectAttemptRef.current += 1
+      if (wsRef.current) {
+        wsRef.current.close()
+        wsRef.current = null
+      }
       if (conversationId) {
-        connectAttemptRef.current += 1
-        if (wsRef.current) {
-          wsRef.current.close()
-          wsRef.current = null
-        }
         // Small delay to let the previous connection cleanup finish
         const timer = setTimeout(() => connect(), 100)
         return () => clearTimeout(timer)
@@ -177,12 +221,21 @@ export default function BrowserWorkspace({ conversationId, isVisible }: BrowserW
     const img = imgRef.current
     if (!img) return
     const rect = img.getBoundingClientRect()
+    const container = img.parentElement?.getBoundingClientRect()
     const scaleX = img.naturalWidth / rect.width
     const scaleY = img.naturalHeight / rect.height
     const x = Math.round((e.clientX - rect.left) * scaleX)
     const y = Math.round((e.clientY - rect.top) * scaleY)
     send({ type: 'click', x, y })
     setStatusMessage(`Clicked (${x}, ${y})`)
+    // Show click indicator at display coordinates
+    if (container) {
+      const displayX = e.clientX - container.left
+      const displayY = e.clientY - container.top
+      const id = ++clickIdCounter.current
+      setClickIndicators(prev => [...prev, { id, x: displayX, y: displayY }])
+      setTimeout(() => setClickIndicators(prev => prev.filter(c => c.id !== id)), 700)
+    }
   }, [send])
 
   const handleNavigate = useCallback((e: React.FormEvent) => {
@@ -400,15 +453,35 @@ export default function BrowserWorkspace({ conversationId, isVisible }: BrowserW
         {/* Browser viewport */}
         <div className="flex-1 overflow-hidden bg-white relative">
           {activeTab?.screenshot ? (
-            <img
-              ref={imgRef}
-              src={`data:image/jpeg;base64,${activeTab.screenshot}`}
-              alt={activeTab.title || 'Browser view'}
-              className="w-full h-full object-contain cursor-crosshair"
-              onClick={handleImageClick}
-              onWheel={handleWheel}
-              draggable={false}
-            />
+            <>
+              <img
+                ref={imgRef}
+                src={`data:image/jpeg;base64,${activeTab.screenshot}`}
+                alt={activeTab.title || 'Browser view'}
+                className="w-full h-full object-contain cursor-crosshair"
+                onClick={handleImageClick}
+                onWheel={handleWheel}
+                draggable={false}
+              />
+              {/* Glow overlay — on from first browser action until agent finishes */}
+              {isAgentRunning && browserTouched && <div className="browser-glow-overlay" />}
+              {/* AI control overlay */}
+              {isBrowserControlled && (
+                <div className="absolute inset-0 z-40 pointer-events-none flex items-start justify-center">
+                  <div className="mt-3 px-4 py-2 bg-black/70 backdrop-blur-sm rounded-full flex items-center gap-2 text-white text-sm font-medium shadow-lg border border-amber-500/30 animate-pulse">
+                    <Loader2 className="w-4 h-4 animate-spin text-amber-400" />
+                    <span>AI is controlling the browser{controlAction ? ` — ${controlAction}` : ''}</span>
+                  </div>
+                </div>
+              )}
+              {/* Click indicators overlay */}
+              {clickIndicators.map(ind => (
+                <div key={ind.id}>
+                  <div className="click-dot" style={{ left: ind.x, top: ind.y }} />
+                  <div className="click-ripple" style={{ left: ind.x, top: ind.y }} />
+                </div>
+              ))}
+            </>
           ) : (
             <div className="flex flex-col items-center justify-center h-full text-center p-8 bg-rt-bg-lighter/30">
               <div className="icon-orb mb-5">

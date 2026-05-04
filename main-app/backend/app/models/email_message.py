@@ -25,9 +25,9 @@ class EmailMessage(Base):
         ForeignKey("email_inboxes.inbox_id", ondelete="CASCADE"),
         nullable=False,
     )
-    product_id: Mapped[str] = mapped_column(
+    team_id: Mapped[str] = mapped_column(
         String(36),
-        ForeignKey("products.product_id", ondelete="CASCADE"),
+        ForeignKey("teams.team_id", ondelete="CASCADE"),
         nullable=False,
     )
     from_address: Mapped[str] = mapped_column(String(320), nullable=False)
@@ -50,7 +50,7 @@ class EmailMessage(Base):
         return {
             "message_id": self.message_id,
             "inbox_id": self.inbox_id,
-            "product_id": self.product_id,
+            "team_id": self.team_id,
             "from_address": self.from_address,
             "subject": self.subject,
             "body_text": self.body_text,

@@ -17,9 +17,9 @@ class AgentSession(Base):
     __tablename__ = "agent_sessions"
 
     session_id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    product_id: Mapped[Optional[str]] = mapped_column(
+    team_id: Mapped[Optional[str]] = mapped_column(
         String(36),
-        ForeignKey("products.product_id", ondelete="CASCADE"),
+        ForeignKey("teams.team_id", ondelete="CASCADE"),
         nullable=True,
         index=True,
     )
@@ -39,7 +39,7 @@ class AgentSession(Base):
     def to_dict(self) -> dict:
         return {
             "session_id": self.session_id,
-            "product_id": self.product_id,
+            "team_id": self.team_id,
             "task": self.task,
             "status": self.status,
             "thread_id": self.thread_id,

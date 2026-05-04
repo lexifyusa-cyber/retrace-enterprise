@@ -3,7 +3,7 @@ import {
   FolderTree, Activity, ArrowRight, Bot,
   CheckCircle2, XCircle, Loader2,
   Zap, TrendingUp, Calendar,
-  Sparkles, RefreshCw, Share2, SlidersHorizontal,
+  Sparkles, SlidersHorizontal, FileText,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { agentApi } from '@/utils/api'
@@ -21,7 +21,7 @@ export default function Dashboard() {
   const stats = data?.stats
   const recentRuns = data?.recent_runs || []
   const upcomingSchedules = data?.upcoming_schedules || []
-  const productCoverage = data?.product_coverage || []
+  const teamCoverage = data?.team_coverage || []
 
   const greeting = getGreeting()
   const firstName = user?.display_name?.split(' ')[0] || user?.email?.split('@')[0] || ''
@@ -56,12 +56,12 @@ export default function Dashboard() {
               ============================================================ */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8 mb-16">
             <StatCard
-              label="Products"
-              value={stats?.total_products || 0}
+              label="Teams"
+              value={stats?.total_teams || 0}
               icon={<FolderTree className="w-5 h-5 text-rt-primary" />}
               badge={stats?.total_groups ? `${stats.total_groups} groups` : undefined}
               badgeColor="text-rt-primary bg-rt-primary-fixed/20"
-              href="/products"
+              href="/teams"
               delay={0}
             />
             <StatCard
@@ -159,15 +159,15 @@ export default function Dashboard() {
               <div className="relative z-10">
                 <h3 className="text-2xl font-headline font-bold mb-4">Knowledge <span className="italic">Coverage</span></h3>
                 <p className="text-[#2a1700]/70 text-sm leading-relaxed mb-8">
-                  {productCoverage.length > 0
-                    ? `Your digital library spans ${productCoverage.length} product${productCoverage.length === 1 ? '' : 's'}. Expand your reach today.`
-                    : 'Start by creating products to build your knowledge base.'}
+                  {teamCoverage.length > 0
+                    ? `Your digital library spans ${teamCoverage.length} team${teamCoverage.length === 1 ? '' : 's'}. Expand your reach today.`
+                    : 'Start by creating teams to build your knowledge base.'}
                 </p>
                 <div className="space-y-5">
-                  {productCoverage.slice(0, 3).map((p: any) => (
-                    <div key={p.product_id} className="space-y-2">
+                  {teamCoverage.slice(0, 3).map((p: any) => (
+                    <div key={p.team_id} className="space-y-2">
                       <div className="flex justify-between text-xs font-bold uppercase tracking-wider">
-                        <span className="truncate mr-2">{p.product_name}</span>
+                        <span className="truncate mr-2">{p.team_name}</span>
                         <span>{p.coverage_pct}%</span>
                       </div>
                       <div className="w-full bg-white/20 h-1 rounded-full">
@@ -176,11 +176,11 @@ export default function Dashboard() {
                       </div>
                     </div>
                   ))}
-                  {productCoverage.length === 0 && (
-                    <p className="text-xs text-[#2a1700]/50 italic">No products created yet</p>
+                  {teamCoverage.length === 0 && (
+                    <p className="text-xs text-[#2a1700]/50 italic">No teams created yet</p>
                   )}
                 </div>
-                <Link to="/products" className="mt-10 bg-[#2a1700] text-white px-6 py-3 rounded-full font-bold text-sm w-full hover:bg-rt-primary transition-all active:scale-95 inline-block text-center">
+                <Link to="/teams" className="mt-10 bg-[#2a1700] text-white px-6 py-3 rounded-full font-bold text-sm w-full hover:bg-rt-primary transition-all active:scale-95 inline-block text-center">
                   Expand Curations
                 </Link>
               </div>
@@ -238,7 +238,7 @@ export default function Dashboard() {
                 System Overview
               </h4>
               <div className="space-y-0">
-                <SystemRow label="Products" value={stats?.total_products || 0} />
+                <SystemRow label="Teams" value={stats?.total_teams || 0} />
                 <SystemRow label="Total Automations" value={stats?.total_automations || 0} />
                 <SystemRow label="Approved Docs" value={`${stats?.approved_docs || 0} / ${stats?.total_docs || 0}`} />
                 <SystemRow label="Agent Conversations" value={stats?.total_conversations || 0} />
@@ -257,9 +257,9 @@ export default function Dashboard() {
               <h4 className="font-headline font-bold text-xl mb-6">Quick Actions</h4>
               <div className="grid grid-cols-2 gap-4">
                 <QuickActionButton to="/agent" icon={<Bot className="w-5 h-5 text-rt-primary" />} label="Add Task" />
-                <QuickActionButton to="/sops" icon={<RefreshCw className="w-5 h-5 text-rt-primary" />} label="Sync All" />
-                <QuickActionButton to="/docs" icon={<Share2 className="w-5 h-5 text-rt-primary" />} label="Export" />
-                <QuickActionButton to="/settings" icon={<SlidersHorizontal className="w-5 h-5 text-rt-primary" />} label="Tune AI" />
+                <QuickActionButton to="/sops" icon={<CheckCircle2 className="w-5 h-5 text-rt-primary" />} label="Automations" />
+                <QuickActionButton to="/docs" icon={<FileText className="w-5 h-5 text-rt-primary" />} label="Documentation" />
+                <QuickActionButton to="/settings" icon={<SlidersHorizontal className="w-5 h-5 text-rt-primary" />} label="Settings" />
               </div>
             </motion.div>
           </div>

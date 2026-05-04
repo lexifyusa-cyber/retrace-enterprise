@@ -12,6 +12,7 @@ from sqlalchemy import select
 import structlog
 
 from app.core.config import settings as app_settings
+from app.core.security import get_current_user, CurrentUser
 from app.db.database import get_session, async_session_maker
 from app.models.settings import LLMSettingsModel
 from app.models.mcp_tool_config import McpToolConfig
@@ -34,8 +35,12 @@ class LLMSettings(BaseModel):
     screenops_mouse_timeout: Optional[int] = None
     # ScreenOps image scale 25–100: percentage of screenshot size sent to model (reduces tokens)
     screenops_image_scale: Optional[int] = Field(None, ge=25, le=100)
+    # Central delay (ms) before every screenshot capture (0–30000, default 2000)
+    screenshot_delay_ms: Optional[int] = Field(None, ge=0, le=30000)
     # Web Search — Serper API key for enhanced web search
     serper_api_key: Optional[str] = None
+    # Agent max iterations (1–50, default 10)
+    agent_max_iterations: Optional[int] = Field(None, ge=1, le=50)
     # Training: when True, pipeline logs included/excluded folders and files
     debug_logging: Optional[bool] = None
     # Training Phase 3: max files to extract in parallel (1–32, default 1)
@@ -58,6 +63,8 @@ class LLMSettingsResponse(BaseModel):
     screenops_model: Optional[str] = None
     screenops_mouse_timeout: int = 30
     screenops_image_scale: int = 100
+    screenshot_delay_ms: int = 2000
+    agent_max_iterations: int = 10
     debug_logging: bool = False
     max_parallel_files: int = 1
 
@@ -122,7 +129,7 @@ async def test_settings_endpoint():
 
 
 @router.post("/llm", response_model=LLMSettingsResponse)
-async def update_llm_settings(settings_data: LLMSettings):
+async def update_llm_settings(settings_data: LLMSettings, current_user: CurrentUser = Depends(get_current_user)):
     """Update LLM settings."""
     import asyncio
     import sys
@@ -166,9 +173,13 @@ async def update_llm_settings(settings_data: LLMSettings):
                     db_settings.screenops_mouse_timeout = max(5, min(120, int(settings_data.screenops_mouse_timeout)))
                 if settings_data.screenops_image_scale is not None:
                     db_settings.screenops_image_scale = max(25, min(100, int(settings_data.screenops_image_scale)))
+                if settings_data.screenshot_delay_ms is not None:
+                    db_settings.screenshot_delay_ms = max(0, min(30000, int(settings_data.screenshot_delay_ms)))
                 # Serper API key for web search
                 if settings_data.serper_api_key is not None:
                     db_settings.serper_api_key = settings_data.serper_api_key if settings_data.serper_api_key else None
+                if settings_data.agent_max_iterations is not None:
+                    db_settings.agent_max_iterations = max(1, min(50, int(settings_data.agent_max_iterations)))
                 if settings_data.debug_logging is not None:
                     db_settings.debug_logging = bool(settings_data.debug_logging)
                 if settings_data.max_parallel_files is not None:
@@ -236,6 +247,8 @@ async def update_llm_settings(settings_data: LLMSettings):
                 screenops_model=db_settings.screenops_model,
                 screenops_mouse_timeout=int(getattr(db_settings, "screenops_mouse_timeout", 30) or 30),
                 screenops_image_scale=max(25, min(100, int(getattr(db_settings, "screenops_image_scale", 100) or 100))),
+                screenshot_delay_ms=max(0, min(30000, int(getattr(db_settings, "screenshot_delay_ms", 2000) or 2000))),
+                agent_max_iterations=int(getattr(db_settings, "agent_max_iterations", 10) or 10),
                 debug_logging=bool(getattr(db_settings, "debug_logging", False)),
                 max_parallel_files=int(getattr(db_settings, "max_parallel_files", 1) or 1),
             )
@@ -253,7 +266,7 @@ async def update_llm_settings(settings_data: LLMSettings):
 
 
 @router.get("/llm", response_model=LLMSettingsResponse)
-async def get_llm_settings(session: AsyncSession = Depends(get_session)):
+async def get_llm_settings(session: AsyncSession = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
     """Get current LLM settings."""
     print("[GET_SETTINGS] Loading settings from database...", flush=True)
     db_settings = await get_or_create_settings(session)
@@ -271,16 +284,18 @@ async def get_llm_settings(session: AsyncSession = Depends(get_session)):
         screenops_model=db_settings.screenops_model,
         screenops_mouse_timeout=int(getattr(db_settings, "screenops_mouse_timeout", 30) or 30),
         screenops_image_scale=max(25, min(100, int(getattr(db_settings, "screenops_image_scale", 100) or 100))),
+        screenshot_delay_ms=max(0, min(30000, int(getattr(db_settings, "screenshot_delay_ms", 2000) or 2000))),
+        agent_max_iterations=int(getattr(db_settings, "agent_max_iterations", 10) or 10),
         debug_logging=bool(getattr(db_settings, "debug_logging", False)),
         max_parallel_files=int(getattr(db_settings, "max_parallel_files", 1) or 1),
     )
-    
+
     print(f"[GET_SETTINGS] Returning: provider={response.provider}, model={response.model_name}, api_url={response.api_url}", flush=True)
     return response
 
 
 @router.post("/llm/test", response_model=TestConnectionResponse)
-async def test_llm_connection(settings_data: LLMSettings, session: AsyncSession = Depends(get_session)):
+async def test_llm_connection(settings_data: LLMSettings, session: AsyncSession = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
     """Test connectivity to Chat and ScreenOps APIs."""
     import time
     from openai import AsyncOpenAI
@@ -420,6 +435,7 @@ _LEGACY_KB_TOOL_NAMES = {"search_knowledge_base", "list_kb_entries", "read_kb_fi
 async def update_agent_tools(
     data: AgentToolsUpdate,
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """Update which agent tools are enabled/disabled. Pass disabled_tools list."""
     # Normalize: legacy KB tool names → knowledge_base
@@ -442,7 +458,7 @@ async def update_agent_tools(
 
 
 @router.get("/llm/api-key")
-async def get_api_key(session: AsyncSession = Depends(get_session)):
+async def get_api_key(session: AsyncSession = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
     """Get the current API key (for internal use)."""
     db_settings = await get_or_create_settings(session)
     return {
@@ -451,7 +467,7 @@ async def get_api_key(session: AsyncSession = Depends(get_session)):
 
 
 @router.get("/llm/model")
-async def get_model_name(session: AsyncSession = Depends(get_session)):
+async def get_model_name(session: AsyncSession = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
     """Get the current model name (for internal use)."""
     db_settings = await get_or_create_settings(session)
     return {
@@ -495,8 +511,10 @@ async def get_active_llm_settings(session: AsyncSession, consumer_key: str | Non
         "screenops_model": getattr(db_settings, "screenops_model", None),
         "screenops_mouse_timeout": max(5, min(120, int(getattr(db_settings, "screenops_mouse_timeout", 30) or 30))),
         "screenops_image_scale": max(25, min(100, int(getattr(db_settings, "screenops_image_scale", 100) or 100))),
+        "screenshot_delay_ms": max(0, min(30000, int(getattr(db_settings, "screenshot_delay_ms", 2000) or 2000))),
         "serper_api_key": getattr(db_settings, "serper_api_key", None),
         "agent_tools_config": agent_tools_config,
+        "agent_max_iterations": max(1, min(50, int(getattr(db_settings, "agent_max_iterations", 10) or 10))),
         "debug_logging": bool(getattr(db_settings, "debug_logging", False)),
         "max_parallel_files": max(1, min(32, int(getattr(db_settings, "max_parallel_files", 1) or 1))),
     }
@@ -522,7 +540,7 @@ class McpToolConfigUpdate(BaseModel):
 
 
 @router.get("/mcp-tools")
-async def list_mcp_tool_configs(session: AsyncSession = Depends(get_session)):
+async def list_mcp_tool_configs(session: AsyncSession = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
     """List all configured MCP tool servers."""
     result = await session.execute(
         select(McpToolConfig).order_by(McpToolConfig.created_at.desc())
@@ -535,6 +553,7 @@ async def list_mcp_tool_configs(session: AsyncSession = Depends(get_session)):
 async def create_mcp_tool_config(
     data: McpToolConfigCreate,
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """Add MCP server(s) as tool sources.
 
@@ -581,6 +600,7 @@ async def update_mcp_tool_config(
     config_id: str,
     data: McpToolConfigUpdate,
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """Update an existing MCP tool config."""
     result = await session.execute(
@@ -606,6 +626,7 @@ async def update_mcp_tool_config(
 async def delete_mcp_tool_config(
     config_id: str,
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """Delete an MCP tool config."""
     result = await session.execute(
@@ -624,6 +645,7 @@ async def delete_mcp_tool_config(
 async def toggle_mcp_tool_config(
     config_id: str,
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """Toggle enabled/disabled for an MCP tool config."""
     result = await session.execute(

@@ -10,11 +10,34 @@ import {
 import { motion, AnimatePresence } from 'framer-motion'
 import ReactMarkdown from 'react-markdown'
 import toast from 'react-hot-toast'
-import { productApi, agentApi } from '@/utils/api'
-import { Product, AgentTool, Conversation } from '@/types'
+import { teamApi, agentApi } from '@/utils/api'
+import { Team, AgentTool, Conversation } from '@/types'
 import TerminalPanel from '@/components/TerminalPanel'
 import BrowserWorkspace from '@/components/BrowserWorkspace'
 import SandboxFileExplorer from '@/components/SandboxFileExplorer'
+
+// ---------------------------------------------------------------------------
+// Session persistence helpers (follows MCP Builder pattern)
+// ---------------------------------------------------------------------------
+const AGENT_SESSION_KEY = 'agent_session_state'
+function loadAgentSession(): Record<string, any> {
+  try {
+    const raw = sessionStorage.getItem(AGENT_SESSION_KEY)
+    return raw ? JSON.parse(raw) : {}
+  } catch { return {} }
+}
+function saveAgentSession(state: Record<string, any>) {
+  try { sessionStorage.setItem(AGENT_SESSION_KEY, JSON.stringify(state)) } catch {}
+}
+
+// Module-level in-flight stream tracker — survives component unmount/remount
+let _inflightStream: {
+  conversationId: string
+  newMessages: AgentMessage[]
+  pendingKey: string
+  pipeline: { name: string; activity: string | null; code: string; output: string; done: boolean }[]
+  done: boolean
+} | null = null
 
 // ---------------------------------------------------------------------------
 // Types
@@ -34,11 +57,12 @@ interface AgentMessage {
 
 export default function Agent() {
   const queryClient = useQueryClient()
+  const _saved = loadAgentSession()
   const [task, setTask] = useState('')
-  const [selectedProductId, setSelectedProductId] = useState<string>('')
-  const [showProductPicker, setShowProductPicker] = useState(false)
-  const [messages, setMessages] = useState<AgentMessage[]>([])
-  const [isRunning, setIsRunning] = useState(false)
+  const [selectedTeamId, setSelectedTeamId] = useState<string>(_saved.selectedTeamId ?? '')
+  const [showTeamPicker, setShowTeamPicker] = useState(false)
+  const [messages, setMessages] = useState<AgentMessage[]>(_saved.messages ?? [])
+  const [isRunning, setIsRunning] = useState(!!_inflightStream)
   const [streamingAnswer, setStreamingAnswer] = useState<string | null>(null)
   const [streamingSOP, setStreamingSOP] = useState<string | null>(null)
   const [streamingDoc, setStreamingDoc] = useState<string | null>(null)
@@ -46,9 +70,12 @@ export default function Agent() {
   const abortRef = useRef<AbortController | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const idCounter = useRef(0)
+  const isInitialMount = useRef(true)
+  const streamingConversationRef = useRef<string | null>(null)
+  const activeConversationRef = useRef<string | null>(null)
 
   // Conversation state
-  const [activeConversationId, setActiveConversationId] = useState<string | null>(null)
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(_saved.activeConversationId ?? null)
   const [editingTitle, setEditingTitle] = useState<string | null>(null)
   const [editTitleValue, setEditTitleValue] = useState('')
 
@@ -57,7 +84,7 @@ export default function Agent() {
   const [workspaceTab, setWorkspaceTab] = useState<'browser' | 'terminal' | 'files'>('browser')
   const [isSandboxed, setIsSandboxed] = useState(false)
   // Live pipeline — tracks each tool call with code + output as they stream in
-  const [livePipeline, setLivePipeline] = useState<{ name: string; code: string; output: string; done: boolean }[]>([])
+  const [livePipeline, setLivePipeline] = useState<{ name: string; activity: string | null; code: string; output: string; done: boolean }[]>(_saved.livePipeline ?? [])
 
   // Debug mode — click "Agent" title 6 times → enter password → toggle appears
   const [debugMode, setDebugMode] = useState(() => localStorage.getItem('rt-debug-mode') === 'true')
@@ -111,9 +138,9 @@ export default function Agent() {
     agentApi.warmupMcp()
   }, [])
 
-  const { data: products = [] } = useQuery({
-    queryKey: ['products'],
-    queryFn: () => productApi.list(),
+  const { data: teams = [] } = useQuery({
+    queryKey: ['teams'],
+    queryFn: () => teamApi.list(),
   })
 
   const { data: tools = [] } = useQuery<AgentTool[]>({
@@ -149,51 +176,146 @@ export default function Agent() {
     updateToolsMutation.mutate(newDisabled)
   }
 
-  // Conversations for the selected product (or product-less)
+  // Conversations for the selected team (or team-less)
   const { data: conversations = [], refetch: refetchConversations } = useQuery<Conversation[]>({
-    queryKey: ['conversations', selectedProductId || '__none__'],
-    queryFn: () => agentApi.listConversations(selectedProductId || '__none__'),
+    queryKey: ['conversations', selectedTeamId || '__none__'],
+    queryFn: () => agentApi.listConversations(selectedTeamId || '__none__'),
   })
 
-  const trainedProducts = products.filter((p: Product) =>
+  const trainedTeams = teams.filter((p: Team) =>
     p.folder_groups?.some(g => g.training_status === 'completed') === true
   )
 
-  // When product changes, clear active conversation
+  // When team changes, clear active conversation (skip initial mount to preserve restored state)
   useEffect(() => {
+    if (isInitialMount.current) {
+      isInitialMount.current = false
+      return
+    }
     setActiveConversationId(null)
     setMessages([])
-  }, [selectedProductId])
+  }, [selectedTeamId])
+
+  // Persist key state to sessionStorage on every change (MCP Builder pattern)
+  useEffect(() => {
+    saveAgentSession({
+      selectedTeamId, activeConversationId,
+      messages: messages.filter(m => m.type !== 'status'),
+      livePipeline,
+    })
+  }, [selectedTeamId, activeConversationId, messages, livePipeline])
+
+  // Keep refs in sync so running streams can check current state
+  activeConversationRef.current = activeConversationId
+
+  // On mount: if there's an in-flight stream, poll it for updates until done.
+  // If no in-flight stream but we have a saved conversation, load from backend.
+  useEffect(() => {
+    if (_inflightStream) {
+      setIsRunning(true)
+      streamingConversationRef.current = _inflightStream.conversationId
+      // Poll the module-level stream for new messages and pipeline updates
+      const interval = setInterval(() => {
+        if (!_inflightStream) return
+        // Sync messages from the running stream into component state
+        const filtered = _inflightStream.newMessages.filter(m => m.type !== 'status')
+        setMessages(filtered)
+        setLivePipeline(_inflightStream.pipeline)
+        // Stream finished — do final sync and stop polling
+        if (_inflightStream.done) {
+          clearInterval(interval)
+          setIsRunning(false)
+          setLivePipeline([])
+          streamingConversationRef.current = null
+          // Load the full conversation from backend now that it's saved
+          loadConversation(_inflightStream.conversationId)
+          _inflightStream = null
+        }
+      }, 500)
+      return () => clearInterval(interval)
+    } else if (_saved.activeConversationId) {
+      loadConversation(_saved.activeConversationId)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // Auto-scroll
   useEffect(() => {
     scrollRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
   }, [messages, streamingAnswer, streamingSOP, streamingDoc])
 
+  // Reconstruct livePipeline from messages (code + output pairs)
+  const rebuildPipeline = useCallback((msgs: AgentMessage[]) => {
+    const pipeline: { name: string; activity: string | null; code: string; output: string; done: boolean }[] = []
+    for (const m of msgs) {
+      if (m.type === 'code') {
+        const code = m.content || ''
+        const activity = m.meta?.activity || null
+        const toolMatches = code.match(/(?:read_file|write_file|delete_file|download_file|str_replace|grep|glob_search|web_search|web_fetch|web_advanced|web_research|auto_browser|screenops|todo_write|knowledge_base)\s*\(/g)
+        let toolLabel = 'terminal'
+        if (toolMatches) {
+          const unique = [...new Set(toolMatches.map((s: string) => s.replace(/\s*\($/, '')))]
+          toolLabel = unique.join(', ')
+        }
+        // Mark all previous entries as done
+        pipeline.forEach(e => { e.done = true })
+        pipeline.push({ name: toolLabel, activity, code, output: '', done: false })
+      } else if (m.type === 'output' && pipeline.length > 0) {
+        pipeline[pipeline.length - 1].output = m.content || ''
+      }
+    }
+    // Mark all as done since these are historical
+    pipeline.forEach(e => { e.done = true })
+    return pipeline
+  }, [])
+
   // Load conversation messages
   const loadConversation = useCallback(async (conversationId: string) => {
     try {
       const convo = await agentApi.getConversation(conversationId)
       setActiveConversationId(conversationId)
+      let loadedMessages: AgentMessage[] = []
+      let fromCache = false
       if (convo.messages && convo.messages.length > 0) {
-        setMessages(convo.messages.map((m, i) => ({
+        loadedMessages = convo.messages.map((m, i) => ({
           id: `loaded_${i}`,
           type: m.type,
           content: m.content,
           iteration: m.iteration || undefined,
           meta: m.meta || undefined,
-        })))
-        idCounter.current = convo.messages.length
+        }))
       } else {
-        setMessages([])
-        idCounter.current = 0
+        // Check sessionStorage for in-progress messages (stream may still be running)
+        const cached = sessionStorage.getItem(`agent_pending:${conversationId}`)
+        if (cached) {
+          try {
+            const cachedMessages: AgentMessage[] = JSON.parse(cached)
+            if (cachedMessages.length > 0) {
+              loadedMessages = cachedMessages
+              fromCache = true
+            }
+          } catch { /* ignore parse errors */ }
+        }
+      }
+      setMessages(loadedMessages)
+      idCounter.current = loadedMessages.length
+      // Only rebuild pipeline for in-progress conversations (from cache).
+      // Completed conversations (from backend) already render steps in the message view.
+      if (fromCache) {
+        setLivePipeline(rebuildPipeline(loadedMessages))
+      } else {
+        setLivePipeline([])
       }
     } catch {
       toast.error('Failed to load conversation')
     }
-  }, [])
+  }, [rebuildPipeline])
 
   const addMessage = useCallback((msg: Omit<AgentMessage, 'id'>) => {
+    // Skip UI update if a stream is running for a different conversation (uses refs to avoid stale closures)
+    if (streamingConversationRef.current && streamingConversationRef.current !== activeConversationRef.current) {
+      return
+    }
     const id = `msg_${idCounter.current++}`
     setMessages(prev => {
       if (msg.type === 'status') {
@@ -223,15 +345,16 @@ export default function Agent() {
   // Create new conversation
   const handleNewConversation = useCallback(async () => {
     try {
-      const convo = await agentApi.createConversation(selectedProductId || '', 'New conversation')
+      const convo = await agentApi.createConversation(selectedTeamId || '', 'New conversation')
       setActiveConversationId(convo.conversation_id)
       setMessages([])
       idCounter.current = 0
       refetchConversations()
+      queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] })
     } catch {
       toast.error('Failed to create conversation')
     }
-  }, [selectedProductId, refetchConversations])
+  }, [selectedTeamId, refetchConversations])
 
   // Delete conversation
   const handleDeleteConversation = useCallback(async (conversationId: string, e: React.MouseEvent) => {
@@ -243,6 +366,7 @@ export default function Agent() {
         setMessages([])
       }
       refetchConversations()
+      queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] })
       toast.success('Conversation deleted')
     } catch {
       toast.error('Failed to delete conversation')
@@ -253,7 +377,7 @@ export default function Agent() {
   const handleDeleteAllConversations = useCallback(async () => {
     if (!confirm('Delete all conversations? This cannot be undone.')) return
     try {
-      await agentApi.deleteAllConversations(selectedProductId || '__none__')
+      await agentApi.deleteAllConversations(selectedTeamId || '__none__')
       setActiveConversationId(null)
       setMessages([])
       idCounter.current = 0
@@ -262,7 +386,7 @@ export default function Agent() {
     } catch {
       toast.error('Failed to delete conversations')
     }
-  }, [selectedProductId, refetchConversations])
+  }, [selectedTeamId, refetchConversations])
 
   // Rename conversation
   const handleRenameConversation = useCallback(async (conversationId: string) => {
@@ -278,18 +402,18 @@ export default function Agent() {
 
   // Learn This
   const handleLearnThis = useCallback(async (question: string, answer: string) => {
-    if (!selectedProductId) {
-      toast.error('Select a product to save knowledge')
+    if (!selectedTeamId) {
+      toast.error('Select a team to save knowledge')
       return
     }
     try {
-      await agentApi.learnThis(selectedProductId, question, answer)
+      await agentApi.learnThis(selectedTeamId, question, answer)
       toast.success('Added to knowledge base!', { icon: '🎓' })
     } catch (err: any) {
       toast.error(err?.response?.data?.detail || 'Failed to learn Q&A')
       throw err
     }
-  }, [selectedProductId])
+  }, [selectedTeamId])
 
   // Execute task
   const handleExecute = useCallback(async () => {
@@ -303,10 +427,11 @@ export default function Agent() {
     let conversationId = activeConversationId
     if (!conversationId) {
       try {
-        const convo = await agentApi.createConversation(selectedProductId || '', task.slice(0, 80))
+        const convo = await agentApi.createConversation(selectedTeamId || '', task.slice(0, 80))
         conversationId = convo.conversation_id
         setActiveConversationId(conversationId)
         refetchConversations()
+        queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] })
       } catch {
         toast.error('Failed to create conversation')
         return
@@ -315,11 +440,15 @@ export default function Agent() {
 
     setIsRunning(true)
     setLivePipeline([])
+    streamingConversationRef.current = conversationId
     const userMsg: AgentMessage = { id: `msg_${idCounter.current++}`, type: 'user', content: task }
     setMessages(prev => [...prev, userMsg])
     const currentTask = task
     setTask('')
     const newMessages: AgentMessage[] = [userMsg]
+    const pendingKey = `agent_pending:${conversationId}`
+    // Track in-flight stream at module level (survives unmount)
+    _inflightStream = { conversationId, newMessages, pendingKey, pipeline: [], done: false }
 
     const platform = (() => {
       const p = typeof navigator !== 'undefined' ? (navigator as any).userAgentData?.platform ?? navigator.platform ?? '' : ''
@@ -334,7 +463,7 @@ export default function Agent() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('rt_access_token') || ''}` },
         body: JSON.stringify({
-          product_id: selectedProductId || null,
+          team_id: selectedTeamId || null,
           task: currentTask,
           conversation_id: conversationId,
           ...(platform && { platform }),
@@ -376,6 +505,8 @@ export default function Agent() {
             currentEvent = ''
           }
         }
+        // Update in-progress cache after each chunk (exclude transient status messages)
+        sessionStorage.setItem(pendingKey, JSON.stringify(newMessages.filter(m => m.type !== 'status')))
       }
     } catch (err: any) {
       if (err.name !== 'AbortError') {
@@ -385,9 +516,14 @@ export default function Agent() {
       }
     } finally {
       setIsRunning(false)
+      setLivePipeline([])
+      streamingConversationRef.current = null
+      if (_inflightStream) _inflightStream.done = true
       if (conversationId) await saveMessagesToConversation(conversationId, newMessages)
+      // Clear in-progress cache now that messages are saved to backend
+      sessionStorage.removeItem(pendingKey)
     }
-  }, [task, selectedProductId, isRunning, activeConversationId, useReasoning, addMessage, refetchConversations, saveMessagesToConversation])
+  }, [task, selectedTeamId, isRunning, activeConversationId, useReasoning, addMessage, refetchConversations, saveMessagesToConversation])
 
   const handleSSEEvent = useCallback((event: string, data: any): Omit<AgentMessage, 'id'> | null => {
     let msg: Omit<AgentMessage, 'id'> | null = null
@@ -400,8 +536,15 @@ export default function Agent() {
       }
       case 'agent_tools': msg = { type: 'tools', content: `${data.count} tools loaded: ${(data.tools || []).join(', ')}` }; break
       case 'agent_code': {
-        msg = { type: 'code', content: data.code, iteration: data.iteration }
-        // Extract ALL unique tool names used in this code block
+        // Activity label generated by the LLM (may be null if LLM forgot the marker)
+        const activity: string | null = data.activity || null
+        msg = {
+          type: 'code',
+          content: data.code,
+          iteration: data.iteration,
+          meta: { activity },
+        }
+        // Extract ALL unique tool names used in this code block (fallback label)
         const code = data.code || ''
         const toolMatches = code.match(/(?:read_file|write_file|delete_file|download_file|str_replace|grep|glob_search|web_search|web_fetch|web_advanced|web_research|auto_browser|screenops|todo_write|knowledge_base)\s*\(/g)
         let toolLabel = 'terminal'
@@ -412,16 +555,28 @@ export default function Agent() {
           toolLabel = 'terminal'
         }
         // One entry per code block (iteration), mark previous as done
+        const newEntry = { name: toolLabel, activity, code, output: '', done: false }
+        // Update module-level tracker directly (works after unmount)
+        if (_inflightStream) {
+          _inflightStream.pipeline = _inflightStream.pipeline.map(e => ({ ...e, done: true }))
+          _inflightStream.pipeline.push(newEntry)
+        }
+        // Update React state (no-op after unmount, but works while mounted)
         setLivePipeline(prev => {
           const next = prev.map(e => ({ ...e, done: true }))
-          next.push({ name: toolLabel, code, output: '', done: false })
+          next.push(newEntry)
           return next
         })
         break
       }
       case 'tool_output': {
         msg = { type: 'output', content: data.output, iteration: data.iteration }
-        // Attach output to the last pipeline entry
+        // Update module-level tracker directly (works after unmount)
+        if (_inflightStream && _inflightStream.pipeline.length > 0) {
+          const last = _inflightStream.pipeline[_inflightStream.pipeline.length - 1]
+          _inflightStream.pipeline[_inflightStream.pipeline.length - 1] = { ...last, output: data.output || '' }
+        }
+        // Update React state
         setLivePipeline(prev => {
           if (prev.length === 0) return prev
           const next = [...prev]
@@ -512,7 +667,7 @@ export default function Agent() {
       const response = await fetch('/api/v1/agent/create-sop', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('rt_access_token') || ''}` },
-        body: JSON.stringify({ product_id: selectedProductId || null, goal, messages: saveable, conversation_id: activeConversationId || undefined }),
+        body: JSON.stringify({ team_id: selectedTeamId || null, goal, messages: saveable, conversation_id: activeConversationId || undefined }),
       })
       if (!response.ok) {
         const err = await response.text()
@@ -564,7 +719,7 @@ export default function Agent() {
     } finally {
       setIsCreatingSOP(false)
     }
-  }, [selectedProductId, messages, isCreatingSOP, activeConversationId, addMessage, saveMessagesToConversation])
+  }, [selectedTeamId, messages, isCreatingSOP, activeConversationId, addMessage, saveMessagesToConversation])
 
   const handleApproveSOP = useCallback(async (sopId: string, scheduleType?: string, scheduleConfig?: Record<string, any>): Promise<void> => {
     try {
@@ -643,7 +798,7 @@ export default function Agent() {
       const response = await fetch('/api/v1/agent/create-doc', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('rt_access_token') || ''}` },
-        body: JSON.stringify({ product_id: selectedProductId || null, goal, messages: saveable, conversation_id: activeConversationId || undefined }),
+        body: JSON.stringify({ team_id: selectedTeamId || null, goal, messages: saveable, conversation_id: activeConversationId || undefined }),
       })
       if (!response.ok) {
         const err = await response.text()
@@ -695,7 +850,7 @@ export default function Agent() {
     } finally {
       setIsCreatingDoc(false)
     }
-  }, [selectedProductId, messages, isCreatingDoc, activeConversationId, addMessage, saveMessagesToConversation])
+  }, [selectedTeamId, messages, isCreatingDoc, activeConversationId, addMessage, saveMessagesToConversation])
 
   const handleApproveDoc = useCallback(async (docId: string): Promise<void> => {
     try {
@@ -754,11 +909,11 @@ export default function Agent() {
     return editResult
   }, [])
 
-  const selectedProduct = trainedProducts.find((p: Product) => p.product_id === selectedProductId)
+  const selectedTeam = trainedTeams.find((p: Team) => p.team_id === selectedTeamId)
   const kbToolNames = new Set(['knowledge_base', 'search_knowledge_base'])
   const isToolEffectivelyOn = (name: string, available: boolean, enabledFlag: boolean | undefined) => {
-    const kbNoProduct = kbToolNames.has(name) && !selectedProductId
-    return !kbNoProduct && available && (enabledFlag !== false)
+    const kbNoTeam = kbToolNames.has(name) && !selectedTeamId
+    return !kbNoTeam && available && (enabledFlag !== false)
   }
   const enabledToolsCount = tools.filter(t => isToolEffectivelyOn(t.name, t.available, t.enabled)).length
 
@@ -847,8 +1002,8 @@ export default function Agent() {
     web_research: 'Search web, read top hits',
     web_advanced: 'Advanced web search',
     screenops: 'UI / screen automation',
-    knowledge_base: 'Search product knowledge',
-    search_knowledge_base: 'Search product knowledge',
+    knowledge_base: 'Search team knowledge',
+    search_knowledge_base: 'Search team knowledge',
   }
 
   const FILE_OPS_GROUP = 'file_operations'
@@ -859,47 +1014,80 @@ export default function Agent() {
   // ── Render ───────────────────────────────────────────────────────
   return (
     <div className="h-full flex flex-col">
-      {/* Header */}
-      <div className="p-8 pb-4 border-b border-rt-border">
-        <div className="flex items-center gap-3 mb-2">
-          <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-purple-500/20 to-blue-500/20 flex items-center justify-center">
-            <Bot className="w-5 h-5 text-purple-400" />
-          </div>
-          <div>
-            <h1 className="text-3xl font-display font-bold cursor-default select-none" onClick={handleDebugClick}>Agent</h1>
-            <p className="text-rt-text-muted text-sm">Execute tasks on your products using AI-powered tools</p>
-          </div>
+      {/* Agent header — click title 6 times to toggle debug mode */}
+      <div className="px-8 py-3 border-b border-rt-border flex items-center gap-3">
+        <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-purple-500/20 to-blue-500/20 flex items-center justify-center">
+          <Bot className="w-4 h-4 text-purple-400" />
         </div>
+        <h1 className="text-lg font-display font-bold cursor-default select-none" onClick={handleDebugClick}>Agent</h1>
+        {debugUnlocked && (
+          <button type="button" onClick={toggleDebugMode}
+            className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium border transition-colors ${
+              debugMode
+                ? 'bg-purple-500/10 text-purple-400 border-purple-500/20'
+                : 'bg-rt-surface/50 text-rt-text-muted/40 border-rt-border/30 hover:text-rt-text-muted'
+            }`}
+          >
+            <Code className="w-2.5 h-2.5" />
+            Debug
+          </button>
+        )}
       </div>
 
-      {/* Product selector + tool status */}
+      {/* Team selector + tool status */}
       <div className="px-8 py-3 border-b border-rt-border bg-rt-bg-light flex items-center gap-4">
         <div className="relative">
-          <button type="button" onClick={() => setShowProductPicker(!showProductPicker)}
-            className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-rt-border hover:border-rt-text-muted transition-colors text-sm">
+          <button type="button" onClick={() => setShowTeamPicker(!showTeamPicker)}
+            // Colorless glass dropdown — same recipe as the Browser/Terminal/
+            // Files tabs (white tint, no theme color since this is a neutral
+            // selector, not a state pill).
+            style={{
+              background:
+                'linear-gradient(180deg, rgba(255,255,255,0.20) 0%, rgba(255,255,255,0.10) 100%)',
+              boxShadow:
+                'inset 0 1px 0 rgba(255,255,255,0.4), 0 6px 16px -6px rgba(0,0,0,0.12), 0 0 0 1px rgba(255,255,255,0.18)',
+            }}
+            className="flex items-center gap-2 px-3 py-1.5 rounded-lg backdrop-blur-md transition-colors text-sm">
             <Package className="w-4 h-4 text-rt-primary" />
-            <span>{selectedProduct?.product_name || 'No product'}</span>
-            <ChevronDown className={`w-4 h-4 text-rt-text-muted transition-transform ${showProductPicker ? 'rotate-180' : ''}`} />
+            <span>{selectedTeam?.team_name || 'No team'}</span>
+            <ChevronDown className={`w-4 h-4 text-rt-text-muted transition-transform ${showTeamPicker ? 'rotate-180' : ''}`} />
           </button>
           <AnimatePresence>
-            {showProductPicker && (
+            {showTeamPicker && (
               <motion.div initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }}
-                className="absolute top-full left-0 mt-1 w-64 bg-rt-bg-light border border-rt-border rounded-lg shadow-xl z-50 overflow-hidden">
+                // Glass dropdown panel — translucent white tint, top-edge
+                // gloss highlight, soft drop shadow, subtle white edge.
+                style={{
+                  background:
+                    'linear-gradient(180deg, rgba(255,255,255,0.30) 0%, rgba(255,255,255,0.18) 100%)',
+                  boxShadow:
+                    'inset 0 1px 0 rgba(255,255,255,0.5), 0 16px 40px -8px rgba(0,0,0,0.18), 0 0 0 1px rgba(255,255,255,0.22)',
+                }}
+                className="absolute top-full left-0 mt-1 w-64 rounded-lg backdrop-blur-xl z-50 overflow-hidden">
                 <button type="button"
-                  onClick={() => { setSelectedProductId(''); setShowProductPicker(false) }}
-                  className={`w-full flex items-center gap-2 px-3 py-2 text-left text-sm hover:bg-rt-surface transition-colors ${!selectedProductId ? 'bg-rt-primary/5 text-rt-primary' : ''}`}>
-                  {!selectedProductId && <Check className="w-3.5 h-3.5" />}
-                  <span className="text-rt-text-muted italic">No product (general)</span>
+                  onClick={() => { setSelectedTeamId(''); setShowTeamPicker(false) }}
+                  // Hover = translucent glass film slides over (instead of
+                  // solid white). bg-white/15 over the panel's already-
+                  // translucent bg reads as a slightly brighter pane of
+                  // glass passing across the row.
+                  className={`w-full flex items-center gap-2 px-3 py-2 text-left text-sm transition-colors hover:bg-white/15 ${!selectedTeamId ? 'bg-white/20 text-rt-primary' : ''}`}>
+                  {!selectedTeamId && <Check className="w-3.5 h-3.5" />}
+                  <span className="text-rt-text-muted italic">No team (general)</span>
                 </button>
-                {trainedProducts.map((p: Product) => (
-                  <button key={p.product_id} type="button"
-                    onClick={() => { setSelectedProductId(p.product_id); setShowProductPicker(false) }}
-                    className={`w-full flex items-center gap-2 px-3 py-2 text-left text-sm hover:bg-rt-surface transition-colors ${p.product_id === selectedProductId ? 'bg-rt-primary/5 text-rt-primary' : ''}`}>
-                    {p.product_id === selectedProductId && <Check className="w-3.5 h-3.5" />}
-                    <span className="truncate">{p.product_name}</span>
+                {trainedTeams.map((p: Team) => (
+                  <button key={p.team_id} type="button"
+                    onClick={() => { setSelectedTeamId(p.team_id); setShowTeamPicker(false) }}
+                    className={`w-full flex items-center gap-2 px-3 py-2 text-left text-sm transition-colors hover:bg-white/15 ${p.team_id === selectedTeamId ? 'bg-white/20 text-rt-primary' : ''}`}>
+                    {p.team_id === selectedTeamId && <Check className="w-3.5 h-3.5" />}
+                    <span className="truncate flex-1">{p.team_name}</span>
+                    {(p as any).metadata?.is_prebuilt && (
+                      <span className="ml-auto px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-500/10 text-amber-600 border border-amber-500/20 flex-shrink-0">
+                        Sample
+                      </span>
+                    )}
                   </button>
                 ))}
-                {trainedProducts.length === 0 && <p className="px-3 py-2 text-sm text-rt-text-muted italic">No trained products</p>}
+                {trainedTeams.length === 0 && <p className="px-3 py-2 text-sm text-rt-text-muted italic">No trained teams</p>}
               </motion.div>
             )}
           </AnimatePresence>
@@ -912,7 +1100,17 @@ export default function Agent() {
             <span>{enabledToolsCount}/{tools.length} tools</span>
           </span>
           {isSandboxed && (
-            <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-green-500/10 text-green-500 text-[10px] font-medium border border-green-500/20">
+            <span
+              // Glossy translucent-green pill, same recipe as the conversation
+              // chips but in green-500 (#22c55e) for the "secure / sandboxed"
+              // signal.
+              style={{
+                background:
+                  'linear-gradient(180deg, rgba(34,197,94,0.18) 0%, rgba(34,197,94,0.09) 100%)',
+                boxShadow:
+                  'inset 0 1px 0 rgba(255,255,255,0.4), 0 12px 32px -8px rgba(34,197,94,0.35), 0 0 0 1px rgba(34,197,94,0.35)',
+              }}
+              className="flex items-center gap-1 px-2 py-0.5 rounded-full backdrop-blur-md text-green-500 text-[10px] font-medium">
               <div className="w-1.5 h-1.5 rounded-full bg-green-500" />
               Sandboxed
             </span>
@@ -932,8 +1130,18 @@ export default function Agent() {
           )}
           <button type="button" onClick={() => setShowWorkspace(prev => !prev)}
             title={showWorkspace ? 'Hide workspace' : 'Show workspace'}
-            className={`flex-shrink-0 flex items-center gap-1 px-2.5 py-1 rounded-md transition-all text-xs font-medium ${
-              showWorkspace ? 'bg-rt-primary-container text-[#2a1700]' : 'text-rt-text-muted hover:bg-rt-surface/60'
+            // Glossy translucent-orange pill, same recipe as the conversation
+            // chips. Toggle state differentiated by font-weight + text color.
+            style={{
+              background:
+                'linear-gradient(180deg, rgba(245,158,11,0.18) 0%, rgba(245,158,11,0.09) 100%)',
+              boxShadow:
+                'inset 0 1px 0 rgba(255,255,255,0.4), 0 12px 32px -8px rgba(245,158,11,0.35), 0 0 0 1px rgba(245,158,11,0.35)',
+            }}
+            className={`flex-shrink-0 flex items-center gap-1 px-2.5 py-1 rounded-md backdrop-blur-md text-xs transition-colors ${
+              showWorkspace
+                ? 'text-rt-primary font-semibold'
+                : 'text-orange-500/70 font-medium hover:text-orange-500'
             }`}>
             <Monitor className="w-3.5 h-3.5" />
             <span>Workspace</span>
@@ -985,9 +1193,9 @@ export default function Agent() {
               const Icon = toolIcons[t.name] || Bot
               const displayName = toolNames[t.name] || t.name
               const shortHint = toolShortHints[t.name] || (t.description ? `${t.description.slice(0, 42)}${t.description.length > 42 ? '…' : ''}` : '')
-              const kbNoProduct = (t.name === 'knowledge_base' || t.name === 'search_knowledge_base') && !selectedProductId
-              const isEnabled = !kbNoProduct && t.available && (t.enabled !== false)
-              const canToggle = t.available && !kbNoProduct
+              const kbNoTeam = (t.name === 'knowledge_base' || t.name === 'search_knowledge_base') && !selectedTeamId
+              const isEnabled = !kbNoTeam && t.available && (t.enabled !== false)
+              const canToggle = t.available && !kbNoTeam
               return (
                 <button key={t.name} type="button"
                   onClick={() => canToggle && handleToolToggle(t.name, isEnabled)}
@@ -1008,7 +1216,7 @@ export default function Agent() {
         </div>
       </div>
 
-      {/* Conversations row — horizontal, below the product bar */}
+      {/* Conversations row — horizontal, below the team bar */}
       <div className="px-8 py-2 border-b border-rt-border bg-rt-bg-light/50 flex items-center gap-2 overflow-x-auto">
           <button onClick={handleNewConversation}
             className="flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rt-primary/10 hover:bg-rt-primary/20 text-rt-primary text-xs font-medium transition-colors">
@@ -1016,17 +1224,33 @@ export default function Agent() {
           </button>
           {conversations.length > 0 && (
             <button onClick={handleDeleteAllConversations}
-              className="flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs font-medium transition-colors"
+              // Glossy translucent-red pill, same recipe as the conversation
+              // chips but in red-500 (#ef4444) for the destructive action.
+              style={{
+                background:
+                  'linear-gradient(180deg, rgba(239,68,68,0.18) 0%, rgba(239,68,68,0.09) 100%)',
+                boxShadow:
+                  'inset 0 1px 0 rgba(255,255,255,0.4), 0 12px 32px -8px rgba(239,68,68,0.35), 0 0 0 1px rgba(239,68,68,0.35)',
+              }}
+              className="flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg backdrop-blur-md text-red-400 text-xs font-medium transition-colors hover:text-red-300"
               title="Delete all conversations">
               <Trash2 className="w-3.5 h-3.5" /> Clear All
             </button>
           )}
           {conversations.map((convo) => (
             <div key={convo.conversation_id}
-              className={`group flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg cursor-pointer transition-colors text-xs ${
+              // Glossy translucent-orange pill, same recipe as the Ask AI card.
+              // Active vs inactive only differs by font-weight + text color.
+              style={{
+                background:
+                  'linear-gradient(180deg, rgba(245,158,11,0.18) 0%, rgba(245,158,11,0.09) 100%)',
+                boxShadow:
+                  'inset 0 1px 0 rgba(255,255,255,0.4), 0 12px 32px -8px rgba(245,158,11,0.35), 0 0 0 1px rgba(245,158,11,0.35)',
+              }}
+              className={`group flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg cursor-pointer transition-colors text-xs backdrop-blur-md ${
                 activeConversationId === convo.conversation_id
-                  ? 'bg-rt-primary/15 text-rt-primary border border-rt-primary/30'
-                  : 'bg-rt-surface/50 hover:bg-rt-surface text-rt-text-muted hover:text-rt-text border border-transparent'
+                  ? 'text-rt-primary font-semibold'
+                  : 'text-orange-500/80'
               }`}>
               {editingTitle === convo.conversation_id ? (
                 <form className="flex items-center gap-1" onSubmit={(e) => { e.preventDefault(); handleRenameConversation(convo.conversation_id) }}>
@@ -1067,14 +1291,23 @@ export default function Agent() {
             </div>
             <h3 className="text-xl font-display font-semibold mb-2">What would you like the agent to do?</h3>
             <p className="text-rt-text-muted max-w-md mx-auto mb-8">
-              The agent can execute tasks using terminal commands, file operations, web search, and screen automation{selectedProductId ? " — all informed by your product's knowledge base" : ''}.
+              The agent can execute tasks using terminal commands, file operations, web search, and screen automation{selectedTeamId ? " — all informed by your team's knowledge base" : ''}.
             </p>
             <div className="max-w-xl mx-auto">
               <p className="text-sm text-rt-text-muted mb-3">Try these:</p>
               <div className="flex flex-wrap gap-2 justify-center">
-                {['Read the main config file and explain it', 'Search for the latest security patches', 'List all Python files in the project', 'Fix the auth validation in login.py'].map(q => (
-                  <button key={q} onClick={() => setTask(q)} className="px-3 py-1.5 rounded-full bg-rt-surface text-sm hover:bg-rt-border transition-colors">{q}</button>
-                ))}
+                {(() => {
+                  const selectedTeam = teams.find(t => t.team_id === selectedTeamId)
+                  const teamSuggestions = Array.isArray(selectedTeam?.metadata?.suggested_questions)
+                    ? (selectedTeam!.metadata.suggested_questions as unknown[]).filter((q): q is string => typeof q === 'string')
+                    : []
+                  const prompts = teamSuggestions.length > 0
+                    ? teamSuggestions
+                    : ['Read the main config file and explain it', 'Search for the latest security patches', 'List all Python files in the project', 'Fix the auth validation in login.py']
+                  return prompts.map(q => (
+                    <button key={q} onClick={() => setTask(q)} className="px-3 py-1.5 rounded-full bg-rt-surface text-sm hover:bg-rt-border transition-colors">{q}</button>
+                  ))
+                })()}
               </div>
             </div>
           </div>
@@ -1096,17 +1329,23 @@ export default function Agent() {
                   const outputsBefore = sliced.filter(m => m.type === 'output')
                   if (codesBefore.length === 0) return null
 
-                  // One entry per code block (iteration), listing all tools used
-                  type ToolEntry = { name: string; output: string }
+                  // One entry per code block (iteration). Use the activity
+                  // label from LLM if available; otherwise fall back to
+                  // extracting tool names from the code block via regex.
+                  type ToolEntry = { activity: string | null; name: string; output: string }
                   const toolEntries: ToolEntry[] = []
                   codesBefore.forEach((m, idx) => {
+                    const activity: string | null = (m.meta && (m.meta as any).activity) || null
                     const mm = m.content.match(/(?:read_file|write_file|delete_file|download_file|str_replace|grep|glob_search|web_search|web_fetch|web_advanced|web_research|auto_browser|screenops|todo_write|knowledge_base)\s*\(/g)
                     const output = outputsBefore[idx]?.content || ''
                     if (mm) {
                       const unique = [...new Set(mm.map((x: string) => x.replace(/\s*\($/, '')))]
-                      toolEntries.push({ name: unique.join(', '), output })
+                      toolEntries.push({ activity, name: unique.join(', '), output })
                     } else if (m.content.match(/terminal\s*\(/)) {
-                      toolEntries.push({ name: 'terminal', output })
+                      toolEntries.push({ activity, name: 'terminal', output })
+                    } else if (activity) {
+                      // No tool match but we have an activity label — still show it
+                      toolEntries.push({ activity, name: '', output })
                     }
                   })
                   if (toolEntries.length === 0) return null
@@ -1119,7 +1358,7 @@ export default function Agent() {
                     message={msg}
                     messages={messages}
                     messageIndex={node.index}
-                    allowLearnThis={!!selectedProductId}
+                    allowLearnThis={!!selectedTeamId}
                     onLearnThis={handleLearnThis}
                     onCreateSOP={handleCreateSOP}
                     isCreatingSOP={isCreatingSOP}
@@ -1164,7 +1403,7 @@ export default function Agent() {
                             message={m}
                             messages={messages}
                             messageIndex={idx}
-                            allowLearnThis={!!selectedProductId}
+                            allowLearnThis={!!selectedTeamId}
                             onLearnThis={handleLearnThis}
                             onCreateSOP={handleCreateSOP}
                             hasAnswer={messages.some(mm => mm.type === 'answer') || streamingAnswer !== null}
@@ -1185,7 +1424,7 @@ export default function Agent() {
               )
             })}
             {/* Live tool pipeline — shows each tool call + output streaming in real-time */}
-            {!debugMode && isRunning && streamingAnswer === null && (
+            {!debugMode && (isRunning || livePipeline.length > 0) && streamingAnswer === null && (
               <div className="animate-fade-in ml-10">
                 {livePipeline.length > 0 ? (
                   <LiveToolPipeline entries={livePipeline} />
@@ -1256,6 +1495,11 @@ export default function Agent() {
             onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (task.trim()) handleSubmit(e as any) } }}
             placeholder={isRunning ? 'Agent is working...' : 'Describe a task to perform...'}
             rows={1}
+            // Always-on orange border (one-off override of .input which is
+            // border-transparent until focus). Inline style wins over the
+            // class-level border because TS-generated styles always win
+            // the cascade against utility classes here.
+            style={{ borderColor: '#f59e0b' }}
             className="input flex-1 resize-none min-h-[44px] max-h-[200px]" disabled={isRunning} />
           {isRunning ? (
             <button type="button" onClick={handleStop} className="btn-secondary flex items-center gap-2 text-red-400 border-red-400/30 hover:bg-red-400/10">
@@ -1289,50 +1533,50 @@ export default function Agent() {
         <div className="flex flex-col overflow-hidden" style={{ width: `${100 - chatWidthPct}%` }}>
           {/* Tab bar */}
           <div className="flex items-center gap-1 px-3 py-1.5 border-b border-rt-border bg-rt-surface/30 shrink-0">
-            <button
-              type="button"
-              onClick={() => setWorkspaceTab('browser')}
-              className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-all ${
-                workspaceTab === 'browser'
-                  ? 'bg-rt-primary-container/20 text-rt-primary-container border border-rt-primary-container/30'
-                  : 'text-rt-text-muted hover:text-rt-text hover:bg-rt-surface'
-              }`}
-            >
-              <Globe className="w-3 h-3" />
-              Browser
-            </button>
-            <button
-              type="button"
-              onClick={() => setWorkspaceTab('terminal')}
-              className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-all ${
-                workspaceTab === 'terminal'
-                  ? 'bg-rt-primary-container/20 text-rt-primary-container border border-rt-primary-container/30'
-                  : 'text-rt-text-muted hover:text-rt-text hover:bg-rt-surface'
-              }`}
-            >
-              <Terminal className="w-3 h-3" />
-              Terminal
-            </button>
-            <button
-              type="button"
-              onClick={() => setWorkspaceTab('files')}
-              className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-all ${
-                workspaceTab === 'files'
-                  ? 'bg-rt-primary-container/20 text-rt-primary-container border border-rt-primary-container/30'
-                  : 'text-rt-text-muted hover:text-rt-text hover:bg-rt-surface'
-              }`}
-            >
-              <FolderOpen className="w-3 h-3" />
-              Files
-            </button>
+            {/* Colorless glass tab pills — same gloss mechanics (top
+                highlight, soft shadow, faint edge) but no color tint
+                since these tabs aren't a themed accent on their own.
+                Active state = bold + brighter text only. */}
+            {([
+              { id: 'browser' as const, Icon: Globe, label: 'Browser' },
+              { id: 'terminal' as const, Icon: Terminal, label: 'Terminal' },
+              { id: 'files' as const, Icon: FolderOpen, label: 'Files' },
+            ]).map(({ id, Icon, label }) => {
+              const active = workspaceTab === id
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => setWorkspaceTab(id)}
+                  style={{
+                    background: active
+                      ? 'linear-gradient(180deg, rgba(245,158,11,0.14) 0%, rgba(245,158,11,0.06) 100%)'
+                      : 'linear-gradient(180deg, rgba(255,255,255,0.20) 0%, rgba(255,255,255,0.10) 100%)',
+                    boxShadow: active
+                      ? 'inset 0 1px 0 rgba(255,255,255,0.4), 0 6px 16px -6px rgba(245,158,11,0.2), 0 0 0 1px rgba(245,158,11,0.25)'
+                      : 'inset 0 1px 0 rgba(255,255,255,0.4), 0 6px 16px -6px rgba(0,0,0,0.12), 0 0 0 1px rgba(255,255,255,0.18)',
+                  }}
+                  className={`flex items-center gap-1.5 px-3 py-1 rounded-md backdrop-blur-md text-xs font-medium transition-colors ${
+                    active
+                      ? 'text-rt-text'
+                      : 'text-rt-text-muted hover:text-rt-text'
+                  }`}
+                >
+                  <Icon className="w-3 h-3" />
+                  {label}
+                </button>
+              )
+            })}
           </div>
           {/* Stacked content — browser always renders; terminal overlays on top */}
           <div className="flex-1 relative overflow-hidden">
-            {/* Browser — always visible underneath */}
-            <div className="absolute inset-0">
+            {/* Browser — always visible underneath (isolate creates a stacking context
+                so z-indices inside BrowserWorkspace don't leak above Terminal/Files) */}
+            <div className="absolute inset-0 isolate">
               <BrowserWorkspace
                 conversationId={activeConversationId}
                 isVisible={showWorkspace}
+                isAgentRunning={isRunning}
               />
             </div>
             {/* Terminal — overlays browser when selected */}
@@ -1365,7 +1609,7 @@ export default function Agent() {
 // Live tool pipeline — streams tool calls with output in real-time
 // ---------------------------------------------------------------------------
 
-function LiveToolPipeline({ entries }: { entries: { name: string; code: string; output: string; done: boolean }[] }) {
+function LiveToolPipeline({ entries }: { entries: { name: string; activity: string | null; code: string; output: string; done: boolean }[] }) {
   const [expandedEntries, setExpandedEntries] = useState<Set<number>>(new Set())
 
   const toggleEntry = (idx: number) => {
@@ -1409,7 +1653,7 @@ function LiveToolPipeline({ entries }: { entries: { name: string; code: string; 
                 )}
               </div>
               <Terminal className="w-3 h-3 text-rt-text-muted/40 flex-shrink-0" />
-              <span className="text-xs font-mono text-rt-text-muted/70">{entry.name}</span>
+              <span className={`text-xs ${entry.activity ? 'text-rt-text-muted' : 'font-mono text-rt-text-muted/70'}`}>{entry.activity || entry.name}</span>
               {hasOutput && (
                 <ChevronRight className={`w-3 h-3 text-rt-text-muted/30 transition-transform opacity-0 group-hover:opacity-100 ${isExpanded ? 'rotate-90' : ''}`} />
               )}
@@ -1434,7 +1678,7 @@ function LiveToolPipeline({ entries }: { entries: { name: string; code: string; 
 // Tool pipeline — collapsed summary with individually expandable tools
 // ---------------------------------------------------------------------------
 
-function ToolPipeline({ entries }: { entries: { name: string; output: string }[] }) {
+function ToolPipeline({ entries }: { entries: { activity: string | null; name: string; output: string }[] }) {
   const [expanded, setExpanded] = useState(false)
   const [expandedTools, setExpandedTools] = useState<Set<number>>(new Set())
 
@@ -1455,7 +1699,7 @@ function ToolPipeline({ entries }: { entries: { name: string; output: string }[]
         className="inline-flex items-center gap-1.5 text-xs text-rt-text-muted/50 hover:text-rt-text-muted transition-colors"
       >
         <ChevronRight className={`w-3 h-3 transition-transform ${expanded ? 'rotate-90' : ''}`} />
-        <span>{count} tool call{count !== 1 ? 's' : ''}</span>
+        <span>{count} step{count !== 1 ? 's' : ''}</span>
       </button>
       {expanded && (
         <div className="relative mt-1 ml-1">
@@ -1466,27 +1710,31 @@ function ToolPipeline({ entries }: { entries: { name: string; output: string }[]
               style={{ height: `calc(100% - 18px)` }}
             />
           )}
-          {entries.map((entry, idx) => (
-            <div key={idx} className="relative">
-              <button
-                onClick={() => toggleTool(idx)}
-                className="relative flex items-center gap-2.5 py-1 text-xs text-rt-text-muted/60 hover:text-rt-text-muted transition-colors w-full text-left"
-              >
-                {/* Circle node */}
-                <div className="relative z-10 w-[15px] h-[15px] rounded-full bg-rt-surface flex items-center justify-center flex-shrink-0">
-                  {expandedTools.has(idx) ? (
-                    <ChevronDown className="w-2.5 h-2.5" />
-                  ) : (
-                    <Check className="w-2.5 h-2.5 text-rt-success/60" />
-                  )}
-                </div>
-                <span className="font-mono">{entry.name}</span>
-              </button>
-              {expandedTools.has(idx) && entry.output && (
-                <pre className="ml-[27px] mt-0.5 mb-1 text-[11px] text-rt-text-muted/40 font-mono whitespace-pre-wrap max-h-40 overflow-y-auto leading-relaxed border-l border-rt-border/30 pl-3">{entry.output.slice(0, 2000)}{entry.output.length > 2000 ? '\n...' : ''}</pre>
-              )}
-            </div>
-          ))}
+          {entries.map((entry, idx) => {
+            const label = entry.activity || entry.name || 'step'
+            const isActivity = !!entry.activity
+            return (
+              <div key={idx} className="relative">
+                <button
+                  onClick={() => toggleTool(idx)}
+                  className="relative flex items-center gap-2.5 py-1 text-xs text-rt-text-muted/60 hover:text-rt-text-muted transition-colors w-full text-left"
+                >
+                  {/* Circle node */}
+                  <div className="relative z-10 w-[15px] h-[15px] rounded-full bg-rt-surface flex items-center justify-center flex-shrink-0">
+                    {expandedTools.has(idx) ? (
+                      <ChevronDown className="w-2.5 h-2.5" />
+                    ) : (
+                      <Check className="w-2.5 h-2.5 text-rt-success/60" />
+                    )}
+                  </div>
+                  <span className={isActivity ? '' : 'font-mono'}>{label}</span>
+                </button>
+                {expandedTools.has(idx) && entry.output && (
+                  <pre className="ml-[27px] mt-0.5 mb-1 text-[11px] text-rt-text-muted/40 font-mono whitespace-pre-wrap max-h-40 overflow-y-auto leading-relaxed border-l border-rt-border/30 pl-3">{entry.output.slice(0, 2000)}{entry.output.length > 2000 ? '\n...' : ''}</pre>
+                )}
+              </div>
+            )
+          })}
         </div>
       )}
     </div>
@@ -1673,8 +1921,8 @@ function MessageBubble({ message: msg, messages, messageIndex, allowLearnThis, o
                   </button>
                 )
               ) : (
-                <span className="text-[10px] text-rt-text-muted/40" title="Select a product to save this answer to its knowledge base">
-                  Select a product for KB
+                <span className="text-[10px] text-rt-text-muted/40" title="Select a team to save this answer to its knowledge base">
+                  Select a team for KB
                 </span>
               )}
               <button

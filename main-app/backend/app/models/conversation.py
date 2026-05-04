@@ -1,7 +1,7 @@
 """
-Conversation database models — persists agent chat history per product.
+Conversation database models — persists agent chat history per team.
 
-Each product has its own set of conversations. Conversations are only
+Each team has its own set of conversations. Conversations are only
 deleted when the user explicitly removes them.
 """
 
@@ -16,16 +16,16 @@ from app.db.database import Base
 
 
 class Conversation(Base):
-    """A conversation thread belonging to a product."""
+    """A conversation thread belonging to a team."""
 
     __tablename__ = "conversations"
 
     conversation_id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=lambda: str(uuid4())
     )
-    product_id: Mapped[Optional[str]] = mapped_column(
+    team_id: Mapped[Optional[str]] = mapped_column(
         String(36),
-        ForeignKey("products.product_id", ondelete="CASCADE"),
+        ForeignKey("teams.team_id", ondelete="CASCADE"),
         nullable=True,
         index=True,
     )
@@ -47,7 +47,7 @@ class Conversation(Base):
     def to_dict(self, include_messages: bool = False) -> dict:
         d = {
             "conversation_id": self.conversation_id,
-            "product_id": self.product_id,
+            "team_id": self.team_id,
             "user_id": self.user_id,
             "title": self.title,
             "created_at": self.created_at.isoformat() if self.created_at else None,

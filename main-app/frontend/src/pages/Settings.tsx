@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useRef, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Settings as SettingsIcon, Zap, CheckCircle, XCircle, Loader2, Info, Monitor, LayoutPanelLeft, Command, Palette, Sun, Moon, Sparkles, ChevronDown, ChevronRight, Mail, Trash2, Plus, MessageSquare, RefreshCw, Plug, Power, PowerOff, Edit2 } from 'lucide-react'
 import { motion } from 'framer-motion'
@@ -17,6 +17,7 @@ interface LLMSettings {
   screenops_model?: string | null
   screenops_mouse_timeout?: number | null
   screenops_image_scale?: number | null
+  screenshot_delay_ms?: number | null
   serper_api_key?: string | null
   debug_logging?: boolean | null
   max_parallel_files?: number | null
@@ -34,6 +35,7 @@ interface LLMSettingsResponse {
   screenops_model?: string | null
   screenops_mouse_timeout?: number
   screenops_image_scale?: number
+  screenshot_delay_ms?: number
   debug_logging?: boolean
   max_parallel_files?: number
   agent_max_iterations?: number
@@ -60,6 +62,7 @@ export default function Settings() {
   const [screenopsModel, setScreenopsModel] = useState('gpt-4o-mini')
   const [screenopsMouseTimeout, setScreenopsMouseTimeout] = useState(30)
   const [screenopsImageScale, setScreenopsImageScale] = useState(100)
+  const [screenshotDelayMs, setScreenshotDelayMs] = useState(2000)
   const [serperKey, setSerperKey] = useState('')
   const [debugLogging, setDebugLogging] = useState(false)
   const [maxParallelFiles, setMaxParallelFiles] = useState(1)
@@ -67,9 +70,40 @@ export default function Settings() {
   const [testResult, setTestResult] = useState<{ success: boolean; message: string; latency_ms?: number } | null>(null)
   const [layoutThemeExpanded, setLayoutThemeExpanded] = useState(false)
   const [llmExpanded, setLlmExpanded] = useState(false)
+
+  // Developer mode — 10 clicks on Intelligence Engine icon → password input → unlock LLM config
+  const [devMode, setDevMode] = useState(() => localStorage.getItem('rt-dev-mode') === 'true')
+  const [showDevPasswordInput, setShowDevPasswordInput] = useState(false)
+  const [devPasswordValue, setDevPasswordValue] = useState('')
+  const devClickCount = useRef(0)
+  const devClickTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const handleDevClick = useCallback(() => {
+    devClickCount.current += 1
+    if (devClickTimer.current) clearTimeout(devClickTimer.current)
+    devClickTimer.current = setTimeout(() => { devClickCount.current = 0 }, 3000)
+    if (devClickCount.current >= 10) {
+      devClickCount.current = 0
+      if (devMode) {
+        setDevMode(false)
+        setLlmExpanded(false)
+        localStorage.removeItem('rt-dev-mode')
+        return
+      }
+      setShowDevPasswordInput(true)
+      setDevPasswordValue('')
+    }
+  }, [devMode])
+  const handleDevPasswordSubmit = useCallback(() => {
+    if (devPasswordValue === 'DqwertyA1!') {
+      setDevMode(true)
+      localStorage.setItem('rt-dev-mode', 'true')
+    }
+    setShowDevPasswordInput(false)
+    setDevPasswordValue('')
+  }, [devPasswordValue])
   const [emailExpanded, setEmailExpanded] = useState(false)
   const [orgExpanded, setOrgExpanded] = useState(false)
-  const [maxProductsPerUserAdmin, setMaxProductsPerUserAdmin] = useState(10)
+  const [maxTeamsPerUserAdmin, setMaxTeamsPerUserAdmin] = useState(10)
   const [emailProvider, setEmailProvider] = useState<'microsoft' | 'google' | 'zoho'>('microsoft')
   const [emailTenantName, setEmailTenantName] = useState('')
   const [emailClientId, setEmailClientId] = useState('')
@@ -89,7 +123,9 @@ export default function Settings() {
   const [channelName, setChannelName] = useState('')
   const [channelId, setChannelId] = useState('')
   const [channelTeamId, setChannelTeamId] = useState('')
-  const [channelProductId, setChannelProductId] = useState('')
+  // MS Teams platform team ID (only relevant when platform === 'teams').
+  // No UI input currently binds this; kept as placeholder state.
+  const [channelMsTeamId, setChannelMsTeamId] = useState('')
   const [channelAutoRespond, setChannelAutoRespond] = useState(false)
   const [channelIngestHistory, setChannelIngestHistory] = useState(true)
   const [authMethod, setAuthMethod] = useState<'email' | 'ldap' | 'azure_ad' | 'google'>('email')
@@ -188,7 +224,7 @@ export default function Settings() {
     if (tenantAuth) {
       setAuthMethod(tenantAuth.auth_method || 'email')
       setTenantDomain(tenantAuth.domain || '')
-      setMaxProductsPerUserAdmin(tenantAuth.max_products_per_user_admin ?? 10)
+      setMaxTeamsPerUserAdmin(tenantAuth.max_teams_per_user_admin ?? 10)
       setAutoProvisionEnabled(!!tenantAuth.auto_provision_enabled)
       const lc = tenantAuth.ldap_config
       if (lc) {
@@ -227,6 +263,7 @@ export default function Settings() {
       setScreenopsModel(currentSettings.screenops_model || 'gpt-4o-mini')
       setScreenopsMouseTimeout(Math.max(5, Math.min(120, currentSettings.screenops_mouse_timeout ?? 30)))
       setScreenopsImageScale(Math.max(25, Math.min(100, currentSettings.screenops_image_scale ?? 100)))
+      setScreenshotDelayMs(Math.max(0, Math.min(30000, currentSettings.screenshot_delay_ms ?? 2000)))
       setDebugLogging(currentSettings.debug_logging ?? false)
       setMaxParallelFiles(Math.max(1, Math.min(32, currentSettings.max_parallel_files ?? 1)))
       setAgentMaxIterations(Math.max(1, Math.min(50, currentSettings.agent_max_iterations ?? 10)))
@@ -400,10 +437,10 @@ export default function Settings() {
     },
   })
 
-  const { data: products = [] } = useQuery<any[]>({
-    queryKey: ['products'],
+  const { data: teams = [] } = useQuery<any[]>({
+    queryKey: ['teams'],
     queryFn: async () => {
-      const response = await api.get('/products')
+      const response = await api.get('/teams')
       return response.data
     },
   })
@@ -411,12 +448,12 @@ export default function Settings() {
   const createChannelMutation = useMutation({
     mutationFn: async () => {
       const response = await api.post('/channels/connections', {
-        product_id: channelProductId,
+        team_id: channelTeamId,
         platform: channelPlatform,
         channel_name: channelName.trim(),
         channel_id: channelId.trim(),
         bot_token: channelBotToken.trim(),
-        team_id: channelTeamId.trim() || undefined,
+        ms_team_id: channelMsTeamId.trim() || undefined,
         auto_respond: channelAutoRespond,
         ingest_history: channelIngestHistory,
       })
@@ -428,6 +465,7 @@ export default function Settings() {
       setChannelName('')
       setChannelId('')
       setChannelTeamId('')
+      setChannelMsTeamId('')
       toast.success('Channel connected!')
     },
     onError: (error: any) => {
@@ -515,6 +553,7 @@ export default function Settings() {
     }
     payload.screenops_mouse_timeout = Math.max(5, Math.min(120, screenopsMouseTimeout))
     payload.screenops_image_scale = Math.max(25, Math.min(100, screenopsImageScale))
+    payload.screenshot_delay_ms = Math.max(0, Math.min(30000, screenshotDelayMs))
     if (serperKey.trim()) {
       payload.serper_api_key = serperKey.trim()
     }
@@ -803,7 +842,7 @@ export default function Settings() {
         </div>
       </motion.div>}
 
-      {/* LLM Configuration — collapsible — admin only */}
+      {/* LLM Configuration — read-only in trial */}
       {user?.role === 'admin' && <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
@@ -811,26 +850,39 @@ export default function Settings() {
         className="max-w-4xl"
       >
         <div className="card overflow-hidden">
-          <button
-            type="button"
-            onClick={() => setLlmExpanded((e) => !e)}
-            className="w-full flex items-center justify-between gap-3 p-3 text-left hover:bg-rt-bg-light/50 transition-colors"
+          <div
+            className="flex items-center justify-between gap-3 p-3 cursor-default select-none"
+            onClick={devMode ? () => setLlmExpanded(e => !e) : undefined}
           >
             <div className="flex items-center gap-2">
-              {llmExpanded ? (
-                <ChevronDown className="w-4 h-4 text-rt-text-muted" />
-              ) : (
-                <ChevronRight className="w-4 h-4 text-rt-text-muted" />
-              )}
-              <Zap className="w-4 h-4 text-rt-primary" />
+              <Zap className="w-4 h-4 text-rt-primary cursor-pointer" onClick={(e) => { e.stopPropagation(); handleDevClick(); }} />
               <span className="text-sm font-headline font-semibold">Intelligence <span className="italic text-rt-primary-container">Engine</span></span>
+              {devMode && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-500/10 text-purple-400 border border-purple-500/20 font-medium">DEV</span>}
             </div>
             <span className="text-xs text-rt-text-muted">
-              {provider === 'openai' ? 'OpenAI' : provider === 'anthropic' ? 'Anthropic' : 'Custom'} · {modelName || 'not set'}
-              {currentSettings?.api_key_set ? ' · key set' : ''}
+              {devMode ? (
+                <>{provider === 'openai' ? 'OpenAI' : provider === 'anthropic' ? 'Anthropic' : 'Custom'} · {modelName || 'not set'}{currentSettings?.api_key_set ? ' · key set' : ''}</>
+              ) : 'Try ReTrace'}
             </span>
-          </button>
-          {llmExpanded && (
+          </div>
+          {showDevPasswordInput && (
+            <div className="p-4 border-t border-rt-border/50">
+              <div className="flex items-center gap-2">
+                <input
+                  type="password"
+                  className="input flex-1 text-sm"
+                  placeholder="Enter developer password"
+                  value={devPasswordValue}
+                  onChange={(e) => setDevPasswordValue(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleDevPasswordSubmit() }}
+                  autoFocus
+                />
+                <button onClick={handleDevPasswordSubmit} className="btn-primary text-xs px-3 py-2">Unlock</button>
+                <button onClick={() => { setShowDevPasswordInput(false); setDevPasswordValue('') }} className="btn-secondary text-xs px-3 py-2">Cancel</button>
+              </div>
+            </div>
+          )}
+          {devMode && llmExpanded && (
           <div className="p-4 pt-0 border-t border-rt-border/50">
 
           <div className="space-y-4 mt-4">
@@ -1056,6 +1108,27 @@ export default function Settings() {
                     <p className="text-xs text-rt-text-muted mt-1">
                       Percentage of screenshot size sent to the model (25–100). Lower = fewer tokens and faster; higher = more detail.
                       Saved screenshots use this scale too.
+                    </p>
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-3">
+                      <label htmlFor="screenshot-delay-ms" className="label text-xs whitespace-nowrap mb-0">Screenshot delay</label>
+                      <input
+                        id="screenshot-delay-ms"
+                        type="number"
+                        className="input w-24 text-center"
+                        min={0}
+                        max={30000}
+                        step={100}
+                        value={screenshotDelayMs}
+                        onChange={(e) => setScreenshotDelayMs(Math.max(0, Math.min(30000, Number(e.target.value) || 0)))}
+                      />
+                      <span className="text-xs text-rt-text-muted">ms (0–30000)</span>
+                    </div>
+                    <p className="text-xs text-rt-text-muted mt-1">
+                      Delay before every browser screenshot is captured. Higher values give dynamic content
+                      (animations, countdown timers, auto-loading UI) time to settle before the agent sees the page.
+                      Increase for slow-loading sites; decrease for speed.
                     </p>
                   </div>
                 </div>
@@ -1380,17 +1453,17 @@ export default function Settings() {
                 </div>
               )}
               <div>
-                <label className="label">Max Products per User Admin</label>
+                <label className="label">Max Teams per User Admin</label>
                 <input
                   type="number"
                   min={1}
                   max={1000}
                   className="input w-32"
-                  value={maxProductsPerUserAdmin}
-                  onChange={(e) => setMaxProductsPerUserAdmin(parseInt(e.target.value) || 1)}
+                  value={maxTeamsPerUserAdmin}
+                  onChange={(e) => setMaxTeamsPerUserAdmin(parseInt(e.target.value) || 1)}
                 />
                 <p className="text-[10px] text-rt-text-muted mt-1">
-                  Limits how many products a User Admin can create. Admins are unlimited.
+                  Limits how many teams a User Admin can create. Admins are unlimited.
                 </p>
               </div>
               {authMethod !== 'email' && (
@@ -1421,7 +1494,7 @@ export default function Settings() {
                   try {
                     const payload: any = {
                       auth_method: authMethod,
-                      max_products_per_user_admin: maxProductsPerUserAdmin,
+                      max_teams_per_user_admin: maxTeamsPerUserAdmin,
                       auto_provision_enabled: autoProvisionEnabled,
                     }
                     if (authMethod === 'ldap') payload.domain = tenantDomain || undefined
@@ -1482,7 +1555,7 @@ export default function Settings() {
               <Mail className="w-4 h-4 text-blue-400" />
               <span className="text-sm font-headline font-semibold">Email Provider</span>
             </div>
-            <span className="text-xs text-rt-text-muted italic">Coming soon</span>
+            <span className="text-xs text-rt-text-muted italic">Not available in trial</span>
           </div>
         </div>
       </motion.div>
@@ -1500,7 +1573,7 @@ export default function Settings() {
               <MessageSquare className="w-4 h-4 text-green-400" />
               <span className="text-sm font-headline font-semibold">Slack & Teams Channels</span>
             </div>
-            <span className="text-xs text-rt-text-muted italic">Coming soon</span>
+            <span className="text-xs text-rt-text-muted italic">Not available in trial</span>
           </div>
         </div>
       </motion.div>

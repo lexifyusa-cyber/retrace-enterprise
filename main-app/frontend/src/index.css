@@ -9,9 +9,9 @@
 /* Light Theme (default — Warm Editorial) */
 :root,
 [data-theme="light"] {
-  --rt-bg: #fbf8fc;
-  --rt-bg-light: #f6f2f7;
-  --rt-bg-lighter: #f0edf1;
+  --rt-bg: #f4efea;
+  --rt-bg-light: #efe9e3;
+  --rt-bg-lighter: #e8e1da;
   --rt-surface: #ffffff;
   --rt-border: rgba(216, 195, 173, 0.2);
   --rt-text: #1b1b1e;
@@ -560,4 +560,100 @@
 [data-theme="light"] .prose-agent pre {
   background-color: var(--rt-bg-lighter);
   color: var(--rt-text);
+}
+
+/* ===================================================================
+   BROWSER PANEL — Glow Animation + Click Indicators
+   =================================================================== */
+
+.browser-glow-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 40;
+  background:
+    linear-gradient(to bottom, rgba(245, 158, 11, 0.12) 0%, transparent 15%),
+    linear-gradient(to top, rgba(245, 158, 11, 0.12) 0%, transparent 15%),
+    linear-gradient(to right, rgba(245, 158, 11, 0.10) 0%, transparent 10%),
+    linear-gradient(to left, rgba(245, 158, 11, 0.10) 0%, transparent 10%);
+  animation: glowPulse 2.5s ease-in-out infinite;
+}
+
+@keyframes glowPulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+.click-dot {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  border-radius: 50%;
+  background: #f59e0b;
+  pointer-events: none;
+  z-index: 50;
+  animation: clickDotFade 0.6s ease-out forwards;
+}
+
+.click-ripple {
+  position: absolute;
+  width: 40px;
+  height: 40px;
+  margin: -20px 0 0 -20px;
+  border-radius: 50%;
+  border: 2px solid #f59e0b;
+  background: transparent;
+  pointer-events: none;
+  z-index: 50;
+  animation: clickRippleExpand 0.6s ease-out forwards;
+}
+
+@keyframes clickDotFade {
+  0% { opacity: 1; transform: scale(1); }
+  100% { opacity: 0; transform: scale(0.5); }
+}
+
+@keyframes clickRippleExpand {
+  0% { opacity: 0.8; transform: scale(0); }
+  100% { opacity: 0; transform: scale(3); }
+}
+
+/* Help Assistant Widget — custom move cursor on entire surface (16×16, hotspot centred) */
+.help-widget,
+.help-widget.help-widget-dragging {
+  cursor: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IiNmNTllMGIiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj48cG9seWxpbmUgcG9pbnRzPSI1IDkgMiAxMiA1IDE1Ii8+PHBvbHlsaW5lIHBvaW50cz0iOSA1IDEyIDIgMTUgNSIvPjxwb2x5bGluZSBwb2ludHM9IjE1IDE5IDEyIDIyIDkgMTkiLz48cG9seWxpbmUgcG9pbnRzPSIxOSA5IDIyIDEyIDE5IDE1Ii8+PGxpbmUgeDE9IjIiIHkxPSIxMiIgeDI9IjIyIiB5Mj0iMTIiLz48bGluZSB4MT0iMTIiIHkxPSIyIiB4Mj0iMTIiIHkyPSIyMiIvPjwvc3ZnPg==") 8 8, move !important;
+}
+
+/* Help Assistant — highlight phrases in the dashboard pitch.
+   Continuous amber shimmer sweep. Bold base weight.
+   Reduced-motion users see a static amber glow instead. */
+@keyframes rtShimmerSweep {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+.rt-shimmer {
+  font-weight: 700;
+  background: linear-gradient(
+    100deg,
+    #000000 0%,
+    #000000 40%,
+    #ffffff 50%,    /* narrow bright flash */
+    #000000 60%,
+    #000000 100%
+  );
+  background-size: 300% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: rtShimmerSweep 4.5s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .rt-shimmer {
+    animation: none;
+    background: none;
+    -webkit-background-clip: initial;
+    background-clip: initial;
+    color: #000000;
+  }
 }

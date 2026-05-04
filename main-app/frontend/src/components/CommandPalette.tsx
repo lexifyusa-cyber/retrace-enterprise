@@ -47,7 +47,7 @@ export default function CommandPalette({ isOpen, onClose }: CommandPaletteProps)
     const base = [
     // Navigation
     { id: 'nav-dashboard', label: 'Go to Dashboard', description: 'System overview and stats', icon: LayoutDashboard, action: () => { navigate('/dashboard'); onClose() }, category: 'Navigation', keywords: ['home', 'overview', 'stats'] },
-    { id: 'nav-products', label: 'Go to Products', description: 'Manage products and training', icon: FolderTree, action: () => { navigate('/products'); onClose() }, category: 'Navigation', keywords: ['folders', 'groups', 'train'] },
+    { id: 'nav-teams', label: 'Go to Teams', description: 'Manage teams and training', icon: FolderTree, action: () => { navigate('/teams'); onClose() }, category: 'Navigation', keywords: ['folders', 'groups', 'train'] },
     { id: 'nav-agent', label: 'Go to Agent', description: 'AI-powered task automation', icon: Bot, action: () => { navigate('/agent'); onClose() }, category: 'Navigation', keywords: ['ai', 'chat', 'task', 'automation'] },
     { id: 'nav-automations', label: 'Go to Automations', description: 'Scheduled workflows and SOPs', icon: ClipboardList, action: () => { navigate('/sops'); onClose() }, category: 'Navigation', keywords: ['sop', 'schedule', 'workflow'] },
     { id: 'nav-docs', label: 'Go to Documentation', description: 'Generated documentation', icon: FileText, action: () => { navigate('/docs'); onClose() }, category: 'Navigation', keywords: ['docs', 'documentation', 'wiki'] },
@@ -56,7 +56,7 @@ export default function CommandPalette({ isOpen, onClose }: CommandPaletteProps)
     ...(hasAccess(role, 'user_admin') ? [{ id: 'nav-users', label: 'Go to User Management', description: 'Manage users, roles, and access', icon: Users, action: () => { navigate('/users'); onClose() }, category: 'Navigation' as const, keywords: ['users', 'people', 'roles', 'admin'] }] : []),
     // Actions
     { id: 'action-ask', label: 'Ask a Question', description: 'Query your knowledge base', icon: MessageSquare, action: () => { navigate('/agent'); onClose() }, category: 'Actions', keywords: ['query', 'question', 'search', 'ask'] },
-    { id: 'action-create-product', label: 'Create New Product', description: 'Set up a new product', icon: FolderTree, action: () => { navigate('/products'); onClose() }, category: 'Actions', keywords: ['new', 'create', 'add'] },
+    { id: 'action-create-team', label: 'Create New Team', description: 'Set up a new team', icon: FolderTree, action: () => { navigate('/teams'); onClose() }, category: 'Actions', keywords: ['new', 'create', 'add'] },
     { id: 'action-agent', label: 'Start Agent Task', description: 'Run an AI-powered task', icon: Zap, action: () => { navigate('/agent'); onClose() }, category: 'Actions', keywords: ['run', 'execute', 'task'] },
     ]
     return base

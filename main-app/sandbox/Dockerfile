@@ -19,9 +19,17 @@ RUN pip install --no-cache-dir playwright \
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs
 
-# Browser agent script (manages Chromium via Playwright)
-COPY browser_agent.py /opt/browser_agent.py
+# Browser automation: long-lived daemon + thin client wrapper.
+# browser_daemon.py keeps Playwright connected across requests.
+# browser_control.py is the per-action entry point called by the host.
+COPY browser_daemon.py /opt/browser_daemon.py
+COPY browser_control.py /opt/browser_control.py
+COPY entrypoint.sh /opt/entrypoint.sh
+RUN chmod +x /opt/entrypoint.sh
 
 # Set HOME to /workspace so ~/file.txt goes to the persistent volume
 ENV HOME=/workspace
 WORKDIR /workspace
+
+# Start the browser daemon eagerly on boot, then keep the container alive.
+CMD ["/opt/entrypoint.sh"]

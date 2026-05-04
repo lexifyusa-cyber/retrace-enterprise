@@ -146,7 +146,7 @@ def _extract_docx(path: str) -> str:
 
 
 @router.post("/upload-docs")
-async def upload_documentation(file: UploadFile = File(...)):
+async def upload_documentation(file: UploadFile = File(...), current_user: CurrentUser = Depends(get_current_user)):
     """Upload a documentation file (PDF, DOCX, TXT, JSON, YAML) and extract text."""
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file provided")
@@ -244,7 +244,7 @@ def _check_server_status(destination_folder: str, module_name: str) -> str:
 
 
 @router.get("/servers")
-async def list_mcp_servers(session: AsyncSession = Depends(get_session)):
+async def list_mcp_servers(session: AsyncSession = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
     """List all built MCP servers with live status."""
     from app.models.mcp_server import McpServer
     from sqlalchemy import select
@@ -264,7 +264,7 @@ async def list_mcp_servers(session: AsyncSession = Depends(get_session)):
 
 
 @router.get("/servers/{server_id}")
-async def get_mcp_server(server_id: str, session: AsyncSession = Depends(get_session)):
+async def get_mcp_server(server_id: str, session: AsyncSession = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
     """Get a single MCP server's details with live status."""
     from app.models.mcp_server import McpServer
     from sqlalchemy import select
@@ -306,6 +306,7 @@ async def delete_mcp_server(
     server_id: str,
     delete_files: bool = False,
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """Remove an MCP server from the registry. Optionally delete generated files on disk."""
     import shutil
@@ -489,7 +490,7 @@ async def stop_mcp_server(server_id: str, session: AsyncSession = Depends(get_se
 
 
 class MCPDiscoverRequest(BaseModel):
-    product_id: str
+    team_id: str
 
 class MCPDiscoverExternalRequest(BaseModel):
     api_name: str
@@ -497,8 +498,8 @@ class MCPDiscoverExternalRequest(BaseModel):
     api_docs_text: Optional[str] = None
 
 class MCPGeneratorRequest(BaseModel):
-    product_id: Optional[str] = None # Native product ID or None for external
-    product_name: str # Kept product_name as it's used in task_prompt and module_name
+    team_id: Optional[str] = None # Native team ID or None for external
+    team_name: str # Kept team_name as it's used in task_prompt and module_name
     destination_folder: str
     selected_endpoints: List[dict] # Full list of selected endpoints with schema
     api_docs_url: Optional[str] = None
@@ -506,14 +507,14 @@ class MCPGeneratorRequest(BaseModel):
     api_base_url: Optional[str] = None
     auth_type: Optional[str] = None
     auth_details: Optional[str] = None
-    kb_product_id: Optional[str] = None
+    kb_team_id: Optional[str] = None
 
 @router.post("/discover")
 async def discover_mcp_endpoints(
     request: MCPDiscoverRequest,
     session: AsyncSession = Depends(get_session)
 ):
-    logger.info("mcp_builder_discover_start", product_id=request.product_id)
+    logger.info("mcp_builder_discover_start", team_id=request.team_id)
     
     llm_settings = await get_active_llm_settings(session)
     api_key = llm_settings.get("api_key")
@@ -525,7 +526,7 @@ async def discover_mcp_endpoints(
     
     provider = llm_settings.get("provider", "openai")
     endpoints = await mcp_builder_service.discover_endpoints(
-        product_id=request.product_id,
+        team_id=request.team_id,
         api_key=api_key,
         model=model,
         api_url=api_url,
@@ -573,10 +574,10 @@ async def discover_external_endpoints(
             provider=provider,
         )
 
-    # Determine kb_product_id from the result
+    # Determine kb_team_id from the result
     safe_name = re.sub(r'[^a-z0-9]', '_', request.api_name.lower()).strip('_')
-    from app.services.mcp_builder_service import MCP_PRODUCT_PREFIX
-    kb_product_id = f"{MCP_PRODUCT_PREFIX}{safe_name}" if result.raw_pages else None
+    from app.services.mcp_builder_service import MCP_TEAM_PREFIX
+    kb_team_id = f"{MCP_TEAM_PREFIX}{safe_name}" if result.raw_pages else None
 
     return {
         "status": "success",
@@ -585,7 +586,7 @@ async def discover_external_endpoints(
         "auth_details": result.auth_details,
         "endpoints": [ep.model_dump() for ep in result.endpoints],
         "pages_crawled": result.pages_crawled,
-        "kb_product_id": kb_product_id,
+        "kb_team_id": kb_team_id,
     }
 
 class MCPDiscoverAgentRequest(BaseModel):
@@ -599,7 +600,7 @@ async def discover_agent_endpoints(
     request: MCPDiscoverAgentRequest,
     session: AsyncSession = Depends(get_session)
 ):
-    """Fast crawl + KB storage: backend crawler fetches docs, stores in KB, returns kb_product_id."""
+    """Fast crawl + KB storage: backend crawler fetches docs, stores in KB, returns kb_team_id."""
     logger.info("mcp_builder_fetch_docs_start", api_name=request.api_name, url=request.api_docs_url)
 
     if not request.api_docs_url and not request.api_docs_text:
@@ -710,17 +711,17 @@ async def discover_agent_endpoints(
         raise HTTPException(status_code=400, detail="No documentation content could be fetched.")
 
     # Store all pages in KB
-    kb_product_id = await store_mcp_docs_kb(
+    kb_team_id = await store_mcp_docs_kb(
         server_name=safe_name,
         api_name=request.api_name,
         pages=pages,
     )
 
-    logger.info("mcp_fetch_docs_complete", kb_product_id=kb_product_id, pages_stored=len(pages))
+    logger.info("mcp_fetch_docs_complete", kb_team_id=kb_team_id, pages_stored=len(pages))
 
     return {
         "status": "success",
-        "kb_product_id": kb_product_id,
+        "kb_team_id": kb_team_id,
         "pages_stored": len(pages),
         "summary": f"Fetched and stored {len(pages)} pages of documentation",
     }
@@ -728,7 +729,7 @@ async def discover_agent_endpoints(
 
 class MCPAnalyzeKBRequest(BaseModel):
     api_name: str
-    kb_product_id: str
+    kb_team_id: str
 
 
 @router.post("/analyze-kb")
@@ -736,8 +737,8 @@ async def analyze_kb_endpoints(
     request: MCPAnalyzeKBRequest,
     session: AsyncSession = Depends(get_session)
 ):
-    """Analyze KB contents to discover endpoints — same flow as internal products."""
-    logger.info("mcp_builder_analyze_kb_start", api_name=request.api_name, kb_product_id=request.kb_product_id)
+    """Analyze KB contents to discover endpoints — same flow as internal teams."""
+    logger.info("mcp_builder_analyze_kb_start", api_name=request.api_name, kb_team_id=request.kb_team_id)
 
     llm_settings = await get_active_llm_settings(session)
     api_key = llm_settings.get("api_key")
@@ -746,10 +747,10 @@ async def analyze_kb_endpoints(
 
     # Load KB content (clear cache first to ensure fresh data)
     from app.rag.kb_store import KnowledgeBaseStore, _kb_cache
-    if request.kb_product_id in _kb_cache:
-        del _kb_cache[request.kb_product_id]
+    if request.kb_team_id in _kb_cache:
+        del _kb_cache[request.kb_team_id]
     kb_store = KnowledgeBaseStore()
-    kb_data = await kb_store.load(request.kb_product_id)
+    kb_data = await kb_store.load(request.kb_team_id)
     if not kb_data:
         raise HTTPException(status_code=404, detail="No KB found. Fetch docs first.")
 
@@ -766,7 +767,7 @@ async def analyze_kb_endpoints(
     if not all_text.strip():
         raise HTTPException(status_code=404, detail="KB is empty. Fetch docs first.")
 
-    # Use the SAME discovery flow as internal products
+    # Use the SAME discovery flow as internal teams
     from app.services.mcp_builder_service import MCPBuilderService
     svc = MCPBuilderService()
     result = await svc.discover_from_text(
@@ -784,7 +785,7 @@ async def analyze_kb_endpoints(
         "auth_type": result.auth_type,
         "auth_details": getattr(result, "auth_details", None),
         "endpoints": [ep.model_dump() for ep in result.endpoints],
-        "kb_product_id": request.kb_product_id,
+        "kb_team_id": request.kb_team_id,
     }
 
 
@@ -794,14 +795,14 @@ async def generate_mcp_server(
     session: AsyncSession = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    logger.info("mcp_builder_start", product_name=request.product_name, dest=request.destination_folder)
+    logger.info("mcp_builder_start", team_name=request.team_name, dest=request.destination_folder)
     
     agent = AgentService()
 
     # Compute module name early — needed in task prompts below
-    safe_product_name = re.sub(r'[^a-zA-Z0-9]', '_', request.product_name).lower().strip('_')
-    safe_product_name = re.sub(r'_+', '_', safe_product_name)
-    module_name = f"{safe_product_name}_mcp"
+    safe_team_name = re.sub(r'[^a-zA-Z0-9]', '_', request.team_name).lower().strip('_')
+    safe_team_name = re.sub(r'_+', '_', safe_team_name)
+    module_name = f"{safe_team_name}_mcp"
     
     # Build destination: {user_chosen_dir}/mcp-servers/{server_name}
     # This ensures MCP files are always inside an mcp-servers subdirectory
@@ -812,7 +813,7 @@ async def generate_mcp_server(
     if raw_dest_path.parent.name == "mcp-servers":
         dest = str(raw_dest_path)
     else:
-        dest = str(raw_dest_path / "mcp-servers" / safe_product_name)
+        dest = str(raw_dest_path / "mcp-servers" / safe_team_name)
 
     # Auto-increment folder name if it already exists (like file downloads: name, name_1, name_2)
     if os.path.exists(dest):
@@ -824,16 +825,16 @@ async def generate_mcp_server(
             counter += 1
         dest = f"{base_path}_{counter}"
         new_folder_name = os.path.basename(dest)
-        safe_product_name = re.sub(r'[^a-zA-Z0-9]', '_', new_folder_name).lower().strip('_')
-        safe_product_name = re.sub(r'_+', '_', safe_product_name)
-        module_name = f"{safe_product_name}_mcp"
+        safe_team_name = re.sub(r'[^a-zA-Z0-9]', '_', new_folder_name).lower().strip('_')
+        safe_team_name = re.sub(r'_+', '_', safe_team_name)
+        module_name = f"{safe_team_name}_mcp"
         logger.info("mcp_builder_auto_increment", original=request.destination_folder, new_dest=dest)
 
     is_external = bool(request.api_docs_url or request.api_docs_text)
 
     if is_external:
         task_prompt = (
-            f"Please generate a complete python MCP server for {request.product_name}. "
+            f"Please generate a complete python MCP server for {request.team_name}. "
             f"This is an EXTERNAL API — you do NOT have a knowledge base for it.\n\n"
             f"Base URL: {request.api_base_url or 'Discover from the docs'}\n"
             f"Auth Type: {request.auth_type or 'bearer'}\n\n"
@@ -858,10 +859,10 @@ async def generate_mcp_server(
         )
     else:
         task_prompt = (
-            f"Please generate a complete python MCP server for {request.product_name}. "
+            f"Please generate a complete python MCP server for {request.team_name}. "
             f"The server MUST precisely implement the capabilities specified in the attached selected tools array.\n\n"
             f"CRITICAL INSTRUCTION: You are running in an automated background pipeline. "
-            f"You MUST perform ALL of Phase 1 (all 6 queries) to deeply understand the product's API — "
+            f"You MUST perform ALL of Phase 1 (all 6 queries) to deeply understand the team's API — "
             f"exact parameter names, types, route prefixes, auth patterns, and error formats. "
             f"However, do NOT wait for user confirmation at the end of Phase 1 — the user has ALREADY "
             f"selected and approved these exact tools in the UI. After completing Phase 1, proceed directly to Phase 2 "
@@ -893,7 +894,7 @@ async def generate_mcp_server(
         
         # When KB exists, agent queries it directly — skip injecting docs text
         # This saves context window space and lets the agent get focused results
-        if not request.kb_product_id:
+        if not request.kb_team_id:
             # No KB — inject docs text into prompt as before
             docs_text = request.api_docs_text
             if docs_text:
@@ -995,7 +996,7 @@ async def generate_mcp_server(
         if not env_vars:
             auth = getattr(request, 'auth_type', None) or ''
             if auth and auth.lower() not in ('none', '', 'no auth', 'no_auth'):
-                env_vars = {f"{safe_product_name.upper()}_API_TOKEN": "<your-token>"}
+                env_vars = {f"{safe_team_name.upper()}_API_TOKEN": "<your-token>"}
 
         # Also check agent's JSON output for env vars we might have missed
         match = re.search(r'```json\n(.*?)\n```', final_answer_text, re.DOTALL)
@@ -1023,13 +1024,13 @@ async def generate_mcp_server(
             args = ["run", "--directory", expanded_dest, "python", "-m", f"{actual_module}.server"]
 
         config = {
-            safe_product_name: {
+            safe_team_name: {
                 "command": command,
                 "args": args,
             }
         }
         if env_vars:
-            config[safe_product_name]["env"] = env_vars
+            config[safe_team_name]["env"] = env_vars
         return config
 
     def _build_quick_start() -> str:
@@ -1067,9 +1068,9 @@ async def generate_mcp_server(
             f"npx @modelcontextprotocol/inspector {run_cmd}"
         )
 
-    # For external APIs with a KB, use the KB product_id so the agent gets
+    # For external APIs with a KB, use the KB team_id so the agent gets
     # knowledge_base tool access to search the crawled/uploaded docs.
-    agent_product_id = request.kb_product_id if request.kb_product_id else request.product_id
+    agent_team_id = request.kb_team_id if request.kb_team_id else request.team_id
 
     state = {"final_answer": ""}
 
@@ -1077,7 +1078,7 @@ async def generate_mcp_server(
         """Run the agent and return (final_answer, error)."""
         try:
             async for event in agent.execute_task(
-                product_id=agent_product_id,
+                team_id=agent_team_id,
                 task=task_str,
                 session=session,
                 mcp_builder_config=mcp_config,
@@ -1228,23 +1229,23 @@ async def generate_mcp_server(
             data = json.loads(data_line)
 
             if event.startswith("event: agent_status"):
-                update_progress(safe_product_name, phase=data.get("message") or data.get("step", ""))
+                update_progress(safe_team_name, phase=data.get("message") or data.get("step", ""))
             elif event.startswith("event: agent_tools"):
-                update_progress(safe_product_name, phase=f"{data.get('count', 0)} tools loaded")
+                update_progress(safe_team_name, phase=f"{data.get('count', 0)} tools loaded")
             elif event.startswith("event: agent_code"):
                 if "iteration" in data:
-                    update_progress(safe_product_name, iteration=data["iteration"])
+                    update_progress(safe_team_name, iteration=data["iteration"])
             elif event.startswith("event: tool_output"):
                 if data.get("output"):
                     short = data["output"][:120].replace("\n", " ")
-                    update_progress(safe_product_name, log=short)
+                    update_progress(safe_team_name, log=short)
         except Exception:
             pass  # Never let mirroring break the SSE stream
 
     async def _stream_generation():
         from app.services.mcp_builder_progress import update_progress
         state["final_answer"] = ""
-        update_progress(safe_product_name, status="in_progress", phase="Starting generation...")
+        update_progress(safe_team_name, status="in_progress", phase="Starting generation...")
 
         # ── Attempt 1: Full generation ────────────────────────────
         async for event in _run_agent(task_prompt, max_iter=60):
@@ -1278,7 +1279,7 @@ async def generate_mcp_server(
                     f"CRITICAL: The MCP server generation FAILED. The file {dest}/src/{module_name}/server.py "
                     f"does NOT exist. You MUST write it now.\n\n"
                     f"Create the COMPLETE server at {dest}/src/{module_name}/server.py with:\n"
-                    f"1. `from fastmcp import FastMCP` and `mcp = FastMCP(\"{safe_product_name}_mcp\")`\n"
+                    f"1. `from fastmcp import FastMCP` and `mcp = FastMCP(\"{safe_team_name}_mcp\")`\n"
                     f"2. One @mcp.tool() function for EACH of these tools: {endpoint_names}\n"
                     f"3. Each tool must make a real HTTP request using httpx.AsyncClient\n"
                     f"4. Also ensure {dest}/src/{module_name}/__init__.py exists\n"
@@ -1308,10 +1309,10 @@ async def generate_mcp_server(
                     f"`py_compile` and an import check."
                 )
 
-            update_progress(safe_product_name, phase=f"Retrying ({severity})...")
+            update_progress(safe_team_name, phase=f"Retrying ({severity})...")
             retry_agent = AgentService()
             async for event in retry_agent.execute_task(
-                product_id=agent_product_id,
+                team_id=agent_team_id,
                 task=retry_prompt,
                 session=session,
                 mcp_builder_config=mcp_config,
@@ -1353,7 +1354,7 @@ async def generate_mcp_server(
             logger.error("mcp_builder_total_failure", error=final_error)
             fail_msg = (f"Generation failed: {final_error}. The LLM agent did not produce the server code. "
                         f"Please check your LLM API configuration and try again.")
-            update_progress(safe_product_name, status="failed", phase="Generation failed",
+            update_progress(safe_team_name, status="failed", phase="Generation failed",
                             result={"status": "error", "message": fail_msg})
             yield _sse("mcp_result", {
                 "status": "error",
@@ -1401,8 +1402,8 @@ async def generate_mcp_server(
                     source_type = "external_upload"
 
             new_server = McpServer(
-                name=safe_product_name,
-                product_name=request.product_name,
+                name=safe_team_name,
+                team_name=request.team_name,
                 destination_folder=dest,
                 module_name=module_name,
                 mcp_config_json=mcp_servers_config,
@@ -1412,12 +1413,12 @@ async def generate_mcp_server(
                 api_docs_url=request.api_docs_url,
                 api_base_url=request.api_base_url,
                 auth_type=request.auth_type,
-                kb_product_id=request.kb_product_id,
+                kb_team_id=request.kb_team_id,
                 created_by=current_user.user_id,
             )
             session.add(new_server)
             await session.commit()
-            logger.info("mcp_server_saved", server_id=new_server.server_id, name=safe_product_name)
+            logger.info("mcp_server_saved", server_id=new_server.server_id, name=safe_team_name)
 
             # Bridge: auto-create extension + user install so it appears in My Extensions
             try:
@@ -1460,8 +1461,8 @@ async def generate_mcp_server(
                         mcp_args = ["run", "--directory", dest, "python", "-m", f"{module_name}.server"]
 
                     ext = McpExtension(
-                        name=request.product_name,
-                        description=f"Auto-generated MCP server for {request.product_name}",
+                        name=request.team_name,
+                        description=f"Auto-generated MCP server for {request.team_name}",
                         command=mcp_command,
                         args_json=mcp_args,
                         env_vars_json=expected_env_vars if expected_env_vars else {},
@@ -1508,7 +1509,7 @@ async def generate_mcp_server(
         except Exception as exc:
             logger.warning("mcp_server_save_failed", error=str(exc))
 
-        update_progress(safe_product_name, status="completed", phase="Complete",
+        update_progress(safe_team_name, status="completed", phase="Complete",
                         result={"status": status, "mcpServers": mcp_servers_config,
                                 "quickStartCommands": _build_quick_start(), "message": message})
         yield _sse("mcp_result", {

@@ -1,7 +1,7 @@
 """
 MCP Builder Service — Endpoint discovery and structured extraction.
 
-Searches the product's knowledge base for API endpoints, routes, and handlers,
+Searches the team's knowledge base for API endpoints, routes, and handlers,
 then uses the configured LLM to extract a structured list of endpoints suitable
 for building an MCP server.
 """
@@ -116,7 +116,7 @@ KNOWLEDGE BASE EXCERPTS:
 # MCP Docs KB — index crawled/uploaded docs for agent access
 # ---------------------------------------------------------------------------
 
-MCP_PRODUCT_PREFIX = "__mcp__"  # Hidden product prefix — filtered from products list
+MCP_TEAM_PREFIX = "__mcp__"  # Hidden team prefix — filtered from teams list
 
 
 async def store_mcp_docs_kb(
@@ -124,7 +124,7 @@ async def store_mcp_docs_kb(
     api_name: str,
     pages: list[tuple[str, str]],
 ) -> str:
-    """Store API docs as a searchable KB (no Product entry created).
+    """Store API docs as a searchable KB (no Team entry created).
 
     Args:
         server_name: e.g., "webullk"
@@ -132,22 +132,22 @@ async def store_mcp_docs_kb(
         pages: List of (title, text) tuples from crawling/upload
 
     Returns:
-        The kb product_id key (for KB tool access).
+        The kb team_id key (for KB tool access).
     """
     from app.rag.kb_store import KnowledgeBaseStore
 
-    product_id = f"{MCP_PRODUCT_PREFIX}{server_name}"
+    team_id = f"{MCP_TEAM_PREFIX}{server_name}"
 
-    # Store the KB directly — no Product row needed
+    # Store the KB directly — no Team row needed
     kb_store = KnowledgeBaseStore()
     stats = await kb_store.store_mcp_docs(
-        product_id=product_id,
+        team_id=team_id,
         pages=pages,
         api_name=api_name,
     )
 
-    logger.info("mcp_docs_kb_created", product_id=product_id, server_name=server_name, **stats)
-    return product_id
+    logger.info("mcp_docs_kb_created", team_id=team_id, server_name=server_name, **stats)
+    return team_id
 
 
 # ---------------------------------------------------------------------------
@@ -155,11 +155,11 @@ async def store_mcp_docs_kb(
 # ---------------------------------------------------------------------------
 
 class MCPBuilderService:
-    """Discovers API endpoints from a product's knowledge base."""
+    """Discovers API endpoints from a team's knowledge base."""
 
     async def discover_endpoints(
         self,
-        product_id: str,
+        team_id: str,
         api_key: str,
         model: str = "gpt-4o",
         api_url: Optional[str] = None,
@@ -168,7 +168,7 @@ class MCPBuilderService:
         """Search KB and extract structured endpoints using LLM.
 
         Args:
-            product_id: The product to discover endpoints for.
+            team_id: The team to discover endpoints for.
             api_key: LLM API key.
             model: LLM model name.
             api_url: Optional custom LLM API URL.
@@ -191,7 +191,7 @@ class MCPBuilderService:
             try:
                 result = await search_kb(
                     query=query,
-                    product_id=product_id,
+                    team_id=team_id,
                     agent_keywords=keywords,
                     top_k=15,
                 )
@@ -201,7 +201,7 @@ class MCPBuilderService:
                 logger.warning("mcp_discover_search_failed", query=query, error=str(exc))
 
         if not kb_excerpts:
-            logger.info("mcp_discover_no_kb_results", product_id=product_id)
+            logger.info("mcp_discover_no_kb_results", team_id=team_id)
             return []
 
         combined = "\n\n---\n\n".join(kb_excerpts)
@@ -262,7 +262,7 @@ class MCPBuilderService:
                 unique.append(ep)
         endpoints = unique
 
-        logger.info("mcp_discover_complete", product_id=product_id, count=len(endpoints))
+        logger.info("mcp_discover_complete", team_id=team_id, count=len(endpoints))
         return endpoints
 
     # ------------------------------------------------------------------
@@ -386,12 +386,12 @@ class MCPBuilderService:
             # Store crawled docs as a searchable KB
             try:
                 safe_name = _re.sub(r'[^a-z0-9]', '_', api_name.lower()).strip('_')
-                kb_product_id = await store_mcp_docs_kb(
+                kb_team_id = await store_mcp_docs_kb(
                     server_name=safe_name,
                     api_name=api_name,
                     pages=raw_pages,
                 )
-                logger.info("mcp_discover_kb_stored", kb_product_id=kb_product_id)
+                logger.info("mcp_discover_kb_stored", kb_team_id=kb_team_id)
             except Exception as exc:
                 logger.warning("mcp_discover_kb_store_failed", error=str(exc))
 
@@ -462,13 +462,13 @@ class MCPBuilderService:
         try:
             raw_pages = [("API Documentation", api_docs_text)]
             safe_name = _re.sub(r'[^a-z0-9]', '_', api_name.lower()).strip('_')
-            kb_product_id = await store_mcp_docs_kb(
+            kb_team_id = await store_mcp_docs_kb(
                 server_name=safe_name,
                 api_name=api_name,
                 pages=raw_pages,
             )
             result.raw_pages = raw_pages
-            logger.info("mcp_discover_text_kb_stored", kb_product_id=kb_product_id)
+            logger.info("mcp_discover_text_kb_stored", kb_team_id=kb_team_id)
         except Exception as exc:
             logger.warning("mcp_discover_text_kb_store_failed", error=str(exc))
 
@@ -1148,13 +1148,13 @@ async def _crawl_api_docs(
     return aggregated, pages_crawled, raw_pages
 
 
-def format_endpoints_as_brief(config: MCPBuilderConfig, product_name: str = "the product") -> str:
+def format_endpoints_as_brief(config: MCPBuilderConfig, team_name: str = "the team") -> str:
     """Format selected endpoints into a structured task brief for the agent."""
     lang_label = "TypeScript" if config.language == "typescript" else "Python"
     transport_label = "stdio (local)" if config.transport == "stdio" else "HTTP (remote)"
 
     lines = [
-        f"Build a {lang_label} MCP server ({transport_label} transport) for {product_name} with these {len(config.selected_endpoints)} tools:",
+        f"Build a {lang_label} MCP server ({transport_label} transport) for {team_name} with these {len(config.selected_endpoints)} tools:",
         "",
     ]
     for i, ep in enumerate(config.selected_endpoints, 1):

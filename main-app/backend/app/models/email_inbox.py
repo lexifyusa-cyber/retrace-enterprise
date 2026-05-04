@@ -1,5 +1,5 @@
 """
-Email inbox model — links a unique AI email address to a product.
+Email inbox model — links a unique AI email address to a team.
 """
 
 from datetime import datetime
@@ -13,15 +13,15 @@ from app.db.database import Base
 
 
 class EmailInbox(Base):
-    """Per-product AI inbox with action-mode configuration."""
+    """Per-team AI inbox with action-mode configuration."""
 
     __tablename__ = "email_inboxes"
 
     inbox_id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=lambda: str(uuid4())
     )
-    product_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("products.product_id", ondelete="CASCADE"), nullable=False
+    team_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("teams.team_id", ondelete="CASCADE"), nullable=False
     )
     connection_id: Mapped[str] = mapped_column(
         String(36),
@@ -54,7 +54,7 @@ class EmailInbox(Base):
     def to_dict(self) -> dict:
         return {
             "inbox_id": self.inbox_id,
-            "product_id": self.product_id,
+            "team_id": self.team_id,
             "connection_id": self.connection_id,
             "email_address": self.email_address,
             "is_active": self.is_active,

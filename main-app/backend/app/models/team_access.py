@@ -1,5 +1,5 @@
 """
-Product access control — grants individual users access to specific products.
+Team access control — grants individual users access to specific teams.
 """
 
 from datetime import datetime
@@ -12,11 +12,11 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.db.database import Base
 
 
-class ProductAccess(Base):
-    __tablename__ = "product_access"
+class TeamAccess(Base):
+    __tablename__ = "team_access"
 
     access_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    product_id: Mapped[str] = mapped_column(String(36), ForeignKey("products.product_id", ondelete="CASCADE"), nullable=False)
+    team_id: Mapped[str] = mapped_column(String(36), ForeignKey("teams.team_id", ondelete="CASCADE"), nullable=False)
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False)
     permission: Mapped[str] = mapped_column(String(20), default="view")
     # view | query | edit | admin
@@ -27,7 +27,7 @@ class ProductAccess(Base):
     def to_dict(self) -> dict:
         return {
             "access_id": self.access_id,
-            "product_id": self.product_id,
+            "team_id": self.team_id,
             "user_id": self.user_id,
             "permission": self.permission,
             "granted_by": self.granted_by,

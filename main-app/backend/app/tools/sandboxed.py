@@ -8,14 +8,125 @@ run code inside the Podman container.
 """
 
 import json
+import os
 import shlex
 from typing import Optional
 
 import base64
+import io
 
 import structlog
+from PIL import Image
 
 logger = structlog.get_logger()
+
+
+# ---------------------------------------------------------------------------
+# Screenshot Normalization for Screenops UI-TARS Model
+# ---------------------------------------------------------------------------
+
+def _normalize_screenshot_dimensions(width: int, height: int) -> tuple[int, int]:
+    """Calculate normalized dimensions divisible by 28 while respecting UI-TARS constraints.
+
+    UI-TARS requirements:
+    - Both dimensions must be divisible by 28
+    - Total pixels must be between 78,400 and 12,845,056
+    - Aspect ratio must be <= 200:1
+
+    Returns (new_width, new_height).
+    """
+    # Round down to nearest multiple of 28
+    new_w = (width // 28) * 28
+    new_h = (height // 28) * 28
+
+    # Ensure at least 280x280 (10x10 in 28-pixel blocks, 78,400 pixels)
+    if new_w < 280:
+        new_w = 280
+    if new_h < 280:
+        new_h = 280
+
+    # Check aspect ratio constraint (<=200:1)
+    aspect = max(new_w, new_h) / min(new_w, new_h)
+    if aspect > 200:
+        # Clamp to 200:1 by expanding the shorter dimension
+        longer = max(new_w, new_h)
+        shorter = longer // 200
+        if shorter < 280:
+            shorter = 280
+        shorter = (shorter // 28) * 28
+        if new_w > new_h:
+            new_h = shorter
+        else:
+            new_w = shorter
+
+    # Check total pixels constraint (max 12,845,056)
+    max_pixels = 12_845_056
+    if new_w * new_h > max_pixels:
+        # Scale down preserving aspect ratio
+        scale = (max_pixels / (new_w * new_h)) ** 0.5
+        new_w = int(new_w * scale)
+        new_h = int(new_h * scale)
+        new_w = (new_w // 28) * 28
+        new_h = (new_h // 28) * 28
+        if new_w < 280:
+            new_w = 280
+        if new_h < 280:
+            new_h = 280
+
+    return new_w, new_h
+
+
+def _normalize_screenshot_image(b64_jpeg: str) -> tuple[str, int, int, int, int]:
+    """Normalize screenshot for UI-TARS model by resizing to valid dimensions.
+
+    Args:
+        b64_jpeg: Base64-encoded JPEG screenshot
+
+    Returns:
+        (normalized_b64, orig_width, orig_height, norm_width, norm_height)
+    """
+    try:
+        # Decode the image
+        img_bytes = base64.b64decode(b64_jpeg)
+        img = Image.open(io.BytesIO(img_bytes))
+
+        orig_w, orig_h = img.size
+        norm_w, norm_h = _normalize_screenshot_dimensions(orig_w, orig_h)
+
+        # Resize if needed
+        if (norm_w, norm_h) != (orig_w, orig_h):
+            img = img.resize((norm_w, norm_h), Image.Resampling.LANCZOS)
+
+        # Re-encode to JPEG
+        output = io.BytesIO()
+        img.save(output, format='JPEG', quality=70)
+        normalized_b64 = base64.b64encode(output.getvalue()).decode('ascii')
+
+        return normalized_b64, orig_w, orig_h, norm_w, norm_h
+    except Exception as e:
+        logger.warning("screenshot_normalization_failed", error=str(e))
+        # Return original if normalization fails
+        return b64_jpeg, 0, 0, 0, 0
+
+
+def _denormalize_coordinates(norm_x: float, norm_y: float, orig_width: int, orig_height: int) -> tuple[int, int]:
+    """Convert normalized 0-1000 coordinates back to pixel coordinates.
+
+    The vision model returns coordinates on a 0-1000 normalized scale.
+    This converts them back to the original image dimensions.
+
+    Args:
+        norm_x: Normalized X coordinate (0-1000)
+        norm_y: Normalized Y coordinate (0-1000)
+        orig_width: Original screenshot width in pixels
+        orig_height: Original screenshot height in pixels
+
+    Returns:
+        (pixel_x, pixel_y)
+    """
+    pixel_x = int((norm_x / 1000.0) * orig_width)
+    pixel_y = int((norm_y / 1000.0) * orig_height)
+    return pixel_x, pixel_y
 
 
 def _run_python(session, code: str):
@@ -132,25 +243,37 @@ else:
 
 
 def make_sandboxed_write_file(session):
-    """Return a sandboxed write_file(file_path, text) function."""
+    """Return a sandboxed write_file(file_path, text) function.
+
+    Content is piped via stdin to avoid ARG_MAX limits on `docker exec`.
+    Embedding large content in the command string would fail with
+    `[Errno 7] Argument list too long`.
+    """
 
     def write_file(file_path: str, text: str) -> str:
         """Write a file in the sandbox filesystem."""
         try:
+            # Only the small `path` is encoded in the script body. The
+            # potentially-large file content arrives via stdin.
             code = f"""
-import os
+import os, sys
 path = os.path.expanduser({json.dumps(file_path)})
 if not os.path.isabs(path):
     path = os.path.join('/workspace', path)
 parent = os.path.dirname(path)
 if parent:
     os.makedirs(parent, exist_ok=True)
+data = sys.stdin.read()
 with open(path, 'w', encoding='utf-8') as f:
-    f.write({json.dumps(text)})
+    f.write(data)
 size = os.path.getsize(path)
 print(f"Wrote {{size}} bytes to {{path}}")
 """
-            result = _run_python(session, code)
+            encoded = base64.b64encode(code.encode()).decode()
+            result = session.execute_command(
+                f"python3 -c \"import base64; exec(base64.b64decode('{encoded}').decode())\"",
+                stdin_data=text,
+            )
             return result.stdout if result.stdout else f"Error: {result.stderr or 'unknown error'}"
         except Exception as exc:
             return f"Error writing file: {exc}"
@@ -547,12 +670,157 @@ else:
 # Auto Browser (Playwright + Chromium inside container)
 # ---------------------------------------------------------------------------
 
-def make_sandboxed_auto_browser(session, output_callback=None):
+def make_sandboxed_auto_browser(session, output_callback=None, coord_finder_invoker=None, conversation_id=None, screenshot_delay_ms=2000):
     """Return a sandboxed auto_browser function.
 
-    Runs browser_agent.py inside the container which manages a persistent
-    Chromium instance via Playwright. All actions return JSON with screenshot.
+    Forwards each action via browser_control.py to the long-lived
+    browser_daemon.py inside the container, which keeps Playwright + Chromium
+    connected across requests. All actions return JSON with screenshot.
+
+    *coord_finder_invoker* — optional callable (runs on host) for vision_click.
+    *conversation_id* — used to find the BrowserWorkspace WebSocket clients
+    so screenshots + URL updates can be pushed to the Browser tab UI.
     """
+
+    def _broadcast_to_browser_tab(data: dict) -> None:
+        """Push the latest screenshot, URL and title to the BrowserWorkspace
+        WebSocket clients so the UI address bar stays in sync with whatever
+        the agent is doing. Safe to call from a worker thread."""
+        if not conversation_id:
+            return
+        try:
+            from app.services.browser_manager import browser_manager as _bm
+            bsession = _bm._sessions.get(conversation_id)
+            if not bsession or not bsession.websocket_clients:
+                return
+            # Keep BrowserSession state in sync with agent actions
+            if data.get("url"):
+                bsession.current_url = data.get("url")
+            if data.get("title"):
+                bsession.current_title = data.get("title")
+            # Read screenshot from the shared volume root
+            # (browser_daemon.py writes JPEG to /workspace/.browser-screenshot.jpg).
+            ss_path = os.path.join(session.volume_path, ".browser-screenshot.jpg")
+            try:
+                with open(ss_path, "rb") as f:
+                    ss_b64 = base64.b64encode(f.read()).decode("ascii")
+            except Exception:
+                return
+            message = json.dumps({
+                "type": "screenshot",
+                "data": ss_b64,
+                "url": data.get("url") or bsession.current_url or "",
+                "title": data.get("title") or bsession.current_title or "",
+            })
+            # Broadcast to every connected client using the main event loop
+            # (we're in a worker thread; `asyncio.run(...)` would fail because
+            # the WebSocket objects are bound to the FastAPI loop).
+            try:
+                import asyncio as _asyncio
+                loop = _bm._main_loop if hasattr(_bm, "_main_loop") else None
+                for ws in list(bsession.websocket_clients):
+                    try:
+                        if loop is not None:
+                            _asyncio.run_coroutine_threadsafe(ws.send_text(message), loop)
+                        else:
+                            _asyncio.run(ws.send_text(message))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        except Exception as _bcast_err:
+            logger.debug("sandboxed_browser_ws_broadcast_failed", error=str(_bcast_err))
+
+    def _broadcast_click_indicator(x: int, y: int) -> None:
+        """Send a click_indicator message so the frontend shows a dot+ripple."""
+        if not conversation_id:
+            return
+        try:
+            from app.services.browser_manager import browser_manager as _bm
+            bsession = _bm._sessions.get(conversation_id)
+            if not bsession or not bsession.websocket_clients:
+                return
+            message = json.dumps({"type": "click_indicator", "x": x, "y": y})
+            try:
+                import asyncio as _asyncio
+                loop = _bm._main_loop if hasattr(_bm, "_main_loop") else None
+                for ws in list(bsession.websocket_clients):
+                    try:
+                        if loop is not None:
+                            _asyncio.run_coroutine_threadsafe(ws.send_text(message), loop)
+                        else:
+                            _asyncio.run(ws.send_text(message))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    _ACTION_LABELS = {
+        "navigate": "Navigating…",
+        "click": "Clicking…",
+        "click_element": "Clicking element…",
+        "vision_click": "Finding & clicking…",
+        "type": "Typing…",
+        "fill": "Filling field…",
+        "scroll": "Scrolling…",
+        "screenshot": "Taking screenshot…",
+        "press_key": "Pressing key…",
+        "back": "Going back…",
+        "forward": "Going forward…",
+        "refresh": "Refreshing…",
+        "wait": "Waiting…",
+        "run_js": "Running script…",
+        "get_page_info": "Reading page…",
+    }
+
+    def _broadcast_browser_control(active: bool, action: str = "") -> None:
+        """Send browser_control message so the frontend shows/hides the AI overlay."""
+        if not conversation_id:
+            return
+        try:
+            from app.services.browser_manager import browser_manager as _bm
+            bsession = _bm._sessions.get(conversation_id)
+            if not bsession or not bsession.websocket_clients:
+                return
+            label = _ACTION_LABELS.get(action, action) if active else ""
+            message = json.dumps({
+                "type": "browser_control",
+                "active": active,
+                "action": label,
+            })
+            try:
+                import asyncio as _asyncio
+                loop = _bm._main_loop if hasattr(_bm, "_main_loop") else None
+                for ws in list(bsession.websocket_clients):
+                    try:
+                        if loop is not None:
+                            _asyncio.run_coroutine_threadsafe(ws.send_text(message), loop)
+                        else:
+                            _asyncio.run(ws.send_text(message))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _run_in_sandbox(payload: dict) -> dict:
+        """Send an action payload to browser_control.py (thin HTTP client that
+        forwards to the long-lived browser_daemon.py) and return parsed JSON."""
+        payload_json = json.dumps(payload)
+        escaped = payload_json.replace("'", "'\\''")
+        result = session.execute_command(
+            f"python3 /opt/browser_control.py '{escaped}'"
+        )
+        stdout = result.stdout or ""
+        if not stdout.strip():
+            return {"error": f"No output from browser_control: {result.stderr or 'unknown'}"}
+        try:
+            return json.loads(stdout.strip())
+        except json.JSONDecodeError:
+            return {"error": f"Invalid JSON from browser_control: {stdout[:200]}"}
 
     def auto_browser(
         action: str,
@@ -570,9 +838,82 @@ def make_sandboxed_auto_browser(session, output_callback=None):
         value: str = "",
     ) -> str:
         """Control a browser inside the sandbox container."""
+        logger.debug("sandboxed_auto_browser_call", action=action, url=url)
+        _broadcast_browser_control(True, action)
         try:
-            # Build action payload
-            payload = {"action": action}
+            # ── vision_click: screenshot from sandbox → host coord finder → click in sandbox ──
+            if action == "vision_click":
+                if not text:
+                    return json.dumps({"error": "text is required for vision_click — describe the element to click"})
+                if not coord_finder_invoker:
+                    return json.dumps({
+                        "error": "vision_click requires a coordinate finder API. "
+                        "Configure screenops_api_key in Settings, or use click_element(selector) instead."
+                    })
+                # 0. Get URL before click so we can report before→after
+                _before_url_data = _run_in_sandbox({"action": "get_url", "conversation_id": conversation_id or "__default__", "screenshot_delay_ms": screenshot_delay_ms})
+                _before_url = _before_url_data.get("url") or "unknown"
+                # 1. Take screenshot inside sandbox (writes to per-conversation path)
+                ss_data = _run_in_sandbox({"action": "screenshot", "conversation_id": conversation_id or "__default__", "screenshot_delay_ms": screenshot_delay_ms})
+                if "error" in ss_data:
+                    return json.dumps({"error": f"vision_click screenshot failed: {ss_data['error']}"})
+                # 2. Read the screenshot from the shared volume on the host
+                b64 = ""
+                conv_id = conversation_id or "__default__"
+                screenshot_path = os.path.join(session.volume_path, conv_id, ".browser-screenshot.jpg")
+                try:
+                    with open(screenshot_path, "rb") as f:
+                        b64 = base64.b64encode(f.read()).decode("ascii")
+                except Exception as e:
+                    logger.warning("vision_click_screenshot_read_failed", path=screenshot_path, error=str(e))
+                if not b64:
+                    return json.dumps({"error": "No screenshot data returned for vision_click"})
+                # 3. Get actual image dimensions from the screenshot file
+                try:
+                    img = Image.open(io.BytesIO(base64.b64decode(b64)))
+                    vp_w, vp_h = img.size
+                except Exception:
+                    vp_w = 1280
+                    vp_h = 900
+                # 4. Invoke coordinate finder (handles normalization + denormalization internally)
+                coords, usage = coord_finder_invoker(b64, text, vp_w, vp_h, vp_w, vp_h)
+                if not coords or coords.get("x") is None or coords.get("y") is None:
+                    return json.dumps({"error": f"Could not find element: '{text}'. Try a more specific description or use click_element(selector)."})
+                # 5. Click at coordinates inside sandbox (already denormalized to screen pixels)
+                click_data = _run_in_sandbox({"action": "click", "x": int(coords["x"]), "y": int(coords["y"]), "conversation_id": conversation_id or "__default__", "screenshot_delay_ms": screenshot_delay_ms})
+                click_data["vision_click"] = True
+                click_data["target"] = text
+                click_data["clicked"] = {"x": int(coords["x"]), "y": int(coords["y"])}
+                if usage:
+                    click_data["coord_finder_tokens"] = usage
+                # Build status summary (URL before → after, downloads)
+                _after_url = click_data.get("url") or _before_url
+                _url_changed = _after_url != _before_url
+                _downloaded = click_data.get("downloaded", [])
+                _nav_note = f"navigated → {_after_url}" if _url_changed else "URL unchanged (no navigation)"
+                _dl_note = f"downloaded={_downloaded}" if _downloaded else "downloads=none"
+                click_data["status_summary"] = (
+                    f"vision_click '{text}' at ({coords['x']},{coords['y']}) | "
+                    f"URL before: {_before_url} | URL after: {_after_url} | {_nav_note} | {_dl_note}. "
+                    f"Screenshot attached — no need to call screenshot() again."
+                )
+                # Send click indicator before screenshot so ripple appears first
+                _broadcast_click_indicator(int(coords["x"]), int(coords["y"]))
+                # Broadcast to Browser tab (screenshot + URL + title)
+                if click_data.get("screenshot_file"):
+                    _broadcast_to_browser_tab(click_data)
+                _broadcast_browser_control(False)
+                return json.dumps(click_data)
+
+            # ── All other actions: forward to browser_control.py (which
+            #    calls the long-lived browser_daemon.py inside the container) ──
+            # For click actions capture URL before so we can report before→after
+            _pre_url = None
+            if action in ("click", "click_element"):
+                _pre_url_data = _run_in_sandbox({"action": "get_url", "conversation_id": conversation_id or "__default__", "screenshot_delay_ms": screenshot_delay_ms})
+                _pre_url = _pre_url_data.get("url") or "unknown"
+
+            payload = {"action": action, "conversation_id": conversation_id or "__default__", "screenshot_delay_ms": screenshot_delay_ms}
             if url:
                 payload["url"] = url
             if selector:
@@ -594,41 +935,44 @@ def make_sandboxed_auto_browser(session, output_callback=None):
             if value:
                 payload["value"] = value
 
-            payload_json = json.dumps(payload)
-            # Escape single quotes for shell
-            escaped = payload_json.replace("'", "'\\''")
+            data = _run_in_sandbox(payload)
 
-            result = session.execute_command(
-                f"python3 /opt/browser_agent.py '{escaped}'"
-            )
+            # Add status_summary for navigate and click actions
+            if action == "navigate":
+                _nav_url = data.get("url") or url or "unknown"
+                _nav_title = data.get("title") or "unknown"
+                data["status_summary"] = (
+                    f"Navigated to: {_nav_url} | Title: {_nav_title}. "
+                    f"Screenshot attached — no need to call screenshot() again."
+                )
+            elif action in ("click", "click_element"):
+                _post_url = data.get("url") or _pre_url or "unknown"
+                _url_changed = _pre_url and _post_url != _pre_url
+                _downloaded = data.get("downloaded", [])
+                _nav_note = f"navigated → {_post_url}" if _url_changed else "URL unchanged (no navigation)"
+                _dl_note = f"downloaded={_downloaded}" if _downloaded else "downloads=none"
+                data["status_summary"] = (
+                    f"Click performed | URL before: {_pre_url} | URL after: {_post_url} | "
+                    f"{_nav_note} | {_dl_note}. "
+                    f"Screenshot attached — no need to call screenshot() again."
+                )
 
-            stdout = result.stdout or ""
-            if not stdout.strip():
-                return json.dumps({"error": f"No output from browser_agent: {result.stderr or 'unknown'}"})
+            # Send click indicator for click actions
+            if action in ("click", "click_element") and data.get("ok"):
+                click_x = data.get("clicked_x") or x
+                click_y = data.get("clicked_y") or y
+                if click_x and click_y:
+                    _broadcast_click_indicator(int(click_x), int(click_y))
 
-            # Parse and return the JSON result
-            try:
-                data = json.loads(stdout.strip())
-            except json.JSONDecodeError:
-                return json.dumps({"error": f"Invalid JSON from browser_agent: {stdout[:200]}"})
+            # Broadcast to Browser tab (screenshot + URL + title)
+            if data.get("screenshot_file"):
+                _broadcast_to_browser_tab(data)
 
-            # Broadcast screenshot to WebSocket if available
-            if output_callback and data.get("screenshot"):
-                try:
-                    import asyncio
-                    ws_data = json.dumps({
-                        "type": "screenshot",
-                        "data": data["screenshot"],
-                        "url": data.get("url", ""),
-                        "title": data.get("title", ""),
-                    })
-                    output_callback(ws_data)
-                except Exception:
-                    pass
-
+            _broadcast_browser_control(False)
             return json.dumps(data)
 
         except Exception as exc:
+            _broadcast_browser_control(False)
             logger.error("sandboxed_auto_browser_error", action=action, error=str(exc))
             return json.dumps({"error": str(exc)})
 

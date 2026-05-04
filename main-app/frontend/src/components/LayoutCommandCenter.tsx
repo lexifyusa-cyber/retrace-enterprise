@@ -16,7 +16,7 @@ import { hasRole } from '@/utils/roles'
 
 const navigation = [
   { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard, shortcut: '1' },
-  { name: 'Products', href: '/products', icon: FolderTree, shortcut: '2' },
+  { name: 'Teams', href: '/teams', icon: FolderTree, shortcut: '2' },
   { name: 'Agent', href: '/agent', icon: Bot, shortcut: '3' },
   { name: 'Automations', href: '/sops', icon: ClipboardList, shortcut: '4' },
   { name: 'Documentation', href: '/docs', icon: FileText, shortcut: '5' },
@@ -27,7 +27,7 @@ const navigation = [
 
 const breadcrumbMap: Record<string, string> = {
   '/dashboard': 'Dashboard',
-  '/products': 'Products',
+  '/teams': 'Teams',
   '/agent': 'Agent',
   '/sops': 'Automations',
   '/docs': 'Documentation',
@@ -248,7 +248,7 @@ export default function LayoutCommandCenter() {
           <span>Community</span>
         </div>
         <div className="flex-1" />
-        <span className="opacity-40">A product of</span>
+        <span className="opacity-40">A team of</span>
         <span className="opacity-60 font-medium">Lumena Technologies</span>
       </footer>
 

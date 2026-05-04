@@ -13,7 +13,7 @@ interface LayoutContextType {
 const LayoutContext = createContext<LayoutContextType>({
   layoutMode: 'classic',
   setLayoutMode: () => {},
-  themeMode: 'dark',
+  themeMode: 'light',
   setThemeMode: () => {},
 })
 
@@ -25,8 +25,8 @@ export function LayoutProvider({ children }: { children: ReactNode }) {
 
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
     const saved = localStorage.getItem('rt-theme-mode')
-    if (saved === 'light' || saved === 'colorful') return saved
-    return 'dark'
+    if (saved === 'dark' || saved === 'colorful') return saved
+    return 'light'
   })
 
   useEffect(() => {

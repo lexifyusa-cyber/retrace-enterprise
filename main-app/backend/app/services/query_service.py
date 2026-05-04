@@ -1,5 +1,5 @@
 """
-Query service – retrieves context from RAG-indexed products and generates answers.
+Query service – retrieves context from RAG-indexed teams and generates answers.
 
 Pipeline:
   0. Init clients
@@ -33,7 +33,7 @@ def _ms_since(t0: float) -> int:
 
 
 class QueryService:
-    """Process natural language queries using RAG-indexed product data."""
+    """Process natural language queries using RAG-indexed team data."""
 
     # ------------------------------------------------------------------
     # Helper: build clients once
@@ -60,8 +60,8 @@ class QueryService:
     # Multi-pass search
     # ------------------------------------------------------------------
 
-    async def _kb_search(self, llm, product_ids, question) -> list:
-        """Execute KB search for all products in parallel and return chunk-like objects."""
+    async def _kb_search(self, llm, team_ids, question) -> list:
+        """Execute KB search for all teams in parallel and return chunk-like objects."""
         from types import SimpleNamespace
         from app.rag.kb_search import search_kb
 
@@ -73,7 +73,7 @@ class QueryService:
             try:
                 result = await search_kb(
                     query=question,
-                    product_id=pid,
+                    team_id=pid,
                     api_key=api_key,
                     model=model,
                     base_url=base_url,
@@ -92,10 +92,10 @@ class QueryService:
                         ),
                     )
             except Exception as exc:
-                logger.warning("kb_search_failed", product_id=pid, error=str(exc))
+                logger.warning("kb_search_failed", team_id=pid, error=str(exc))
             return None
 
-        results = await asyncio.gather(*[_search_one(pid) for pid in product_ids])
+        results = await asyncio.gather(*[_search_one(pid) for pid in team_ids])
         return [c for c in results if c is not None]
 
     # ------------------------------------------------------------------
@@ -105,7 +105,7 @@ class QueryService:
     async def process_query(
         self,
         question: str,
-        product_ids: list[str],
+        team_ids: list[str],
         session: AsyncSession,
     ) -> dict[str, Any]:
         """Full pipeline with per-step timing."""
@@ -119,19 +119,19 @@ class QueryService:
 
         # 1. Classify (for logging/plan; KB search uses question directly)
         t0 = time.time()
-        components = await classifier.get_available_components(product_ids)
+        components = await classifier.get_available_components(team_ids)
         plan = await classifier.classify(question, available_components=components)
         timings["classify_ms"] = _ms_since(t0)
 
         # 2. KB search
         t0 = time.time()
-        all_chunks = await self._kb_search(llm, product_ids, question)
+        all_chunks = await self._kb_search(llm, team_ids, question)
         timings["kb_search_ms"] = _ms_since(t0)
 
         logger.info(
             "query_retrieval_done",
             question=question[:80],
-            products=len(product_ids),
+            teams=len(team_ids),
             chunks=len(all_chunks),
             plan_primary=plan.primary_types,
             plan_component=plan.component,
@@ -183,7 +183,7 @@ class QueryService:
     async def process_query_stream(
         self,
         question: str,
-        product_ids: list[str],
+        team_ids: list[str],
         session: AsyncSession,
     ) -> AsyncIterator[str]:
         """Yields SSE events with real-time updates."""
@@ -205,7 +205,7 @@ class QueryService:
             # 1. Classify
             yield _sse("status", {"step": "classify", "message": "Classifying question..."})
             t0 = time.time()
-            components = await classifier.get_available_components(product_ids)
+            components = await classifier.get_available_components(team_ids)
             plan = await classifier.classify(question, available_components=components)
             timings["classify_ms"] = _ms_since(t0)
             yield _sse("timings", {"classify_ms": timings["classify_ms"]})
@@ -219,7 +219,7 @@ class QueryService:
             # 2. KB search
             yield _sse("status", {"step": "search", "message": "Searching knowledge base..."})
             t0 = time.time()
-            all_chunks = await self._kb_search(llm, product_ids, question)
+            all_chunks = await self._kb_search(llm, team_ids, question)
             timings["kb_search_ms"] = _ms_since(t0)
             yield _sse("timings", {"kb_search_ms": timings["kb_search_ms"]})
 
@@ -291,7 +291,7 @@ class QueryService:
                 history = QueryHistory(
                     query_id=query_id,
                     question=question,
-                    scope_filter={"product_ids": product_ids},
+                    scope_filter={"team_ids": team_ids},
                     answer=full_answer,
                     confidence_score=round(confidence, 2),
                     sources={"sources": sources},

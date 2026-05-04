@@ -1,5 +1,5 @@
 """
-KnowledgeBaseStore — compressed + encrypted knowledge base per product.
+KnowledgeBaseStore — compressed + encrypted knowledge base per team.
 
 The KB blob now stores THREE layers of knowledge:
   1. Structural knowledge — LLM's project analysis (summary, tech stack,
@@ -46,7 +46,7 @@ class KnowledgeBaseStore:
 
     async def build_and_store(
         self,
-        product_id: str,
+        team_id: str,
         trees: list[TreeNode],
         project_analysis: ProjectAnalysis,
         folder_analysis: dict[str, dict],
@@ -57,7 +57,7 @@ class KnowledgeBaseStore:
         """Build the KB JSON, compress, encrypt, and store.
 
         Args:
-            product_id: Product this KB belongs to.
+            team_id: Team this KB belongs to.
             trees: The full tree structures (pruned to kept items).
             project_analysis: LLM's project-level understanding.
             folder_analysis: {folder_path: {purpose, technologies, importance}}
@@ -69,7 +69,7 @@ class KnowledgeBaseStore:
         folder_structure = [self._tree_to_dict(t) for t in trees]
 
         kb_json = {
-            "product_id": product_id,
+            "team_id": team_id,
             "version": 2,
             "created_at": datetime.utcnow().isoformat() + "Z",
 
@@ -100,19 +100,19 @@ class KnowledgeBaseStore:
 
         async with async_session_maker() as session:
             existing = await session.execute(
-                select(KnowledgeBase).where(KnowledgeBase.product_id == product_id)
+                select(KnowledgeBase).where(KnowledgeBase.team_id == team_id)
             )
             old = existing.scalar_one_or_none()
             new_version = (old.version + 1) if old else 1
 
             if old:
                 await session.execute(
-                    delete(KnowledgeBase).where(KnowledgeBase.product_id == product_id)
+                    delete(KnowledgeBase).where(KnowledgeBase.team_id == team_id)
                 )
 
             kb = KnowledgeBase(
                 kb_id=str(uuid4()),
-                product_id=product_id,
+                team_id=team_id,
                 version=new_version,
                 compressed_data=encrypted if isinstance(encrypted, bytes) else encrypted.encode("latin-1"),
                 file_count=len(file_texts),
@@ -123,7 +123,7 @@ class KnowledgeBaseStore:
             session.add(kb)
             await session.commit()
 
-        _kb_cache.pop(product_id, None)
+        _kb_cache.pop(team_id, None)
 
         compression_ratio = round(len(compressed) / max(len(json_bytes), 1) * 100, 1)
         stats = {
@@ -138,7 +138,7 @@ class KnowledgeBaseStore:
             "analysis_files": len(file_analysis),
             "analysis_folders": len(folder_analysis),
         }
-        logger.info("kb_stored", product_id=product_id, **stats)
+        logger.info("kb_stored", team_id=team_id, **stats)
         return stats
 
     def _tree_to_dict(self, node: TreeNode) -> dict:
@@ -164,7 +164,7 @@ class KnowledgeBaseStore:
 
     async def store_mcp_docs(
         self,
-        product_id: str,
+        team_id: str,
         pages: list[tuple[str, str]],
         api_name: str = "",
     ) -> dict:
@@ -174,7 +174,7 @@ class KnowledgeBaseStore:
         No LLM analysis — just chunk the text and store for keyword retrieval.
 
         Args:
-            product_id: The ID to store under (e.g., "__mcp__webull").
+            team_id: The ID to store under (e.g., "__mcp__webull").
             pages: List of (page_title_or_url, page_text) tuples.
             api_name: Display name for the API.
 
@@ -223,7 +223,7 @@ class KnowledgeBaseStore:
                 offset = end
 
         kb_json = {
-            "product_id": product_id,
+            "team_id": team_id,
             "version": 2,
             "created_at": datetime.utcnow().isoformat() + "Z",
             "project_analysis": {
@@ -261,19 +261,19 @@ class KnowledgeBaseStore:
 
         async with async_session_maker() as session:
             existing = await session.execute(
-                select(KnowledgeBase).where(KnowledgeBase.product_id == product_id)
+                select(KnowledgeBase).where(KnowledgeBase.team_id == team_id)
             )
             old = existing.scalar_one_or_none()
             new_version = (old.version + 1) if old else 1
 
             if old:
                 await session.execute(
-                    delete(KnowledgeBase).where(KnowledgeBase.product_id == product_id)
+                    delete(KnowledgeBase).where(KnowledgeBase.team_id == team_id)
                 )
 
             kb = KnowledgeBase(
                 kb_id=str(uuid4()),
-                product_id=product_id,
+                team_id=team_id,
                 version=new_version,
                 compressed_data=encrypted if isinstance(encrypted, bytes) else encrypted.encode("latin-1"),
                 file_count=len(file_texts),
@@ -284,7 +284,7 @@ class KnowledgeBaseStore:
             session.add(kb)
             await session.commit()
 
-        _kb_cache.pop(product_id, None)
+        _kb_cache.pop(team_id, None)
 
         stats = {
             "file_count": len(file_texts),
@@ -293,16 +293,16 @@ class KnowledgeBaseStore:
             "compressed_bytes": len(compressed),
             "version": new_version,
         }
-        logger.info("mcp_kb_stored", product_id=product_id, **stats)
+        logger.info("mcp_kb_stored", team_id=team_id, **stats)
         return stats
 
     # ------------------------------------------------------------------
     # Read path
     # ------------------------------------------------------------------
 
-    async def load(self, product_id: str) -> Optional[dict]:
-        """Load, decrypt, and decompress the KB for a product."""
-        cached = _kb_cache.get(product_id)
+    async def load(self, team_id: str) -> Optional[dict]:
+        """Load, decrypt, and decompress the KB for a team."""
+        cached = _kb_cache.get(team_id)
         if cached:
             data, ts = cached
             if (datetime.utcnow().timestamp() - ts) < _CACHE_TTL_SECONDS:
@@ -310,7 +310,7 @@ class KnowledgeBaseStore:
 
         async with async_session_maker() as session:
             result = await session.execute(
-                select(KnowledgeBase).where(KnowledgeBase.product_id == product_id)
+                select(KnowledgeBase).where(KnowledgeBase.team_id == team_id)
             )
             kb = result.scalar_one_or_none()
 
@@ -326,13 +326,13 @@ class KnowledgeBaseStore:
             json_bytes = gzip.decompress(compressed)
             data = json.loads(json_bytes.decode("utf-8"))
         except Exception as exc:
-            logger.error("kb_decrypt_failed", product_id=product_id, error=str(exc))
+            logger.error("kb_decrypt_failed", team_id=team_id, error=str(exc))
             return None
 
-        _kb_cache[product_id] = (data, datetime.utcnow().timestamp())
+        _kb_cache[team_id] = (data, datetime.utcnow().timestamp())
         return data
 
-    async def get_chunk_texts(self, product_id: str, chunk_ids: list[str]) -> dict[str, str]:
+    async def get_chunk_texts(self, team_id: str, chunk_ids: list[str]) -> dict[str, str]:
         """Return {chunk_id: text} for the requested chunks from the KB blob.
 
         Handles all chunk types:
@@ -344,7 +344,7 @@ class KnowledgeBaseStore:
         if not chunk_ids:
             return {}
 
-        kb_data = await self.load(product_id)
+        kb_data = await self.load(team_id)
         if not kb_data:
             return {}
 
@@ -414,11 +414,11 @@ class KnowledgeBaseStore:
 
         return result
 
-    async def get_kb_info(self, product_id: str) -> Optional[dict]:
+    async def get_kb_info(self, team_id: str) -> Optional[dict]:
         """Return KB metadata without loading the full blob."""
         async with async_session_maker() as session:
             result = await session.execute(
-                select(KnowledgeBase).where(KnowledgeBase.product_id == product_id)
+                select(KnowledgeBase).where(KnowledgeBase.team_id == team_id)
             )
             kb = result.scalar_one_or_none()
 
@@ -427,7 +427,7 @@ class KnowledgeBaseStore:
 
         return {
             "kb_id": kb.kb_id,
-            "product_id": kb.product_id,
+            "team_id": kb.team_id,
             "version": kb.version,
             "file_count": kb.file_count,
             "total_text_bytes": kb.total_text_bytes,
@@ -435,13 +435,13 @@ class KnowledgeBaseStore:
             "created_at": kb.created_at.isoformat() if kb.created_at else None,
         }
 
-    async def delete_product(self, product_id: str) -> bool:
-        """Delete the KB for a product."""
+    async def delete_team(self, team_id: str) -> bool:
+        """Delete the KB for a team."""
         async with async_session_maker() as session:
             await session.execute(
-                delete(KnowledgeBase).where(KnowledgeBase.product_id == product_id)
+                delete(KnowledgeBase).where(KnowledgeBase.team_id == team_id)
             )
             await session.commit()
-        _kb_cache.pop(product_id, None)
-        logger.info("kb_deleted", product_id=product_id)
+        _kb_cache.pop(team_id, None)
+        logger.info("kb_deleted", team_id=team_id)
         return True

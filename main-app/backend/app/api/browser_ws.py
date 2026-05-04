@@ -45,6 +45,13 @@ async def browser_websocket(websocket: WebSocket, conversation_id: str):
 
     # Register this client for screenshot broadcasts
     session.websocket_clients.add(websocket)
+    # Capture the main event loop so worker threads (agent sandbox) can
+    # schedule ws.send_text() calls on the correct loop.
+    try:
+        import asyncio as _asyncio
+        browser_manager._main_loop = _asyncio.get_running_loop()
+    except Exception:
+        pass
 
     # Send initial status
     await websocket.send_json({
@@ -72,6 +79,13 @@ async def browser_websocket(websocket: WebSocket, conversation_id: str):
 
             if msg_type == "click":
                 x, y = raw.get("x", 0), raw.get("y", 0)
+                # Broadcast click indicator to all clients (including sender)
+                click_msg = {"type": "click_indicator", "x": int(x), "y": int(y)}
+                for client in list(session.websocket_clients):
+                    try:
+                        await client.send_json(click_msg)
+                    except Exception:
+                        pass
                 result = await session.click(int(x), int(y))
             elif msg_type == "navigate":
                 url = raw.get("url", "")

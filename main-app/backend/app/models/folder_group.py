@@ -22,9 +22,9 @@ class FolderGroup(Base):
         primary_key=True,
         default=lambda: str(uuid4())
     )
-    product_id: Mapped[str] = mapped_column(
+    team_id: Mapped[str] = mapped_column(
         String(36),
-        ForeignKey("products.product_id", ondelete="CASCADE"),
+        ForeignKey("teams.team_id", ondelete="CASCADE"),
         nullable=True  # Temporarily nullable for migration, should be False for new groups
     )
     pod_id: Mapped[str] = mapped_column(
@@ -53,7 +53,7 @@ class FolderGroup(Base):
     )
     
     # Relationships
-    product = relationship("Product", back_populates="folder_groups")
+    team = relationship("Team", back_populates="folder_groups")
     pod = relationship("Pod", back_populates="folder_groups")
     folder_paths = relationship(
         "FolderPath",
@@ -76,7 +76,7 @@ class FolderGroup(Base):
             gtype = "code"
         return {
             "group_id": self.group_id,
-            "product_id": self.product_id,
+            "team_id": self.team_id,
             "pod_id": self.pod_id,
             "group_name": self.group_name,
             "group_type": gtype,
