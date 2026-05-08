@@ -97,5 +97,11 @@ mcp>=1.0.0
 # Sandbox
 llm-sandbox[podman]
 
+# Training-data source connectors
+boto3>=1.34.0
+paramiko>=3.4.0
+smbprotocol>=1.13.0
+azure-storage-blob>=12.19.0
+
 # ServiceNow MCP Server (local package — must be installed separately)
 # pip install -e ../../servicenow-mcp-server/
