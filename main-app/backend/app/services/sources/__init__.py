@@ -59,10 +59,16 @@ def get_connector(source_type: str, config: dict[str, Any]):
     if source_type == "azure_blob":
         from app.services.sources.azure_blob import AzureBlobConnector
         return AzureBlobConnector(config)
+    if source_type == "dropbox":
+        from app.services.sources.dropbox_source import DropboxConnector
+        return DropboxConnector(config)
+    if source_type == "google_drive":
+        from app.services.sources.google_drive import GoogleDriveConnector
+        return GoogleDriveConnector(config)
     raise ValueError(f"Unknown source_type: {source_type!r}")
 
 
-SUPPORTED_SOURCE_TYPES = ("local", "sftp", "smb", "s3", "azure_blob")
+SUPPORTED_SOURCE_TYPES = ("local", "sftp", "smb", "s3", "azure_blob", "dropbox", "google_drive")
 
 
 # Per-type config schema — used by the API to validate create/update payloads
@@ -98,4 +104,15 @@ SOURCE_CONFIG_SCHEMA: dict[str, list[dict[str, Any]]] = {
         {"name": "account_key",  "label": "Account Key",          "type": "password", "required": True,  "secret": True},
         {"name": "container",    "label": "Container",            "type": "string",   "required": True,  "secret": False},
     ],
+    # OAuth-based sources have no user-fillable fields. The frontend should
+    # render a "Connect with …" button instead of a credentials form when
+    # the schema is empty + the source is in OAUTH_SOURCE_TYPES.
+    "dropbox": [],
+    "google_drive": [],
 }
+
+
+# Sources whose credentials come from an OAuth dance, not a form. The
+# connections API exposes /oauth/init/<type> and /oauth/callback/<type>
+# for these.
+OAUTH_SOURCE_TYPES = ("dropbox", "google_drive")

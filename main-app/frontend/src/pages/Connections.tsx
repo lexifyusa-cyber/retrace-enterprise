@@ -8,7 +8,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Plus, Server, Trash2, RefreshCw, Loader2, X, CheckCircle2, AlertCircle,
-  HardDrive, Cloud, FolderArchive,
+  HardDrive, Cloud, FolderArchive, Box,
 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import {
@@ -17,11 +17,21 @@ import {
   type SourceSchemaField,
 } from '@/utils/api'
 
-const SOURCE_TYPES: { value: 'sftp' | 'smb' | 's3' | 'azure_blob'; label: string; description: string; icon: React.ComponentType<{ className?: string }> }[] = [
-  { value: 'sftp',       label: 'SFTP',         description: 'Secure FTP / SSH file transfer',                icon: Server },
-  { value: 'smb',        label: 'SMB / CIFS',   description: 'Windows network share',                          icon: HardDrive },
-  { value: 's3',         label: 'AWS S3',       description: 'S3 bucket (or any S3-compatible: Minio, R2, …)', icon: FolderArchive },
-  { value: 'azure_blob', label: 'Azure Blob',   description: 'Azure Storage container',                        icon: Cloud },
+type SourceTypeValue = 'sftp' | 'smb' | 's3' | 'azure_blob' | 'dropbox' | 'google_drive'
+
+const SOURCE_TYPES: {
+  value: SourceTypeValue
+  label: string
+  description: string
+  icon: React.ComponentType<{ className?: string }>
+  oauth?: boolean
+}[] = [
+  { value: 'sftp',         label: 'SFTP',          description: 'Secure FTP / SSH file transfer',                icon: Server },
+  { value: 'smb',          label: 'SMB / CIFS',    description: 'Windows network share',                          icon: HardDrive },
+  { value: 's3',           label: 'AWS S3',        description: 'S3 bucket (or any S3-compatible: Minio, R2, …)', icon: FolderArchive },
+  { value: 'azure_blob',   label: 'Azure Blob',    description: 'Azure Storage container',                        icon: Cloud },
+  { value: 'dropbox',      label: 'Dropbox',       description: 'Connect a Dropbox account via OAuth',            icon: Box,   oauth: true },
+  { value: 'google_drive', label: 'Google Drive',  description: 'Connect a Google Drive account via OAuth',       icon: Cloud, oauth: true },
 ]
 
 /**
@@ -194,16 +204,59 @@ export default function ConnectionsPage() {
 
 function CreateConnectionModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const [step, setStep] = useState<'pick-type' | 'configure'>('pick-type')
-  const [sourceType, setSourceType] = useState<'sftp' | 'smb' | 's3' | 'azure_blob' | null>(null)
+  const [sourceType, setSourceType] = useState<SourceTypeValue | null>(null)
   const [name, setName] = useState('')
   const [config, setConfig] = useState<Record<string, any>>({})
   const [creating, setCreating] = useState(false)
 
+  const sourceMeta = SOURCE_TYPES.find((s) => s.value === sourceType)
+  const isOAuth = !!sourceMeta?.oauth
+
   const { data: schema } = useQuery({
     queryKey: ['connection-schema', sourceType],
     queryFn: () => connectionsApi.schema(sourceType!),
-    enabled: !!sourceType && step === 'configure',
+    enabled: !!sourceType && step === 'configure' && !isOAuth,
   })
+
+  const startOAuth = async () => {
+    if (!sourceType) return
+    if (!name.trim()) {
+      toast.error('Give the connection a name')
+      return
+    }
+    setCreating(true)
+    try {
+      const { auth_url } = await connectionsApi.oauthInit(sourceType, name.trim())
+      const popup = window.open(auth_url, 'retrace_oauth', 'width=520,height=720')
+      if (!popup) {
+        toast.error('Popup blocked. Allow popups for this site and try again.')
+        setCreating(false)
+        return
+      }
+      // Poll for popup close, then refresh the connections list.
+      const onMsg = (e: MessageEvent) => {
+        if (e?.data?.type === 'retrace-oauth') {
+          if (e.data.ok) {
+            toast.success(e.data.message || 'Connected')
+          } else {
+            toast.error(e.data.message || 'OAuth failed')
+          }
+        }
+      }
+      window.addEventListener('message', onMsg)
+      const timer = setInterval(() => {
+        if (popup.closed) {
+          clearInterval(timer)
+          window.removeEventListener('message', onMsg)
+          setCreating(false)
+          onCreated()
+        }
+      }, 500)
+    } catch (err: any) {
+      toast.error(err?.response?.data?.detail || 'Failed to start OAuth')
+      setCreating(false)
+    }
+  }
 
   // Initialize config with defaults when schema arrives
   useMemo(() => {
@@ -305,7 +358,12 @@ function CreateConnectionModal({ onClose, onCreated }: { onClose: () => void; on
                 className="w-full bg-rt-surface border border-rt-border rounded px-3 py-2 text-sm focus:outline-none focus:border-rt-primary"
               />
             </div>
-            {!schema ? (
+            {isOAuth ? (
+              <div className="text-xs text-rt-text-muted bg-rt-surface/50 border border-rt-border rounded p-3 leading-relaxed">
+                You'll be redirected to {sourceMeta?.label} to authorise Retrace. After you
+                approve, the popup closes and the connection appears below.
+              </div>
+            ) : !schema ? (
               <div className="py-4 text-center text-sm text-rt-text-muted">
                 <Loader2 className="w-4 h-4 mx-auto animate-spin" />
               </div>
@@ -332,14 +390,25 @@ function CreateConnectionModal({ onClose, onCreated }: { onClose: () => void; on
               </button>
               <div className="flex gap-2">
                 <button onClick={onClose} className="btn-secondary text-xs">Cancel</button>
-                <button
-                  onClick={handleCreate}
-                  disabled={creating}
-                  className="btn-primary text-xs flex items-center gap-1.5"
-                >
-                  {creating && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                  Create &amp; Test
-                </button>
+                {isOAuth ? (
+                  <button
+                    onClick={startOAuth}
+                    disabled={creating}
+                    className="btn-primary text-xs flex items-center gap-1.5"
+                  >
+                    {creating && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                    Connect with {sourceMeta?.label}
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleCreate}
+                    disabled={creating}
+                    className="btn-primary text-xs flex items-center gap-1.5"
+                  >
+                    {creating && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                    Create &amp; Test
+                  </button>
+                )}
               </div>
             </div>
           </div>

@@ -655,6 +655,10 @@ export const connectionsApi = {
     const r = await api.get(`/connections/${id}/list`, { params: { path } })
     return r.data
   },
+  oauthInit: async (provider: string, name: string): Promise<{ auth_url: string }> => {
+    const r = await api.get(`/connections/oauth/init/${provider}`, { params: { name } })
+    return r.data
+  },
 }
 
 export default api

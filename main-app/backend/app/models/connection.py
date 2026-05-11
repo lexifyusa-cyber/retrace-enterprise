@@ -66,7 +66,7 @@ class Connection(Base):
                 d["config"] = decrypt_config(self.config_encrypted)
                 # Strip out password-like fields even when "include_config" — we
                 # show metadata fields (host, port, bucket) but never the secret.
-                for secret_key in ("password", "secret_key", "private_key", "account_key"):
+                for secret_key in ("password", "secret_key", "private_key", "account_key", "refresh_token", "access_token"):
                     d["config"].pop(secret_key, None)
             except Exception:
                 d["config"] = {}

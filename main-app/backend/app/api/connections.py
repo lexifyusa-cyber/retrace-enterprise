@@ -40,7 +40,7 @@ router = APIRouter()
 
 class ConnectionCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
-    source_type: str = Field(..., pattern="^(sftp|smb|s3|azure_blob)$")
+    source_type: str = Field(..., pattern="^(sftp|smb|s3|azure_blob)$")  # OAuth sources go through /oauth/init
     config: dict[str, Any] = Field(...)
 
 
