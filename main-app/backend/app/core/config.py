@@ -73,6 +73,11 @@ class Settings(BaseSettings):
     GOOGLE_DRIVE_CLIENT_SECRET: str = ""
     GOOGLE_DRIVE_REDIRECT_URI: str = ""
 
+    # Box OAuth (training-data source)
+    BOX_CLIENT_ID: str = ""
+    BOX_CLIENT_SECRET: str = ""
+    BOX_REDIRECT_URI: str = ""
+
     # Logging
     LOG_LEVEL: str = "DEBUG"
     LOG_FORMAT: Literal["json", "console"] = "json"

@@ -119,6 +119,23 @@ def _provider_config(provider: str) -> Tuple[str, str, str, str, str, str, dict]
             # users of the same client don't get a fresh refresh_token).
             {"access_type": "offline", "prompt": "consent", "include_granted_scopes": "true"},
         )
+    if provider == "box":
+        if not (settings.BOX_CLIENT_ID and settings.BOX_CLIENT_SECRET):
+            raise HTTPException(503, "Box OAuth is not configured on this server")
+        return (
+            settings.BOX_CLIENT_ID,
+            settings.BOX_CLIENT_SECRET,
+            settings.BOX_REDIRECT_URI
+            or "http://localhost:8000/api/v1/connections/oauth/callback/box",
+            "https://account.box.com/api/oauth2/authorize",
+            "https://api.box.com/oauth2/token",
+            # Scopes are configured per-app in Box Developer Console; the OAuth
+            # init URL doesn't need to pass them. Empty string is fine — Box
+            # accepts requests without a `scope` param.
+            "",
+            # Box returns a refresh_token by default; no extra params needed.
+            {},
+        )
     raise HTTPException(404, f"Unsupported OAuth provider: {provider}")
 
 
@@ -138,9 +155,12 @@ async def oauth_init(
         "response_type": "code",
         "redirect_uri": redirect_uri,
         "state": state,
-        "scope": scope,
         **extra,
     }
+    # Some providers (e.g. Box) configure scopes at the app level and don't
+    # want a scope param in the URL. Only include it when non-empty.
+    if scope:
+        params["scope"] = scope
     return {"auth_url": f"{auth_url}?{urlencode(params)}"}
 
 
@@ -222,8 +242,28 @@ async def oauth_callback(
                     account_email = info.json().get("email", "") or ""
             except Exception:
                 pass
+    elif provider == "box":
+        # Box returns access_token in the same response; call /users/me to get
+        # the account's login email for connection labelling.
+        access_token = tok.get("access_token")
+        if access_token:
+            try:
+                async with httpx.AsyncClient(timeout=10) as http:
+                    info = await http.get(
+                        "https://api.box.com/2.0/users/me",
+                        headers={"Authorization": f"Bearer {access_token}"},
+                    )
+                if info.status_code == 200:
+                    body = info.json()
+                    account_email = body.get("login", "") or body.get("name", "") or ""
+            except Exception:
+                pass
 
+    # Box's refresh_token rotates on every refresh, so we also persist the
+    # initial access_token to skip a round-trip on the first request.
     config = {"refresh_token": refresh_token, "account_email": account_email}
+    if provider == "box" and tok.get("access_token"):
+        config["access_token"] = tok["access_token"]
 
     conn = Connection(
         tenant_id=meta.get("tenant_id"),

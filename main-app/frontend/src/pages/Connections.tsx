@@ -17,7 +17,7 @@ import {
   type SourceSchemaField,
 } from '@/utils/api'
 
-type SourceTypeValue = 'sftp' | 'smb' | 's3' | 'azure_blob' | 'dropbox' | 'google_drive'
+type SourceTypeValue = 'sftp' | 'smb' | 's3' | 'azure_blob' | 'dropbox' | 'google_drive' | 'box'
 
 const SOURCE_TYPES: {
   value: SourceTypeValue
@@ -32,6 +32,7 @@ const SOURCE_TYPES: {
   { value: 'azure_blob',   label: 'Azure Blob',    description: 'Azure Storage container',                        icon: Cloud },
   { value: 'dropbox',      label: 'Dropbox',       description: 'Connect a Dropbox account via OAuth',            icon: Box,   oauth: true },
   { value: 'google_drive', label: 'Google Drive',  description: 'Connect a Google Drive account via OAuth',       icon: Cloud, oauth: true },
+  { value: 'box',          label: 'Box',           description: 'Connect a Box account via OAuth',                icon: Box,   oauth: true },
 ]
 
 /**

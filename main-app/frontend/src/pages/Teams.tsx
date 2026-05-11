@@ -1175,6 +1175,7 @@ const SOURCE_TYPE_LABELS: Record<string, string> = {
   azure_blob: 'Azure',
   dropbox: 'Dropbox',
   google_drive: 'Google Drive',
+  box: 'Box',
 }
 
 function AddGroupModal({

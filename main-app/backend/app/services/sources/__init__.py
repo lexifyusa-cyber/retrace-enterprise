@@ -65,10 +65,13 @@ def get_connector(source_type: str, config: dict[str, Any]):
     if source_type == "google_drive":
         from app.services.sources.google_drive import GoogleDriveConnector
         return GoogleDriveConnector(config)
+    if source_type == "box":
+        from app.services.sources.box_source import BoxConnector
+        return BoxConnector(config)
     raise ValueError(f"Unknown source_type: {source_type!r}")
 
 
-SUPPORTED_SOURCE_TYPES = ("local", "sftp", "smb", "s3", "azure_blob", "dropbox", "google_drive")
+SUPPORTED_SOURCE_TYPES = ("local", "sftp", "smb", "s3", "azure_blob", "dropbox", "google_drive", "box")
 
 
 # Per-type config schema — used by the API to validate create/update payloads
@@ -109,10 +112,11 @@ SOURCE_CONFIG_SCHEMA: dict[str, list[dict[str, Any]]] = {
     # the schema is empty + the source is in OAUTH_SOURCE_TYPES.
     "dropbox": [],
     "google_drive": [],
+    "box": [],
 }
 
 
 # Sources whose credentials come from an OAuth dance, not a form. The
 # connections API exposes /oauth/init/<type> and /oauth/callback/<type>
 # for these.
-OAUTH_SOURCE_TYPES = ("dropbox", "google_drive")
+OAUTH_SOURCE_TYPES = ("dropbox", "google_drive", "box")
