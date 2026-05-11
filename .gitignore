@@ -7,7 +7,6 @@ __pycache__/
 *.pyo
 venv/
 .build-venv/
-.env
 .chunk_key
 *.db
 *.db-wal
