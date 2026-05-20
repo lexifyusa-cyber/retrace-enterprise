@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Bot, Loader2, Terminal, FileText, Globe, Monitor,
@@ -523,14 +523,19 @@ export default function Agent() {
   // Execute task via OpenCode. We gate on the ACTIVE session's isRunning so the
   // user can send messages in conversation B while conversation A is still
   // streaming in the background.
-  const handleExecute = useCallback(async () => {
-    if (!task.trim()) return
+  // `overrideText` lets callers send a message without relying on the
+  // current `task` state. Used by the slash-command palette, which sets
+  // the text and immediately fires execute — without this, the closure
+  // captured stale state (palette would send the user's partial slash
+  // prefix like "/r" instead of the resolved "/spellcheck").
+  const handleExecute = useCallback(async (overrideText?: string) => {
+    const taskText = overrideText ?? task
+    if (!taskText.trim()) return
 
     // If a run is already in flight, skip server/session setup — we know
     // they're already wired — and let the store enqueue this message.
     // The drain on the current turn's completion fires it as the next turn.
     if (isRunning && activeConversationId) {
-      const currentTask = task
       const currentAttachments = pendingAttachments
       const currentMentions = pendingMentions
       setTask('')
@@ -538,7 +543,7 @@ export default function Agent() {
       setPendingAttachments([])
       setPendingMentions([])
       const sendParts = [...currentAttachments, ...currentMentions]
-      try { await ocStore.sendMessage(activeConversationId, currentTask, sendParts.length ? sendParts : undefined) }
+      try { await ocStore.sendMessage(activeConversationId, taskText, sendParts.length ? sendParts : undefined) }
       catch (err: any) {
         if (err?.name !== 'AbortError') toast.error(err?.message || 'Failed to queue message')
       }
@@ -561,7 +566,7 @@ export default function Agent() {
     let conversationId = activeConversationId
     if (!conversationId) {
       try {
-        const convo = await agentApi.createConversation(selectedTeamId || '', task.slice(0, 80))
+        const convo = await agentApi.createConversation(selectedTeamId || '', taskText.slice(0, 80))
         conversationId = convo.conversation_id
         setActiveConversationId(conversationId)
         refetchConversations()
@@ -605,7 +610,6 @@ export default function Agent() {
       }
     }
 
-    const currentTask = task
     const currentAttachments = pendingAttachments
     const currentMentions = pendingMentions
     setTask('')
@@ -615,7 +619,7 @@ export default function Agent() {
     const sendParts = [...currentAttachments, ...currentMentions]
 
     try {
-      await ocStore.sendMessage(conversationId, currentTask, sendParts.length ? sendParts : undefined)
+      await ocStore.sendMessage(conversationId, taskText, sendParts.length ? sendParts : undefined)
     } catch (err: any) {
       if (err?.name !== 'AbortError') {
         toast.error(err?.message || 'Connection failed')
@@ -640,85 +644,29 @@ export default function Agent() {
   // handful of ReTrace-specific ones (/learn, /automation, /documentation).
   const paletteOpen = task.trimStart().startsWith('/')
 
-  const paletteHandlers = useMemo(() => ({
-    onRevert: async (messageId?: string) => {
-      if (!activeConversationId) return
-      if (messageId) await ocStore.revertToMessage(activeConversationId, messageId)
-      else await ocStore.undo(activeConversationId)
-    },
-    onRedo: async () => {
-      if (!activeConversationId) return
-      await ocStore.redo(activeConversationId)
-    },
-    // No /retry — OpenCode has no user-driven retry. Users Revert and re-prompt.
-    onShare: async () => {
-      if (!activeConversationId) return
-      const url = await ocStore.shareSession(activeConversationId)
-      if (url) {
-        try { await navigator.clipboard.writeText(url) } catch { /* ignore */ }
-        toast.success('Share URL copied to clipboard')
-      } else {
-        toast.error('Failed to create share URL')
-      }
-    },
-    onSummarize: async () => {
-      if (!activeConversationId) return
-      toast('Summarizing...', { icon: '📝' })
-      await ocStore.summarizeSession(activeConversationId)
-    },
-    onFork: async () => {
-      if (!activeConversationId) return
-      const result = await ocStore.forkSession(activeConversationId)
-      if (result?.conversationId) {
-        setActiveConversationId(result.conversationId)
-        refetchConversations()
-        toast.success('Forked into a new conversation')
-      }
-    },
-    onCompact: async () => {
-      if (!activeConversationId) return
-      toast('Compacting context...', { icon: '🗜️' })
-      await ocStore.compactSession(activeConversationId)
-    },
-    onLearn: async () => {
-      // Defer to the inline Learn action on the latest assistant message.
-      // The button is part of the ActionBar in MessageList; user can click it.
-      // (Slash-command shortcut just nudges them there.)
-      toast('Use the Learn button on the latest answer', { icon: '🎓' })
-    },
-    onBuildAutomation: async () => {
-      toast('Use the Build Automation button on the latest answer', { icon: '⚙️' })
-    },
-    onBuildDoc: async () => {
-      toast('Use the Build Documentation button on the latest answer', { icon: '📄' })
-    },
-    onTodos: () => {
-      setWorkspaceTab('todos')
-      if (!showWorkspace) setShowWorkspace(true)
-    },
-    onHelp: () => {
-      toast(
-        'Slash commands: /revert /redo /share /summarize /fork /compact /todos /help',
-        { duration: 6000 }
-      )
-    },
-  }), [activeConversationId, refetchConversations, showWorkspace])
-
+  // Slash-command palette dispatcher. The catalog comes from
+  // `/opencode/commands` — only OC's markdown commands (the .md files
+  // under `.opencode/command/`). Selecting one sends `/name args` as a
+  // normal user turn; OC's session handler then expands the markdown
+  // template into the full prompt.
+  //
+  // We pass the resolved text directly to `handleExecute(full)` rather
+  // than going through `setTask` + setTimeout — that pattern raced with
+  // React's batched state update and made `handleExecute`'s closure see
+  // the user's partial slash (`/r`) instead of the resolved command
+  // (`/spellcheck`). The textarea still clears via setTask('') for
+  // visual feedback while the send is in flight.
+  //
+  // ReTrace does NOT add its own slash commands — session actions
+  // (share / compact / fork / revert / etc.) and ReTrace actions
+  // (learn / automation / documentation / todos) all have dedicated
+  // UI affordances elsewhere (header overflow menu, chat input undo /
+  // redo, inline action bar on each assistant message, workspace tabs).
   const handlePaletteSelect = useCallback(async (cmd: PaletteCommand, args: string) => {
+    const full = args ? `/${cmd.name} ${args}` : `/${cmd.name}`
     setTask('')
-    // OC-source commands without a wired handler — fall back to sending the
-    // raw slash text as a prompt; OC's agent will interpret it.
-    if (cmd.source === 'oc') {
-      if (!activeConversationId) return
-      const full = args ? `${cmd.slash} ${args}` : cmd.slash
-      // Send through the normal execute path so streaming UI works.
-      setTask(full)
-      // Defer to next tick so setTask propagates before submit.
-      setTimeout(() => { handleExecute() }, 0)
-      return
-    }
-    await cmd.run(args)
-  }, [activeConversationId, handleExecute])
+    await handleExecute(full)
+  }, [handleExecute])
   const handleStop = () => {
     if (activeConversationId) {
       ocStore.stopMessage(activeConversationId)
@@ -1523,7 +1471,6 @@ export default function Agent() {
             query={task}
             onSelect={handlePaletteSelect}
             onClose={() => { /* let value drive — re-open when task starts with `/` again */ }}
-            handlers={paletteHandlers}
           />
         )}
         {mentionOpen && (
@@ -1731,7 +1678,7 @@ export default function Agent() {
                 }
               }
             }}
-            placeholder={isRunning ? 'Agent is working — your message will queue…' : 'Describe a task to perform...    (type / for commands)'}
+            placeholder={isRunning ? 'Agent is working — your message will queue…' : 'Describe a task to perform...'}
             rows={1}
             style={{ borderColor: '#f59e0b' }}
             className="input flex-1 resize-none min-h-[44px] max-h-[200px]" />

@@ -2031,11 +2031,25 @@ async def opencode_summarize_session(
 async def opencode_list_commands(
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    """Return OpenCode's available slash commands.
+    """Return OC's markdown slash-command catalog, lightly enriched.
 
-    Used by the frontend command palette to autocomplete `/...` typed into the
-    input box. Returns the raw list from OC; the frontend filters and adds its
-    own ReTrace-specific commands (Learn, SOP, etc.) on top.
+    Pure proxy of OC's `/command` HTTP endpoint — those are the .md files
+    under `.opencode/command/` (e.g. `/commit`, `/changelog`, `/spellcheck`).
+    Each becomes a slash command that, when selected, gets dropped into the
+    input as `/name args` and submitted as a normal user turn — OC's
+    session-prompt handler then expands the markdown template into the
+    full prompt.
+
+    ReTrace does NOT contribute its own slash commands. Earlier iterations
+    hardcoded "session-action" entries (revert/share/compact/etc.) and
+    "retrace-action" entries (learn/automation/todos/help), but every one
+    of those duplicated an existing UI button — Undo/Redo are in the chat
+    input, share/fork/summarize/compact are in the header overflow menu,
+    learn/automation/documentation are inline buttons on each assistant
+    message, todos is a workspace tab. The slash variants added noise
+    without functionality. The "retrace-action" ones were strictly worse
+    UX — they showed a toast saying "click the button instead" rather
+    than executing the action.
     """
     import httpx
 
@@ -2043,14 +2057,27 @@ async def opencode_list_commands(
     if not port:
         raise HTTPException(status_code=502, detail="OpenCode server not running")
 
+    commands: list[dict] = []
     async with httpx.AsyncClient(timeout=10) as client:
         try:
             resp = await client.get(f"http://127.0.0.1:{port}/command")
             if resp.status_code == 200:
-                return resp.json()
+                raw = resp.json() or []
+                if isinstance(raw, list):
+                    for c in raw:
+                        if not isinstance(c, dict):
+                            continue
+                        name = c.get("name")
+                        if not isinstance(name, str) or not name:
+                            continue
+                        commands.append({
+                            "name": name,
+                            "description": c.get("description") or "",
+                        })
         except Exception as exc:
             logger.warning("[OC] list_commands failed", error=str(exc))
-    return []
+
+    return commands
 
 
 @router.post("/opencode/session/{session_id}/abort")
