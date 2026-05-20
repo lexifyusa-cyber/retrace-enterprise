@@ -321,10 +321,6 @@ class OpenCodeManager:
         compaction_auto = llm.get("compaction_auto", False)
         compaction_tail_turns = llm.get("compaction_tail_turns", 4)
         snapshot_enabled = llm.get("snapshot_enabled", False)
-        disabled_tools_raw = llm.get("disabled_tools") or None
-        permission_config_raw = llm.get("permission_config") or None
-        custom_agents_raw = llm.get("custom_agents") or None
-        custom_commands_raw = llm.get("custom_commands") or None
 
         provider_id = "openai"
         if provider == "anthropic":
@@ -610,51 +606,6 @@ class OpenCodeManager:
             # retrace-search MCP and require per-tool MCP filtering — not
             # currently wired. The toolbar toggle for those three is
             # advisory-only until that lands.
-
-        if permission_config_raw:
-            try:
-                perm_cfg = json.loads(permission_config_raw) if isinstance(permission_config_raw, str) else permission_config_raw
-                if isinstance(perm_cfg, dict):
-                    config["permission"] = {**config.get("permission", {}), **perm_cfg}
-            except (json.JSONDecodeError, TypeError):
-                pass
-
-        if custom_agents_raw:
-            try:
-                agents_list = json.loads(custom_agents_raw) if isinstance(custom_agents_raw, str) else custom_agents_raw
-                if isinstance(agents_list, list):
-                    for agent_def in agents_list:
-                        if isinstance(agent_def, dict) and agent_def.get("name"):
-                            agent_cfg: Dict[str, Any] = {}
-                            if agent_def.get("model"):
-                                agent_cfg["model"] = f"{provider_id}/{agent_def['model']}"
-                            if agent_def.get("prompt"):
-                                agent_cfg["prompt"] = agent_def["prompt"]
-                            if agent_def.get("reasoning") is not None:
-                                agent_cfg["reasoning"] = agent_def["reasoning"]
-                            if agent_def.get("permission"):
-                                agent_cfg["permission"] = agent_def["permission"]
-                            if agent_def.get("maxSteps"):
-                                agent_cfg["maxSteps"] = agent_def["maxSteps"]
-                            config["agent"][agent_def["name"]] = agent_cfg
-            except (json.JSONDecodeError, TypeError):
-                pass
-
-        if custom_commands_raw:
-            try:
-                commands_list = json.loads(custom_commands_raw) if isinstance(custom_commands_raw, str) else custom_commands_raw
-                if isinstance(commands_list, list):
-                    config["commands"] = {}
-                    for cmd_def in commands_list:
-                        if isinstance(cmd_def, dict) and cmd_def.get("name"):
-                            cmd_cfg: Dict[str, Any] = {}
-                            if cmd_def.get("prompt"):
-                                cmd_cfg["prompt"] = cmd_def["prompt"]
-                            if cmd_def.get("agent"):
-                                cmd_cfg["agent"] = cmd_def["agent"]
-                            config["commands"][cmd_def["name"]] = cmd_cfg
-            except (json.JSONDecodeError, TypeError):
-                pass
 
         if api_url:
             config["provider"][provider_id]["options"]["baseURL"] = api_url

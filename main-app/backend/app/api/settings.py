@@ -49,14 +49,6 @@ class LLMSettings(BaseModel):
     compaction_tail_turns: Optional[int] = Field(None, ge=1, le=50)
     # OpenCode agent — snapshot
     snapshot_enabled: Optional[bool] = None
-    # OpenCode agent — disabled tools (JSON list)
-    disabled_tools: Optional[str] = None
-    # OpenCode agent — permission config (JSON)
-    permission_config: Optional[str] = None
-    # OpenCode agent — custom agents (JSON)
-    custom_agents: Optional[str] = None
-    # OpenCode agent — custom commands (JSON)
-    custom_commands: Optional[str] = None
     # Agent max iterations (1–50, default 10)
     agent_max_iterations: Optional[int] = Field(None, ge=1, le=50)
     # Training: when True, pipeline logs included/excluded folders and files
@@ -83,10 +75,6 @@ class LLMSettingsResponse(BaseModel):
     compaction_auto: bool = False
     compaction_tail_turns: int = 4
     snapshot_enabled: bool = False
-    disabled_tools: Optional[str] = None
-    permission_config: Optional[str] = None
-    custom_agents: Optional[str] = None
-    custom_commands: Optional[str] = None
     screenops_api_url: Optional[str] = None
     screenops_model: Optional[str] = None
     screenops_mouse_timeout: int = 30
@@ -218,14 +206,6 @@ async def update_llm_settings(settings_data: LLMSettings, current_user: CurrentU
                     db_settings.compaction_tail_turns = max(1, min(50, int(settings_data.compaction_tail_turns)))
                 if settings_data.snapshot_enabled is not None:
                     db_settings.snapshot_enabled = bool(settings_data.snapshot_enabled)
-                if settings_data.disabled_tools is not None:
-                    db_settings.disabled_tools = settings_data.disabled_tools or None
-                if settings_data.permission_config is not None:
-                    db_settings.permission_config = settings_data.permission_config or None
-                if settings_data.custom_agents is not None:
-                    db_settings.custom_agents = settings_data.custom_agents or None
-                if settings_data.custom_commands is not None:
-                    db_settings.custom_commands = settings_data.custom_commands or None
                 if settings_data.agent_max_iterations is not None:
                     db_settings.agent_max_iterations = max(1, min(50, int(settings_data.agent_max_iterations)))
                 if settings_data.debug_logging is not None:
@@ -297,10 +277,6 @@ async def update_llm_settings(settings_data: LLMSettings, current_user: CurrentU
                 compaction_auto=bool(getattr(db_settings, "compaction_auto", False)),
                 compaction_tail_turns=int(getattr(db_settings, "compaction_tail_turns", 4) or 4),
                 snapshot_enabled=bool(getattr(db_settings, "snapshot_enabled", False)),
-                disabled_tools=getattr(db_settings, "disabled_tools", None),
-                permission_config=getattr(db_settings, "permission_config", None),
-                custom_agents=getattr(db_settings, "custom_agents", None),
-                custom_commands=getattr(db_settings, "custom_commands", None),
                 screenops_api_url=getattr(db_settings, "screenops_api_url", None),
                 screenops_model=db_settings.screenops_model,
                 screenops_mouse_timeout=int(getattr(db_settings, "screenops_mouse_timeout", 30) or 30),
@@ -344,10 +320,6 @@ async def get_llm_settings(session: AsyncSession = Depends(get_session), current
         compaction_auto=bool(getattr(db_settings, "compaction_auto", False)),
         compaction_tail_turns=int(getattr(db_settings, "compaction_tail_turns", 4) or 4),
         snapshot_enabled=bool(getattr(db_settings, "snapshot_enabled", False)),
-        disabled_tools=getattr(db_settings, "disabled_tools", None),
-        permission_config=getattr(db_settings, "permission_config", None),
-        custom_agents=getattr(db_settings, "custom_agents", None),
-        custom_commands=getattr(db_settings, "custom_commands", None),
         screenops_api_url=getattr(db_settings, "screenops_api_url", None),
         screenops_model=db_settings.screenops_model,
         screenops_mouse_timeout=int(getattr(db_settings, "screenops_mouse_timeout", 30) or 30),
@@ -587,10 +559,6 @@ async def get_active_llm_settings(session: AsyncSession, consumer_key: str | Non
         "compaction_auto": bool(getattr(db_settings, "compaction_auto", False)),
         "compaction_tail_turns": max(1, min(50, int(getattr(db_settings, "compaction_tail_turns", 4) or 4))),
         "snapshot_enabled": bool(getattr(db_settings, "snapshot_enabled", False)),
-        "disabled_tools": getattr(db_settings, "disabled_tools", None),
-        "permission_config": getattr(db_settings, "permission_config", None),
-        "custom_agents": getattr(db_settings, "custom_agents", None),
-        "custom_commands": getattr(db_settings, "custom_commands", None),
         "agent_tools_config": agent_tools_config,
         "agent_max_iterations": max(1, min(50, int(getattr(db_settings, "agent_max_iterations", 10) or 10))),
         "debug_logging": bool(getattr(db_settings, "debug_logging", False)),

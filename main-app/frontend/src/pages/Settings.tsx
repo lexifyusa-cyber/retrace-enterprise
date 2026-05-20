@@ -27,10 +27,6 @@ interface LLMSettings {
   compaction_auto?: boolean | null
   compaction_tail_turns?: number | null
   snapshot_enabled?: boolean | null
-  disabled_tools?: string | null
-  permission_config?: string | null
-  custom_agents?: string | null
-  custom_commands?: string | null
   debug_logging?: boolean | null
   max_parallel_files?: number | null
   agent_max_iterations?: number | null
@@ -54,10 +50,6 @@ interface LLMSettingsResponse {
   compaction_auto?: boolean
   compaction_tail_turns?: number
   snapshot_enabled?: boolean
-  disabled_tools?: string | null
-  permission_config?: string | null
-  custom_agents?: string | null
-  custom_commands?: string | null
   debug_logging?: boolean
   max_parallel_files?: number
   agent_max_iterations?: number
@@ -96,11 +88,6 @@ export default function Settings() {
   const [compactionAuto, setCompactionAuto] = useState(false)
   const [compactionTailTurns, setCompactionTailTurns] = useState(4)
   const [snapshotEnabled, setSnapshotEnabled] = useState(false)
-  const [disabledToolsJson, setDisabledToolsJson] = useState('')
-  const [permissionConfigJson, setPermissionConfigJson] = useState('')
-  const [customAgentsJson, setCustomAgentsJson] = useState('')
-  const [customCommandsJson, setCustomCommandsJson] = useState('')
-  const [advancedExpanded, setAdvancedExpanded] = useState(false)
   const [testResult, setTestResult] = useState<{ success: boolean; message: string; latency_ms?: number } | null>(null)
   const [layoutThemeExpanded, setLayoutThemeExpanded] = useState(false)
   const [llmExpanded, setLlmExpanded] = useState(false)
@@ -269,10 +256,6 @@ export default function Settings() {
       setCompactionAuto(currentSettings.compaction_auto ?? false)
       setCompactionTailTurns(currentSettings.compaction_tail_turns ?? 4)
       setSnapshotEnabled(currentSettings.snapshot_enabled ?? false)
-      setDisabledToolsJson(currentSettings.disabled_tools || '')
-      setPermissionConfigJson(currentSettings.permission_config || '')
-      setCustomAgentsJson(currentSettings.custom_agents || '')
-      setCustomCommandsJson(currentSettings.custom_commands || '')
       // Note: API keys are not loaded from server for security
     }
   }, [currentSettings])
@@ -584,26 +567,6 @@ export default function Settings() {
     payload.compaction_auto = compactionAuto
     payload.compaction_tail_turns = compactionTailTurns
     payload.snapshot_enabled = snapshotEnabled
-    if (disabledToolsJson.trim()) {
-      payload.disabled_tools = disabledToolsJson.trim()
-    } else {
-      payload.disabled_tools = null
-    }
-    if (permissionConfigJson.trim()) {
-      payload.permission_config = permissionConfigJson.trim()
-    } else {
-      payload.permission_config = null
-    }
-    if (customAgentsJson.trim()) {
-      payload.custom_agents = customAgentsJson.trim()
-    } else {
-      payload.custom_agents = null
-    }
-    if (customCommandsJson.trim()) {
-      payload.custom_commands = customCommandsJson.trim()
-    } else {
-      payload.custom_commands = null
-    }
 
     console.log('Saving settings with payload:', {
       ...payload,
@@ -1405,81 +1368,6 @@ export default function Settings() {
               </div>
             </motion.div>
           )}
-
-            {/* Custom Commands */}
-            <div className="border-t border-rt-border pt-4 mt-4">
-              <div className="flex items-center gap-2 mb-3">
-                <Command className="w-4 h-4 text-blue-400" />
-                <h4 className="text-xs font-semibold text-rt-text-muted uppercase tracking-wide">Custom Commands</h4>
-              </div>
-              <textarea
-                className="input min-h-[80px] font-mono text-xs"
-                placeholder={'JSON array of custom commands:\n[\n  {"name": "review", "prompt": "Review this code for bugs and suggest improvements", "agent": "plan"},\n  {"name": "fix", "prompt": "Fix all lint errors in the project", "agent": "build"}\n]'}
-                value={customCommandsJson}
-                onChange={(e) => setCustomCommandsJson(e.target.value)}
-              />
-              <p className="text-xs text-rt-text-muted mt-1">
-                Custom slash commands for the agent. Each command has a name (used as /name), a prompt, and an optional agent ("build" or "plan").
-              </p>
-            </div>
-
-            {/* Advanced */}
-            <div className="border-t border-rt-border pt-4 mt-4">
-              <button
-                type="button"
-                onClick={() => setAdvancedExpanded(!advancedExpanded)}
-                className="flex items-center gap-2 w-full text-left"
-              >
-                {advancedExpanded ? (
-                  <ChevronDown className="w-3.5 h-3.5 text-rt-text-muted" />
-                ) : (
-                  <ChevronRight className="w-3.5 h-3.5 text-rt-text-muted" />
-                )}
-                <h4 className="text-xs font-semibold text-rt-text-muted uppercase tracking-wide">Advanced</h4>
-              </button>
-              {advancedExpanded && (
-                <div className="space-y-3 mt-3">
-                  <div>
-                    <label className="label text-xs mb-1 block">Disabled tools</label>
-                    <input
-                      type="text"
-                      className="input font-mono text-xs"
-                      placeholder='JSON list, e.g. ["task","todowrite"]'
-                      value={disabledToolsJson}
-                      onChange={(e) => setDisabledToolsJson(e.target.value)}
-                    />
-                    <p className="text-xs text-rt-text-muted mt-1">
-                      JSON array of tool names to disable. The agent will not use these tools.
-                    </p>
-                  </div>
-                  <div>
-                    <label className="label text-xs mb-1 block">Permission config</label>
-                    <input
-                      type="text"
-                      className="input font-mono text-xs"
-                      placeholder='JSON, e.g. {"edit":"allow","bash":"confirm"}'
-                      value={permissionConfigJson}
-                      onChange={(e) => setPermissionConfigJson(e.target.value)}
-                    />
-                    <p className="text-xs text-rt-text-muted mt-1">
-                      Override default agent permissions. Values: "allow", "deny", "confirm".
-                    </p>
-                  </div>
-                  <div>
-                    <label className="label text-xs mb-1 block">Custom agents</label>
-                    <textarea
-                      className="input min-h-[80px] font-mono text-xs"
-                      placeholder={'JSON array of custom agents:\n[\n  {"name": "security", "model": "grok-4-1-fast-reasoning", "prompt": "You are a security auditor...", "permission": {"edit": "deny", "bash": "deny"}}\n]'}
-                      value={customAgentsJson}
-                      onChange={(e) => setCustomAgentsJson(e.target.value)}
-                    />
-                    <p className="text-xs text-rt-text-muted mt-1">
-                      Additional agents beyond Build and Plan. Each gets its own model, prompt, and permissions.
-                    </p>
-                  </div>
-                </div>
-              )}
-            </div>
 
           {/* Actions */}
           <div className="flex gap-3 justify-end mt-6 pt-6 border-t border-rt-border">

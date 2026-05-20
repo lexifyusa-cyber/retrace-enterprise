@@ -50,14 +50,6 @@ class LLMSettingsModel(Base):
     compaction_tail_turns: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=4)
     # OpenCode agent — snapshot toggle
     snapshot_enabled: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True, default=False)
-    # OpenCode agent — disabled tools (JSON list)
-    disabled_tools: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    # OpenCode agent — permission config (JSON {"edit": "allow", "bash": "allow"})
-    permission_config: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    # OpenCode agent — custom agents (JSON list of {name, model, prompt, permission})
-    custom_agents: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    # OpenCode agent — custom commands (JSON list of {name, prompt, agent})
-    custom_commands: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # Agent tools — JSON {"disabled": ["screenops", "web_search"]} for user-enabled/disabled tools
     agent_tools_config: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # Agent max tool-use iterations per task (1–50, default 10)
@@ -92,10 +84,6 @@ class LLMSettingsModel(Base):
             "compaction_auto": bool(self.compaction_auto) if self.compaction_auto is not None else False,
             "compaction_tail_turns": self.compaction_tail_turns if self.compaction_tail_turns is not None else 4,
             "snapshot_enabled": bool(self.snapshot_enabled) if self.snapshot_enabled is not None else False,
-            "disabled_tools": self.disabled_tools,
-            "permission_config": self.permission_config,
-            "custom_agents": self.custom_agents,
-            "custom_commands": self.custom_commands,
             "agent_tools_config": self.agent_tools_config,
             "agent_max_iterations": self.agent_max_iterations if self.agent_max_iterations is not None else 10,
             "debug_logging": bool(self.debug_logging) if self.debug_logging is not None else False,

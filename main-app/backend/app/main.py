@@ -179,22 +179,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
                 cursor.execute("ALTER TABLE llm_settings ADD COLUMN snapshot_enabled INTEGER DEFAULT 0")
                 conn.commit()
                 print("[STARTUP] Added snapshot_enabled column to llm_settings", flush=True)
-            if "disabled_tools" not in cols:
-                cursor.execute("ALTER TABLE llm_settings ADD COLUMN disabled_tools TEXT")
-                conn.commit()
-                print("[STARTUP] Added disabled_tools column to llm_settings", flush=True)
-            if "permission_config" not in cols:
-                cursor.execute("ALTER TABLE llm_settings ADD COLUMN permission_config TEXT")
-                conn.commit()
-                print("[STARTUP] Added permission_config column to llm_settings", flush=True)
-            if "custom_agents" not in cols:
-                cursor.execute("ALTER TABLE llm_settings ADD COLUMN custom_agents TEXT")
-                conn.commit()
-                print("[STARTUP] Added custom_agents column to llm_settings", flush=True)
-            if "custom_commands" not in cols:
-                cursor.execute("ALTER TABLE llm_settings ADD COLUMN custom_commands TEXT")
-                conn.commit()
-                print("[STARTUP] Added custom_commands column to llm_settings", flush=True)
             conn.close()
     except Exception as exc:
         print(f"[STARTUP] llm_settings migration skipped: {exc}", flush=True)
