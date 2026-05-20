@@ -26,9 +26,6 @@ interface LLMSettings {
   max_steps?: number | null
   compaction_auto?: boolean | null
   compaction_tail_turns?: number | null
-  tool_output_max_lines?: number | null
-  tool_output_max_bytes?: number | null
-  bash_shell?: string | null
   snapshot_enabled?: boolean | null
   disabled_tools?: string | null
   permission_config?: string | null
@@ -56,9 +53,6 @@ interface LLMSettingsResponse {
   max_steps?: number
   compaction_auto?: boolean
   compaction_tail_turns?: number
-  tool_output_max_lines?: number
-  tool_output_max_bytes?: number
-  bash_shell?: string | null
   snapshot_enabled?: boolean
   disabled_tools?: string | null
   permission_config?: string | null
@@ -101,9 +95,6 @@ export default function Settings() {
   const [maxSteps, setMaxSteps] = useState(50)
   const [compactionAuto, setCompactionAuto] = useState(false)
   const [compactionTailTurns, setCompactionTailTurns] = useState(4)
-  const [toolOutputMaxLines, setToolOutputMaxLines] = useState(200)
-  const [toolOutputMaxBytes, setToolOutputMaxBytes] = useState(50000)
-  const [bashShell, setBashShell] = useState('')
   const [snapshotEnabled, setSnapshotEnabled] = useState(false)
   const [disabledToolsJson, setDisabledToolsJson] = useState('')
   const [permissionConfigJson, setPermissionConfigJson] = useState('')
@@ -324,9 +315,6 @@ export default function Settings() {
       setMaxSteps(currentSettings.max_steps ?? 50)
       setCompactionAuto(currentSettings.compaction_auto ?? false)
       setCompactionTailTurns(currentSettings.compaction_tail_turns ?? 4)
-      setToolOutputMaxLines(currentSettings.tool_output_max_lines ?? 200)
-      setToolOutputMaxBytes(currentSettings.tool_output_max_bytes ?? 50000)
-      setBashShell(currentSettings.bash_shell || '')
       setSnapshotEnabled(currentSettings.snapshot_enabled ?? false)
       setDisabledToolsJson(currentSettings.disabled_tools || '')
       setPermissionConfigJson(currentSettings.permission_config || '')
@@ -642,13 +630,6 @@ export default function Settings() {
     payload.max_steps = maxSteps
     payload.compaction_auto = compactionAuto
     payload.compaction_tail_turns = compactionTailTurns
-    payload.tool_output_max_lines = toolOutputMaxLines
-    payload.tool_output_max_bytes = toolOutputMaxBytes
-    if (bashShell.trim()) {
-      payload.bash_shell = bashShell.trim()
-    } else {
-      payload.bash_shell = null
-    }
     payload.snapshot_enabled = snapshotEnabled
     if (disabledToolsJson.trim()) {
       payload.disabled_tools = disabledToolsJson.trim()
@@ -1237,66 +1218,22 @@ export default function Settings() {
                   )}
                 </div>
 
-                {/* Tool Output Truncation */}
-                <div className="border-t border-rt-border/50 pt-3">
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="label text-xs mb-1 block">Max output lines</label>
-                      <input
-                        type="number"
-                        className="input w-full text-center"
-                        min={1}
-                        max={5000}
-                        value={toolOutputMaxLines}
-                        onChange={(e) => setToolOutputMaxLines(Math.max(1, Math.min(5000, Number(e.target.value) || 200)))}
-                      />
-                    </div>
-                    <div>
-                      <label className="label text-xs mb-1 block">Max output bytes</label>
-                      <input
-                        type="number"
-                        className="input w-full text-center"
-                        min={1000}
-                        max={500000}
-                        step={1000}
-                        value={toolOutputMaxBytes}
-                        onChange={(e) => setToolOutputMaxBytes(Math.max(1000, Math.min(500000, Number(e.target.value) || 50000)))}
-                      />
-                    </div>
-                  </div>
-                  <p className="text-xs text-rt-text-muted mt-1">
-                    Truncate tool output to prevent context overflow. Lines are truncated first, then bytes.
-                  </p>
-                </div>
-
-                {/* Bash Shell + Snapshot */}
-                <div className="border-t border-rt-border/50 pt-3 grid grid-cols-2 gap-4">
+                {/* Snapshot */}
+                <div className="border-t border-rt-border/50 pt-3 flex items-start gap-3">
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={snapshotEnabled}
+                    onClick={() => setSnapshotEnabled(!snapshotEnabled)}
+                    className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${snapshotEnabled ? 'bg-rt-primary' : 'bg-rt-border'}`}
+                  >
+                    <span className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${snapshotEnabled ? 'translate-x-4' : 'translate-x-0'}`} />
+                  </button>
                   <div>
-                    <label className="label text-xs mb-1 block">Bash shell</label>
-                    <input
-                      type="text"
-                      className="input"
-                      placeholder="/bin/bash (leave empty for default)"
-                      value={bashShell}
-                      onChange={(e) => setBashShell(e.target.value)}
-                    />
-                  </div>
-                  <div className="flex items-start gap-3 pt-5">
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={snapshotEnabled}
-                      onClick={() => setSnapshotEnabled(!snapshotEnabled)}
-                      className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${snapshotEnabled ? 'bg-rt-primary' : 'bg-rt-border'}`}
-                    >
-                      <span className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${snapshotEnabled ? 'translate-x-4' : 'translate-x-0'}`} />
-                    </button>
-                    <div>
-                      <label className="label cursor-pointer" onClick={() => setSnapshotEnabled(!snapshotEnabled)}>
-                        Snapshots
-                      </label>
-                      <p className="text-xs text-rt-text-muted mt-0.5">Auto-snapshot workspace state</p>
-                    </div>
+                    <label className="label cursor-pointer" onClick={() => setSnapshotEnabled(!snapshotEnabled)}>
+                      Snapshots
+                    </label>
+                    <p className="text-xs text-rt-text-muted mt-0.5">Auto-snapshot workspace state</p>
                   </div>
                 </div>
 

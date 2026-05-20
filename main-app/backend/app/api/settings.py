@@ -48,11 +48,6 @@ class LLMSettings(BaseModel):
     # OpenCode agent — compaction
     compaction_auto: Optional[bool] = None
     compaction_tail_turns: Optional[int] = Field(None, ge=1, le=50)
-    # OpenCode agent — tool output truncation
-    tool_output_max_lines: Optional[int] = Field(None, ge=1, le=5000)
-    tool_output_max_bytes: Optional[int] = Field(None, ge=1000, le=500000)
-    # OpenCode agent — bash shell
-    bash_shell: Optional[str] = None
     # OpenCode agent — snapshot
     snapshot_enabled: Optional[bool] = None
     # OpenCode agent — disabled tools (JSON list)
@@ -88,9 +83,6 @@ class LLMSettingsResponse(BaseModel):
     max_steps: int = 50
     compaction_auto: bool = False
     compaction_tail_turns: int = 4
-    tool_output_max_lines: int = 200
-    tool_output_max_bytes: int = 50000
-    bash_shell: Optional[str] = None
     snapshot_enabled: bool = False
     disabled_tools: Optional[str] = None
     permission_config: Optional[str] = None
@@ -225,12 +217,6 @@ async def update_llm_settings(settings_data: LLMSettings, current_user: CurrentU
                     db_settings.compaction_auto = bool(settings_data.compaction_auto)
                 if settings_data.compaction_tail_turns is not None:
                     db_settings.compaction_tail_turns = max(1, min(50, int(settings_data.compaction_tail_turns)))
-                if settings_data.tool_output_max_lines is not None:
-                    db_settings.tool_output_max_lines = max(1, min(5000, int(settings_data.tool_output_max_lines)))
-                if settings_data.tool_output_max_bytes is not None:
-                    db_settings.tool_output_max_bytes = max(1000, min(500000, int(settings_data.tool_output_max_bytes)))
-                if settings_data.bash_shell is not None:
-                    db_settings.bash_shell = (settings_data.bash_shell or "").strip() or None
                 if settings_data.snapshot_enabled is not None:
                     db_settings.snapshot_enabled = bool(settings_data.snapshot_enabled)
                 if settings_data.disabled_tools is not None:
@@ -311,9 +297,6 @@ async def update_llm_settings(settings_data: LLMSettings, current_user: CurrentU
                 max_steps=int(getattr(db_settings, "max_steps", 50) or 50),
                 compaction_auto=bool(getattr(db_settings, "compaction_auto", False)),
                 compaction_tail_turns=int(getattr(db_settings, "compaction_tail_turns", 4) or 4),
-                tool_output_max_lines=int(getattr(db_settings, "tool_output_max_lines", 200) or 200),
-                tool_output_max_bytes=int(getattr(db_settings, "tool_output_max_bytes", 50000) or 50000),
-                bash_shell=getattr(db_settings, "bash_shell", None),
                 snapshot_enabled=bool(getattr(db_settings, "snapshot_enabled", False)),
                 disabled_tools=getattr(db_settings, "disabled_tools", None),
                 permission_config=getattr(db_settings, "permission_config", None),
@@ -361,9 +344,6 @@ async def get_llm_settings(session: AsyncSession = Depends(get_session), current
         max_steps=int(getattr(db_settings, "max_steps", 50) or 50),
         compaction_auto=bool(getattr(db_settings, "compaction_auto", False)),
         compaction_tail_turns=int(getattr(db_settings, "compaction_tail_turns", 4) or 4),
-        tool_output_max_lines=int(getattr(db_settings, "tool_output_max_lines", 200) or 200),
-        tool_output_max_bytes=int(getattr(db_settings, "tool_output_max_bytes", 50000) or 50000),
-        bash_shell=getattr(db_settings, "bash_shell", None),
         snapshot_enabled=bool(getattr(db_settings, "snapshot_enabled", False)),
         disabled_tools=getattr(db_settings, "disabled_tools", None),
         permission_config=getattr(db_settings, "permission_config", None),
@@ -607,9 +587,6 @@ async def get_active_llm_settings(session: AsyncSession, consumer_key: str | Non
         "max_steps": max(1, min(200, int(getattr(db_settings, "max_steps", 50) or 50))),
         "compaction_auto": bool(getattr(db_settings, "compaction_auto", False)),
         "compaction_tail_turns": max(1, min(50, int(getattr(db_settings, "compaction_tail_turns", 4) or 4))),
-        "tool_output_max_lines": max(1, min(5000, int(getattr(db_settings, "tool_output_max_lines", 200) or 200))),
-        "tool_output_max_bytes": max(1000, min(500000, int(getattr(db_settings, "tool_output_max_bytes", 50000) or 50000))),
-        "bash_shell": getattr(db_settings, "bash_shell", None),
         "snapshot_enabled": bool(getattr(db_settings, "snapshot_enabled", False)),
         "disabled_tools": getattr(db_settings, "disabled_tools", None),
         "permission_config": getattr(db_settings, "permission_config", None),

@@ -320,9 +320,6 @@ class OpenCodeManager:
         max_steps = llm.get("max_steps", 50)
         compaction_auto = llm.get("compaction_auto", False)
         compaction_tail_turns = llm.get("compaction_tail_turns", 4)
-        tool_output_max_lines = llm.get("tool_output_max_lines", 200)
-        tool_output_max_bytes = llm.get("tool_output_max_bytes", 50000)
-        bash_shell = llm.get("bash_shell") or None
         snapshot_enabled = llm.get("snapshot_enabled", False)
         disabled_tools_raw = llm.get("disabled_tools") or None
         permission_config_raw = llm.get("permission_config") or None
@@ -572,15 +569,6 @@ class OpenCodeManager:
                 "auto": True,
                 "tailTurns": compaction_tail_turns,
             }
-
-        if tool_output_max_lines != 200 or tool_output_max_bytes != 50000:
-            config["tool_output"] = {
-                "maxLines": tool_output_max_lines,
-                "maxBytes": tool_output_max_bytes,
-            }
-
-        if bash_shell:
-            config["bash"] = {"shell": bash_shell}
 
         if snapshot_enabled:
             config["snapshot"] = True

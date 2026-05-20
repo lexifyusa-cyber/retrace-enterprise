@@ -176,18 +176,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
                 cursor.execute("ALTER TABLE llm_settings ADD COLUMN compaction_tail_turns INTEGER DEFAULT 4")
                 conn.commit()
                 print("[STARTUP] Added compaction_tail_turns column to llm_settings", flush=True)
-            if "tool_output_max_lines" not in cols:
-                cursor.execute("ALTER TABLE llm_settings ADD COLUMN tool_output_max_lines INTEGER DEFAULT 200")
-                conn.commit()
-                print("[STARTUP] Added tool_output_max_lines column to llm_settings", flush=True)
-            if "tool_output_max_bytes" not in cols:
-                cursor.execute("ALTER TABLE llm_settings ADD COLUMN tool_output_max_bytes INTEGER DEFAULT 50000")
-                conn.commit()
-                print("[STARTUP] Added tool_output_max_bytes column to llm_settings", flush=True)
-            if "bash_shell" not in cols:
-                cursor.execute("ALTER TABLE llm_settings ADD COLUMN bash_shell VARCHAR(100)")
-                conn.commit()
-                print("[STARTUP] Added bash_shell column to llm_settings", flush=True)
             if "snapshot_enabled" not in cols:
                 cursor.execute("ALTER TABLE llm_settings ADD COLUMN snapshot_enabled INTEGER DEFAULT 0")
                 conn.commit()

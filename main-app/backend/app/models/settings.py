@@ -48,11 +48,6 @@ class LLMSettingsModel(Base):
     # OpenCode agent — compaction settings
     compaction_auto: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True, default=False)
     compaction_tail_turns: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=4)
-    # OpenCode agent — tool output truncation
-    tool_output_max_lines: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=200)
-    tool_output_max_bytes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=50000)
-    # OpenCode agent — bash shell
-    bash_shell: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     # OpenCode agent — snapshot toggle
     snapshot_enabled: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True, default=False)
     # OpenCode agent — disabled tools (JSON list)
@@ -96,9 +91,6 @@ class LLMSettingsModel(Base):
             "max_steps": self.max_steps if self.max_steps is not None else 50,
             "compaction_auto": bool(self.compaction_auto) if self.compaction_auto is not None else False,
             "compaction_tail_turns": self.compaction_tail_turns if self.compaction_tail_turns is not None else 4,
-            "tool_output_max_lines": self.tool_output_max_lines if self.tool_output_max_lines is not None else 200,
-            "tool_output_max_bytes": self.tool_output_max_bytes if self.tool_output_max_bytes is not None else 50000,
-            "bash_shell": self.bash_shell,
             "snapshot_enabled": bool(self.snapshot_enabled) if self.snapshot_enabled is not None else False,
             "disabled_tools": self.disabled_tools,
             "permission_config": self.permission_config,
