@@ -100,10 +100,6 @@ export default function Settings() {
   const [permissionConfigJson, setPermissionConfigJson] = useState('')
   const [customAgentsJson, setCustomAgentsJson] = useState('')
   const [customCommandsJson, setCustomCommandsJson] = useState('')
-  const [mcpAddName, setMcpAddName] = useState('')
-  const [mcpAddCommand, setMcpAddCommand] = useState('')
-  const [mcpAddUrl, setMcpAddUrl] = useState('')
-  const [mcpAddEnv, setMcpAddEnv] = useState('')
   const [advancedExpanded, setAdvancedExpanded] = useState(false)
   const [testResult, setTestResult] = useState<{ success: boolean; message: string; latency_ms?: number } | null>(null)
   const [layoutThemeExpanded, setLayoutThemeExpanded] = useState(false)
@@ -151,10 +147,6 @@ export default function Settings() {
   const [emailRedirectUri, setEmailRedirectUri] = useState('')
   const [globalSlackWebhook, setGlobalSlackWebhook] = useState('')
   const [globalTeamsWebhook, setGlobalTeamsWebhook] = useState('')
-  const [mcpExpanded, setMcpExpanded] = useState(false)
-  const [mcpJsonInput, setMcpJsonInput] = useState('')
-  const [mcpEditId, setMcpEditId] = useState<string | null>(null)
-  const [mcpEditName, setMcpEditName] = useState('')
   const [channelsExpanded, setChannelsExpanded] = useState(false)
   const [dataConnectionsExpanded, setDataConnectionsExpanded] = useState(false)
   const [channelPlatform, setChannelPlatform] = useState<'slack' | 'teams'>('slack')
@@ -207,45 +199,6 @@ export default function Settings() {
       return r.data
     },
     enabled: !!user && (!!user.tenant_id || isGlobalAdmin),
-  })
-
-  // Load MCP tool configs
-  const { data: mcpConfigs = [] } = useQuery<any[]>({
-    queryKey: ['settings', 'mcp-tools'],
-    queryFn: async () => {
-      const r = await api.get('/settings/mcp-tools')
-      return r.data
-    }
-  })
-
-  const mcpSaveMutation = useMutation({
-    mutationFn: async (data: any) => {
-      if (data.config_id) {
-        return api.put(`/settings/mcp-tools/${data.config_id}`, data)
-      }
-      return api.post('/settings/mcp-tools', data)
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['settings', 'mcp-tools'] })
-      setMcpJsonInput(''); setMcpEditId(null); setMcpEditName('')
-      toast.success('MCP server saved')
-    },
-    onError: () => toast.error('Failed to save MCP server'),
-  })
-
-  const mcpDeleteMutation = useMutation({
-    mutationFn: async (id: string) => api.delete(`/settings/mcp-tools/${id}`),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['settings', 'mcp-tools'] })
-      toast.success('MCP server removed')
-    },
-  })
-
-  const mcpToggleMutation = useMutation({
-    mutationFn: async (id: string) => api.post(`/settings/mcp-tools/${id}/toggle`),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['settings', 'mcp-tools'] })
-    },
   })
 
   // Load tenant auth config
@@ -1452,101 +1405,6 @@ export default function Settings() {
               </div>
             </motion.div>
           )}
-
-          {/* MCP Servers */}
-            <div className="border-t border-rt-border pt-4 mt-4">
-              <div className="flex items-center gap-2 mb-3">
-                <Plug className="w-4 h-4 text-green-400" />
-                <h4 className="text-xs font-semibold text-rt-text-muted uppercase tracking-wide">MCP Servers</h4>
-              </div>
-              <div className="space-y-2">
-                {mcpConfigs.length > 0 && mcpConfigs.map((cfg: any) => (
-                  <div key={cfg.config_id} className="flex items-center gap-2 px-3 py-2 rounded-lg bg-rt-surface/30 border border-rt-border/40">
-                    <div className="flex-1 min-w-0">
-                      <div className="text-xs font-medium truncate">{cfg.name || 'Unnamed'}</div>
-                      <div className="text-[10px] text-rt-text-muted/60 truncate font-mono">
-                        {cfg.config_json?.command ? `cmd: ${Array.isArray(cfg.config_json.command) ? cfg.config_json.command.join(' ') : cfg.config_json.command}` :
-                         cfg.config_json?.url ? `url: ${cfg.config_json.url}` : 'No config'}
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => mcpToggleMutation.mutate(cfg.config_id)}
-                      className={`text-xs px-2 py-0.5 rounded ${cfg.enabled !== false ? 'bg-rt-primary/20 text-rt-primary' : 'bg-rt-surface text-rt-text-muted'}`}
-                    >
-                      {cfg.enabled !== false ? 'On' : 'Off'}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => mcpDeleteMutation.mutate(cfg.config_id)}
-                      className="p-1 rounded hover:bg-red-500/20 text-red-400 transition-colors"
-                      title="Remove"
-                    >
-                      <Trash2 className="w-3 h-3" />
-                    </button>
-                  </div>
-                ))}
-                {mcpConfigs.length === 0 && (
-                  <p className="text-xs text-rt-text-muted/40 italic">No custom MCP servers configured</p>
-                )}
-                <div className="border-t border-rt-border/30 pt-3 mt-3 space-y-2">
-                  <div className="text-[10px] font-semibold text-rt-text-muted/60 uppercase tracking-wide">Add MCP Server</div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <input
-                      type="text"
-                      className="input text-xs"
-                      placeholder="Name (e.g. my-tool)"
-                      value={mcpAddName}
-                      onChange={(e) => setMcpAddName(e.target.value)}
-                    />
-                    <input
-                      type="text"
-                      className="input text-xs"
-                      placeholder="Command (e.g. npx my-mcp-server)"
-                      value={mcpAddCommand}
-                      onChange={(e) => setMcpAddCommand(e.target.value)}
-                    />
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <input
-                      type="text"
-                      className="input text-xs"
-                      placeholder="URL (for remote/SSE servers)"
-                      value={mcpAddUrl}
-                      onChange={(e) => setMcpAddUrl(e.target.value)}
-                    />
-                    <input
-                      type="text"
-                      className="input text-xs"
-                      placeholder='Env vars JSON (e.g. {"KEY":"val"})'
-                      value={mcpAddEnv}
-                      onChange={(e) => setMcpAddEnv(e.target.value)}
-                    />
-                  </div>
-                  <button
-                    type="button"
-                    disabled={!mcpAddName.trim() || (!mcpAddCommand.trim() && !mcpAddUrl.trim())}
-                    onClick={() => {
-                      const configJson: any = {}
-                      if (mcpAddCommand.trim()) {
-                        configJson.command = mcpAddCommand.trim().split(' ')
-                      }
-                      if (mcpAddUrl.trim()) {
-                        configJson.url = mcpAddUrl.trim()
-                      }
-                      if (mcpAddEnv.trim()) {
-                        try { configJson.environment = JSON.parse(mcpAddEnv) } catch {}
-                      }
-                      mcpSaveMutation.mutate({ name: mcpAddName.trim(), config_json: configJson, enabled: true })
-                      setMcpAddName(''); setMcpAddCommand(''); setMcpAddUrl(''); setMcpAddEnv('')
-                    }}
-                    className="btn-secondary text-xs"
-                  >
-                    <Plus className="w-3 h-3" /> Add Server
-                  </button>
-                </div>
-              </div>
-            </div>
 
             {/* Custom Commands */}
             <div className="border-t border-rt-border pt-4 mt-4">

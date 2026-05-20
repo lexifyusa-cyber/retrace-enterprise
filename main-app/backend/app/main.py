@@ -45,7 +45,6 @@ from app.models import email_inbox as email_inbox_model  # noqa: F401
 from app.models import email_message as email_message_model  # noqa: F401
 from app.models import channel_connection as channel_connection_model  # noqa: F401
 from app.models import mcp_server as mcp_server_model  # noqa: F401  – registers McpServer table
-from app.models import mcp_tool_config as mcp_tool_config_model  # noqa: F401  – registers McpToolConfig table
 from app.models import mcp_extension as mcp_extension_model  # noqa: F401  – registers McpExtension table
 from app.models import user_extension as user_extension_model  # noqa: F401  – registers UserExtension table
 from app.models import tenant as tenant_model  # noqa: F401
