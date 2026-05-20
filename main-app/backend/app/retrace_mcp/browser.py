@@ -41,12 +41,14 @@ Tools:
   vision_click (when screenops is configured server-side)
 """
 
+import base64
 import json
 import os
-from typing import Optional
+from typing import Optional, Union
 
 import httpx
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.utilities.types import Image
 
 mcp = FastMCP("retrace-browser")
 
@@ -102,46 +104,84 @@ def _post_action(action: str, **kwargs) -> str:
         return resp.text
 
 
+def _action_with_screenshot(action: str, **kwargs) -> Union[str, tuple]:
+    """Run a browser action and return `(text, Image)` when the backend
+    attached a base64 screenshot to the response.
+
+    The backend's /internal/browser/action endpoint auto-appends a
+    `screenshot` field (base64 JPEG) to every successful navigate/click/
+    type/scroll/etc. response so the LLM can see the post-action page
+    state — matching pre-OC `auto_browser` behavior. We split that field
+    off the JSON, decode the bytes, and hand both back to FastMCP as a
+    tuple. FastMCP's `_convert_to_content` turns a tuple into a list of
+    ContentBlocks: TextContent + ImageContent. OC's MCP-tool-result
+    handler at session/prompt.ts then surfaces the ImageContent as a
+    vision attachment on the tool call.
+
+    If no screenshot was attached (action failed, or the action is in the
+    backend's NO_AUTO_SCREENSHOT deny-list), returns the raw JSON text.
+    """
+    raw = _post_action(action, **kwargs)
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return raw
+    if not isinstance(data, dict):
+        return raw
+    screenshot_b64 = data.pop("screenshot", None)
+    text = json.dumps(data)
+    if not screenshot_b64:
+        return text
+    try:
+        return text, Image(data=base64.b64decode(screenshot_b64), format="jpeg")
+    except Exception:
+        # Decode failed — fall back to text-only rather than crashing the tool.
+        return text
+
+
 @mcp.tool()
 def navigate(url: str) -> str:
     """Navigate the browser to a URL. Waits for the page to reach
     `domcontentloaded` before returning so subsequent reads see the loaded
-    DOM. Operates on the user's currently-active conversation's browser.
+    DOM. Returns the URL + title as text, with a screenshot of the loaded
+    page attached as a vision input so you can SEE the page state.
 
     Args:
         url: The URL to navigate to (must include scheme: https://...)
     """
-    return _post_action("navigate", url=url)
+    return _action_with_screenshot("navigate", url=url)
 
 
 @mcp.tool()
-def take_screenshot() -> str:
-    """Capture a screenshot of the current page. Returns base64-encoded JPEG
-    inside `{screenshot, url, title}`."""
-    return _post_action("screenshot")
+def take_screenshot():
+    """Capture a screenshot of the current page. Returns URL + title as text
+    with the JPEG screenshot attached as a vision input."""
+    return _action_with_screenshot("screenshot")
 
 
 @mcp.tool()
-def click(selector: str) -> str:
+def click(selector: str):
     """Click the first element matching a CSS selector. After the click we
     wait for the page to settle (any same-tab navigation triggered by the
-    click completes before the screenshot is captured), so the result and
-    the panel update reflect the post-click state.
+    click completes before the screenshot is captured), then attach a
+    screenshot of the post-click page state as a vision input so you can
+    SEE the result of the click.
 
     Args:
         selector: CSS selector of the element to click. Examples:
                   `button.submit`, `a[href*="login"]`, `[aria-label="Sign in"]`,
                   `[data-testid="next"]`
     """
-    return _post_action("click", selector=selector)
+    return _action_with_screenshot("click", selector=selector)
 
 
 @mcp.tool()
-def vision_click(description: str) -> str:
+def vision_click(description: str):
     """Click an element by visual description. Takes a screenshot and asks
     a vision model (`screenops`) to return pixel coordinates, then clicks
     at those coordinates. Use this when no stable CSS selector exists
-    (e.g., shadow DOM, dynamic classnames, image-based buttons).
+    (e.g., shadow DOM, dynamic classnames, image-based buttons). The
+    post-click page screenshot is attached as a vision input.
 
     Requires server-side `screenops_api_key` configuration. If unset, this
     falls back to returning a helpful error — use `click(selector)` instead.
@@ -151,20 +191,20 @@ def vision_click(description: str) -> str:
                     Examples: "blue submit button", "Sign in link in top right",
                     "the second result card"
     """
-    return _post_action("vision_click", text=description)
+    return _action_with_screenshot("vision_click", text=description)
 
 
 @mcp.tool()
-def type_text(selector: str, text: str) -> str:
+def type_text(selector: str, text: str):
     """Fill a form field by CSS selector. Uses Playwright's `.fill()`
     (which clears the field first), so repeated calls don't accumulate stale
-    input.
+    input. A screenshot of the form after typing is attached as a vision input.
 
     Args:
         selector: CSS selector of the input element
         text: Text to type
     """
-    return _post_action("type", selector=selector, text=text)
+    return _action_with_screenshot("type", selector=selector, text=text)
 
 
 @mcp.tool()
@@ -179,24 +219,26 @@ def read_page(selector: Optional[str] = None) -> str:
 
 
 @mcp.tool()
-def scroll(direction: str = "down", amount: int = 500) -> str:
-    """Scroll the page.
+def scroll(direction: str = "down", amount: int = 500):
+    """Scroll the page. A screenshot of the new viewport is attached as a
+    vision input so you can see what's now visible.
 
     Args:
         direction: 'up' or 'down'
         amount: Pixels
     """
-    return _post_action("scroll", direction=direction, amount=amount)
+    return _action_with_screenshot("scroll", direction=direction, amount=amount)
 
 
 @mcp.tool()
-def press_key(key: str) -> str:
+def press_key(key: str):
     """Press a keyboard key on the page (Enter, Tab, Escape, ArrowDown, etc).
+    A screenshot of the page after the key press is attached as a vision input.
 
     Args:
         key: Key name (Playwright keyboard key syntax)
     """
-    return _post_action("press_key", key=key)
+    return _action_with_screenshot("press_key", key=key)
 
 
 @mcp.tool()
@@ -217,8 +259,9 @@ def evaluate_js(expression: str) -> str:
 
 
 @mcp.tool()
-def select_option(selector: str, value: str) -> str:
-    """Pick an option from a native `<select>` dropdown.
+def select_option(selector: str, value: str):
+    """Pick an option from a native `<select>` dropdown. A screenshot of
+    the page after selection is attached as a vision input.
 
     Native `<select>` elements ignore mouse clicks for dropdown items —
     this is the only correct way. Accepts either the option's `value`
@@ -228,12 +271,14 @@ def select_option(selector: str, value: str) -> str:
         selector: CSS selector of the `<select>` element
         value: Option `value` attribute OR visible label
     """
-    return _post_action("select_option", selector=selector, value=value)
+    return _action_with_screenshot("select_option", selector=selector, value=value)
 
 
 @mcp.tool()
-def hover(selector: Optional[str] = None, x: Optional[int] = None, y: Optional[int] = None) -> str:
+def hover(selector: Optional[str] = None, x: Optional[int] = None, y: Optional[int] = None):
     """Hover an element by selector, or move the cursor to coordinates.
+    A screenshot of the page after hover (with any tooltip / hover-revealed
+    menu visible) is attached as a vision input.
 
     Use for hover-revealed menus, tooltips, or UI that only renders on
     `mouseenter`. Provide either `selector` OR both `x` and `y`.
@@ -243,25 +288,28 @@ def hover(selector: Optional[str] = None, x: Optional[int] = None, y: Optional[i
         x: X coordinate (used with y when no selector)
         y: Y coordinate (used with x when no selector)
     """
-    return _post_action("hover", selector=selector, x=x, y=y)
+    return _action_with_screenshot("hover", selector=selector, x=x, y=y)
 
 
 @mcp.tool()
-def back() -> str:
-    """Navigate back in the browser history."""
-    return _post_action("back")
+def back():
+    """Navigate back in the browser history. Screenshot of the previous
+    page is attached as a vision input."""
+    return _action_with_screenshot("back")
 
 
 @mcp.tool()
-def forward() -> str:
-    """Navigate forward in the browser history."""
-    return _post_action("forward")
+def forward():
+    """Navigate forward in the browser history. Screenshot of the page is
+    attached as a vision input."""
+    return _action_with_screenshot("forward")
 
 
 @mcp.tool()
-def refresh() -> str:
-    """Reload the current page."""
-    return _post_action("refresh")
+def refresh():
+    """Reload the current page. Screenshot of the reloaded page is attached
+    as a vision input."""
+    return _action_with_screenshot("refresh")
 
 
 @mcp.tool()

@@ -393,4 +393,32 @@ async def internal_browser_action(
     except Exception:
         pass
 
+    # Attach a fresh screenshot to the action response so the LLM-facing MCP
+    # tool can return it as a vision attachment alongside the JSON metadata.
+    # Pre-OC's `auto_browser` did the same — every browser action returned a
+    # screenshot to the agent so it could see the post-action page state.
+    # Skip when:
+    #   - the action errored (page may be in a weird state, don't waste tokens)
+    #   - the action's own response already includes a `screenshot` field
+    #     (the dedicated `screenshot` action above)
+    #   - the action is text-only and a screenshot adds nothing useful
+    #     (`read_page`, `evaluate_js`, `get_url`, `analyze_page`,
+    #     `screenshot_full_page` which returns its own tiles, `wait`)
+    _NO_AUTO_SCREENSHOT = {
+        "read_page", "evaluate_js", "get_url", "analyze_page",
+        "screenshot_full_page", "wait", "screenshot",
+    }
+    if (
+        isinstance(result, dict)
+        and "error" not in result
+        and "screenshot" not in result
+        and action not in _NO_AUTO_SCREENSHOT
+    ):
+        try:
+            ss = await session.get_screenshot_base64()
+            if ss:
+                result["screenshot"] = ss
+        except Exception as exc:
+            logger.warning("auto_screenshot_attach_failed", action=action, error=str(exc))
+
     return result
