@@ -1285,23 +1285,6 @@ async def opencode_unrevert(
         return resp.json()
 
 
-@router.get("/opencode/session/{session_id}/diff")
-async def opencode_get_diff(
-    session_id: str,
-    current_user: CurrentUser = Depends(get_current_user),
-):
-    """Get the file diff for an OpenCode session."""
-    import httpx
-
-    port = opencode_manager.get_port(current_user.user_id)
-    if not port:
-        raise HTTPException(status_code=502, detail="OpenCode server not running")
-
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.get(f"http://127.0.0.1:{port}/session/{session_id}/diff")
-        return resp.json()
-
-
 @router.get("/opencode/status")
 async def opencode_status(
     current_user: CurrentUser = Depends(get_current_user),

@@ -191,7 +191,6 @@ export interface SessionState {
     }>
     tool?: { messageID?: string; callID?: string }
   } | null
-  diff: Record<string, string> | null
   sessionCost: SessionCost | null
   canUndo: boolean
   canRedo: boolean
@@ -215,7 +214,6 @@ function makeSession(conversationId: string, agent: 'build' | 'plan' = 'build'):
     isRunning: false,
     pendingPermission: null,
     pendingQuestion: null,
-    diff: null,
     sessionCost: null,
     canUndo: false,
     canRedo: false,
@@ -272,7 +270,6 @@ interface OpenCodeState {
    * else. Wires the per-message "Revert message" context menu item. */
   revertToMessage: (conversationId: string, messageId: string) => Promise<void>
   refreshMessages: (conversationId: string) => Promise<void>
-  fetchDiff: (conversationId: string) => Promise<void>
   fetchCost: (conversationId: string) => Promise<void>
   clearSession: (conversationId: string) => void
   forkSession: (conversationId: string, messageId?: string) => Promise<{ sessionId: string | null; conversationId: string | null } | null>
@@ -464,7 +461,6 @@ export const useOpenCodeStore = create<StoreInternal>((set, get) => ({
           canUndo: false,
           canRedo: false,
           sessionCost: null,
-          diff: null,
           pendingPermission: null,
           pendingQuestion: null,
           agent: mode,
@@ -507,7 +503,6 @@ export const useOpenCodeStore = create<StoreInternal>((set, get) => ({
           canUndo: false,
           canRedo: false,
           sessionCost: null,
-          diff: null,
           pendingPermission: null,
           pendingQuestion: null,
           queuedMessages: [],
@@ -1085,7 +1080,6 @@ export const useOpenCodeStore = create<StoreInternal>((set, get) => ({
         _streamsByConvo.delete(conversationId)
         console.log('[OC] Stream finished, refreshing messages...', { conversationId })
         await get().refreshMessages(conversationId)
-        await get().fetchDiff(conversationId)
         await get().fetchCost(conversationId)
         get()._patchSession(conversationId, s => ({
           ...s,
@@ -1306,15 +1300,6 @@ export const useOpenCodeStore = create<StoreInternal>((set, get) => ({
         canUndo: !revertMessageId && mapped.length > 0,
         canRedo: !!revertMessageId,
       }))
-    } catch { /* ignore */ }
-  },
-
-  fetchDiff: async (conversationId: string) => {
-    const sess = get().sessions[conversationId]
-    if (!sess?.sessionId) return
-    try {
-      const diff = await agentApi.opencode.getDiff(sess.sessionId)
-      get()._patchSession(conversationId, s => ({ ...s, diff }))
     } catch { /* ignore */ }
   },
 

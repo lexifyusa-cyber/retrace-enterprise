@@ -440,10 +440,6 @@ export const agentApi = {
       const response = await api.get(`/agent/opencode/session/${sessionId}/todo`)
       return response.data as Array<{ id?: string; content?: string; status?: string }>
     },
-    getDiff: async (sessionId: string) => {
-      const response = await api.get(`/agent/opencode/session/${sessionId}/diff`)
-      return response.data
-    },
     regenerateConfig: async (teamId?: string) => {
       const params: Record<string, string> = {}
       if (teamId) params.team_id = teamId

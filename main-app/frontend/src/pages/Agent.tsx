@@ -6,7 +6,6 @@ import {
   Plus, MessageSquare, Trash2, Edit2,
   ClipboardList,
   FolderOpen, ListTodo,
-  GitCompare,
   Paperclip, File as FileIcon,
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
@@ -35,7 +34,6 @@ import SandboxFileExplorer from '@/components/SandboxFileExplorer'
 import MessageList from '@/components/agent/MessageList'
 import { getToolIcon, getToolLabel } from '@/components/agent/ToolCallBlock'
 import CostBadge from '@/components/agent/CostBadge'
-import DiffPanel from '@/components/agent/DiffPanel'
 import TodosPanel from '@/components/agent/TodosPanel'
 import CommandPalette, { type PaletteCommand } from '@/components/agent/CommandPalette'
 import MentionMenu, { type MentionAgent } from '@/components/agent/MentionMenu'
@@ -195,7 +193,7 @@ export default function Agent() {
 
   // Workspace state (browser + terminal split view)
   const [showWorkspace, setShowWorkspace] = useState(true)
-  const [workspaceTab, setWorkspaceTab] = useState<'browser' | 'terminal' | 'files' | 'diff' | 'todos'>('browser')
+  const [workspaceTab, setWorkspaceTab] = useState<'browser' | 'terminal' | 'files' | 'todos'>('browser')
   const [isSandboxed] = useState(false)
 
   // OpenCode store — global slice (server status, model picker) + per-conversation slice
@@ -204,7 +202,6 @@ export default function Agent() {
   const conversationsWithPerm = useConversationsWithPendingPermission()
   const runningConversations = useRunningConversations()
   const ocMessages = activeSession?.messages ?? []
-  const ocDiff = activeSession?.diff ?? null
   const ocSessionCost = activeSession?.sessionCost ?? null
   const pendingPermission = activeSession?.pendingPermission ?? null
   const isRunning = activeSession?.isRunning ?? false
@@ -624,11 +621,10 @@ export default function Agent() {
         toast.error(err?.message || 'Connection failed')
       }
     } finally {
-      // Diff and cost are post-stream views, refresh them once.
+      // Cost is a post-stream view, refresh it once.
       // Message persistence is handled by the backend's sync_messages_from_opencode
       // call in the SSE relay's finally block — we no longer write messages to
       // ReTrace's DB from the frontend (which was incomplete and N²-growing).
-      ocStore.fetchDiff(conversationId)
       ocStore.fetchCost(conversationId)
       // Refetch the conversation list so the title (auto-derived from first user
       // message during sync) and message_count update without a manual reload.
@@ -1778,7 +1774,6 @@ export default function Agent() {
               { id: 'browser' as const, Icon: Globe, label: 'Browser' },
               { id: 'terminal' as const, Icon: Terminal, label: 'Terminal' },
               { id: 'files' as const, Icon: FolderOpen, label: 'Files' },
-              { id: 'diff' as const, Icon: GitCompare, label: 'Diff' },
               { id: 'todos' as const, Icon: ListTodo, label: 'Todos' },
             ]).map(({ id, Icon, label }) => {
               const active = workspaceTab === id
@@ -1835,12 +1830,6 @@ export default function Agent() {
               <SandboxFileExplorer
                 conversationId={activeConversationId}
               />
-            </div>
-            {/* Diff — overlays browser when selected */}
-            <div className={`absolute inset-0 z-10 bg-rt-bg transition-opacity duration-200 ${
-              workspaceTab === 'diff' ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
-            }`}>
-              <DiffPanel diff={ocDiff} />
             </div>
             {/* Todos — overlays browser when selected */}
             <div className={`absolute inset-0 z-10 bg-rt-bg transition-opacity duration-200 ${
