@@ -43,14 +43,10 @@ class LLMSettingsModel(Base):
     small_model_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     # OpenCode agent — separate model for plan agent (defaults to model_name if not set)
     plan_model_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    # OpenCode agent — reasoning/extended thinking toggle
-    use_reasoning: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True, default=True)
     # OpenCode agent — custom system prompts
     build_system_prompt: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     plan_system_prompt: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    # OpenCode agent — LLM parameters
-    temperature: Mapped[Optional[float]] = mapped_column(nullable=True, default=0.0)
-    top_p: Mapped[Optional[float]] = mapped_column(nullable=True, default=1.0)
+    # OpenCode agent — max iterations per turn
     max_steps: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=50)
     # OpenCode agent — compaction settings
     compaction_auto: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True, default=False)
@@ -100,11 +96,8 @@ class LLMSettingsModel(Base):
             "serper_api_key": self.serper_api_key,
             "small_model_name": self.small_model_name,
             "plan_model_name": self.plan_model_name,
-            "use_reasoning": bool(self.use_reasoning) if self.use_reasoning is not None else True,
             "build_system_prompt": self.build_system_prompt,
             "plan_system_prompt": self.plan_system_prompt,
-            "temperature": self.temperature if self.temperature is not None else 0.0,
-            "top_p": self.top_p if self.top_p is not None else 1.0,
             "max_steps": self.max_steps if self.max_steps is not None else 50,
             "compaction_auto": bool(self.compaction_auto) if self.compaction_auto is not None else False,
             "compaction_tail_turns": self.compaction_tail_turns if self.compaction_tail_turns is not None else 4,

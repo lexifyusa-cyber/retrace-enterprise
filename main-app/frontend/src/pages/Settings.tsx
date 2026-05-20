@@ -23,11 +23,8 @@ interface LLMSettings {
   serper_api_key?: string | null
   small_model_name?: string | null
   plan_model_name?: string | null
-  use_reasoning?: boolean | null
   build_system_prompt?: string | null
   plan_system_prompt?: string | null
-  temperature?: number | null
-  top_p?: number | null
   max_steps?: number | null
   compaction_auto?: boolean | null
   compaction_tail_turns?: number | null
@@ -58,11 +55,8 @@ interface LLMSettingsResponse {
   screenshot_delay_ms?: number
   small_model_name?: string | null
   plan_model_name?: string | null
-  use_reasoning?: boolean
   build_system_prompt?: string | null
   plan_system_prompt?: string | null
-  temperature?: number
-  top_p?: number
   max_steps?: number
   compaction_auto?: boolean
   compaction_tail_turns?: number
@@ -108,11 +102,8 @@ export default function Settings() {
   const [smallModelName, setSmallModelName] = useState('')
   const [planModelName, setPlanModelName] = useState('')
   const [sameModelForAll, setSameModelForAll] = useState(false)
-  const [useReasoning, setUseReasoning] = useState(true)
   const [buildSystemPrompt, setBuildSystemPrompt] = useState('')
   const [planSystemPrompt, setPlanSystemPrompt] = useState('')
-  const [temperature, setTemperature] = useState(0.0)
-  const [topP, setTopP] = useState(1.0)
   const [maxSteps, setMaxSteps] = useState(50)
   const [compactionAuto, setCompactionAuto] = useState(false)
   const [compactionTailTurns, setCompactionTailTurns] = useState(4)
@@ -336,11 +327,8 @@ export default function Settings() {
       const sm = currentSettings.small_model_name || ''
       const pm = currentSettings.plan_model_name || ''
       setSameModelForAll((sm === mainModel && pm === mainModel) || (!sm && !pm))
-      setUseReasoning(currentSettings.use_reasoning ?? true)
       setBuildSystemPrompt(currentSettings.build_system_prompt || '')
       setPlanSystemPrompt(currentSettings.plan_system_prompt || '')
-      setTemperature(currentSettings.temperature ?? 0.0)
-      setTopP(currentSettings.top_p ?? 1.0)
       setMaxSteps(currentSettings.max_steps ?? 50)
       setCompactionAuto(currentSettings.compaction_auto ?? false)
       setCompactionTailTurns(currentSettings.compaction_tail_turns ?? 4)
@@ -659,7 +647,6 @@ export default function Settings() {
     } else {
       payload.plan_model_name = null
     }
-    payload.use_reasoning = useReasoning
     if (buildSystemPrompt.trim()) {
       payload.build_system_prompt = buildSystemPrompt.trim()
     } else {
@@ -670,8 +657,6 @@ export default function Settings() {
     } else {
       payload.plan_system_prompt = null
     }
-    payload.temperature = temperature
-    payload.top_p = topP
     payload.max_steps = maxSteps
     payload.compaction_auto = compactionAuto
     payload.compaction_tail_turns = compactionTailTurns
@@ -1240,64 +1225,17 @@ export default function Settings() {
                   />
                 </div>
 
-                {/* Reasoning toggle */}
-                <div className="flex items-start gap-3">
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={useReasoning}
-                    onClick={() => setUseReasoning(!useReasoning)}
-                    className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${useReasoning ? 'bg-rt-primary' : 'bg-rt-border'}`}
-                  >
-                    <span className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${useReasoning ? 'translate-x-4' : 'translate-x-0'}`} />
-                  </button>
-                  <div>
-                    <label className="label cursor-pointer" onClick={() => setUseReasoning(!useReasoning)}>
-                      Extended reasoning
-                    </label>
-                    <p className="text-xs text-rt-text-muted mt-0.5">
-                      Enable extended thinking / reasoning mode. Works with reasoning-capable models.
-                    </p>
-                  </div>
-                </div>
-
                 {/* LLM Parameters */}
-                <div className="grid grid-cols-3 gap-4">
-                  <div>
-                    <label className="label text-xs mb-1 block">Temperature</label>
-                    <input
-                      type="number"
-                      className="input w-full text-center"
-                      min={0}
-                      max={2}
-                      step={0.1}
-                      value={temperature}
-                      onChange={(e) => setTemperature(Math.max(0, Math.min(2, Number(e.target.value) || 0)))}
-                    />
-                  </div>
-                  <div>
-                    <label className="label text-xs mb-1 block">Top P</label>
-                    <input
-                      type="number"
-                      className="input w-full text-center"
-                      min={0}
-                      max={1}
-                      step={0.05}
-                      value={topP}
-                      onChange={(e) => setTopP(Math.max(0, Math.min(1, Number(e.target.value) || 1)))}
-                    />
-                  </div>
-                  <div>
-                    <label className="label text-xs mb-1 block">Max steps</label>
-                    <input
-                      type="number"
-                      className="input w-full text-center"
-                      min={1}
-                      max={200}
-                      value={maxSteps}
-                      onChange={(e) => setMaxSteps(Math.max(1, Math.min(200, Number(e.target.value) || 50)))}
-                    />
-                  </div>
+                <div>
+                  <label className="label text-xs mb-1 block">Max steps</label>
+                  <input
+                    type="number"
+                    className="input w-full text-center max-w-[180px]"
+                    min={1}
+                    max={200}
+                    value={maxSteps}
+                    onChange={(e) => setMaxSteps(Math.max(1, Math.min(200, Number(e.target.value) || 50)))}
+                  />
                 </div>
 
                 {/* Compaction */}

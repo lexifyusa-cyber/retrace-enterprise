@@ -317,11 +317,8 @@ class OpenCodeManager:
                 model_name = model_override
         small_model_name = llm.get("small_model_name") or None
         plan_model_name = llm.get("plan_model_name") or None
-        use_reasoning = llm.get("use_reasoning", True)
         build_system_prompt = llm.get("build_system_prompt") or None
         plan_system_prompt = llm.get("plan_system_prompt") or None
-        temperature = llm.get("temperature", 0.0)
-        top_p = llm.get("top_p", 1.0)
         max_steps = llm.get("max_steps", 50)
         compaction_auto = llm.get("compaction_auto", False)
         compaction_tail_turns = llm.get("compaction_tail_turns", 4)
@@ -496,13 +493,11 @@ class OpenCodeManager:
                 "build": {
                     "model": f"{provider_id}/{model_name}",
                     "prompt": build_prompt,
-                    "reasoning": use_reasoning,
                     "maxSteps": max_steps,
                 },
                 "plan": {
                     "model": f"{provider_id}/{plan_model}",
                     "prompt": plan_prompt,
-                    "reasoning": use_reasoning,
                     "maxSteps": max_steps,
                     "permission": {
                         "edit": "deny",
@@ -516,7 +511,6 @@ class OpenCodeManager:
                 "mcp-builder": {
                     "model": f"{provider_id}/{model_name}",
                     "prompt": MCP_BUILDER_OC_PROMPT,
-                    "reasoning": use_reasoning,
                     "maxSteps": 80,
                     "permission": {
                         "edit": "allow",
@@ -580,11 +574,6 @@ class OpenCodeManager:
 
         if small_model_name:
             config["small_model"] = f"{provider_id}/{small_model_name}"
-
-        if temperature > 0.0:
-            config["temperature"] = temperature
-        if top_p < 1.0:
-            config["top_p"] = top_p
 
         if compaction_auto:
             config["compaction"] = {

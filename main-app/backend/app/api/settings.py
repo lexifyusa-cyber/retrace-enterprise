@@ -43,14 +43,10 @@ class LLMSettings(BaseModel):
     small_model_name: Optional[str] = None
     # OpenCode agent — plan agent model (defaults to model_name)
     plan_model_name: Optional[str] = None
-    # OpenCode agent — reasoning/extended thinking toggle
-    use_reasoning: Optional[bool] = None
     # OpenCode agent — custom system prompts
     build_system_prompt: Optional[str] = None
     plan_system_prompt: Optional[str] = None
-    # OpenCode agent — LLM parameters
-    temperature: Optional[float] = Field(None, ge=0.0, le=2.0)
-    top_p: Optional[float] = Field(None, ge=0.0, le=1.0)
+    # OpenCode agent — max iterations per turn
     max_steps: Optional[int] = Field(None, ge=1, le=200)
     # OpenCode agent — compaction
     compaction_auto: Optional[bool] = None
@@ -92,11 +88,8 @@ class LLMSettingsResponse(BaseModel):
     serper_api_key_set: bool = False
     small_model_name: Optional[str] = None
     plan_model_name: Optional[str] = None
-    use_reasoning: bool = True
     build_system_prompt: Optional[str] = None
     plan_system_prompt: Optional[str] = None
-    temperature: float = 0.0
-    top_p: float = 1.0
     max_steps: int = 50
     compaction_auto: bool = False
     compaction_tail_turns: int = 4
@@ -231,16 +224,10 @@ async def update_llm_settings(settings_data: LLMSettings, current_user: CurrentU
                     db_settings.small_model_name = (settings_data.small_model_name or "").strip() or None
                 if settings_data.plan_model_name is not None:
                     db_settings.plan_model_name = (settings_data.plan_model_name or "").strip() or None
-                if settings_data.use_reasoning is not None:
-                    db_settings.use_reasoning = bool(settings_data.use_reasoning)
                 if settings_data.build_system_prompt is not None:
                     db_settings.build_system_prompt = (settings_data.build_system_prompt or "").strip() or None
                 if settings_data.plan_system_prompt is not None:
                     db_settings.plan_system_prompt = (settings_data.plan_system_prompt or "").strip() or None
-                if settings_data.temperature is not None:
-                    db_settings.temperature = max(0.0, min(2.0, float(settings_data.temperature)))
-                if settings_data.top_p is not None:
-                    db_settings.top_p = max(0.0, min(1.0, float(settings_data.top_p)))
                 if settings_data.max_steps is not None:
                     db_settings.max_steps = max(1, min(200, int(settings_data.max_steps)))
                 if settings_data.compaction_auto is not None:
@@ -330,11 +317,8 @@ async def update_llm_settings(settings_data: LLMSettings, current_user: CurrentU
                 serper_api_key_set=bool(getattr(db_settings, "serper_api_key", None)),
                 small_model_name=getattr(db_settings, "small_model_name", None),
                 plan_model_name=getattr(db_settings, "plan_model_name", None),
-                use_reasoning=bool(getattr(db_settings, "use_reasoning", True)),
                 build_system_prompt=getattr(db_settings, "build_system_prompt", None),
                 plan_system_prompt=getattr(db_settings, "plan_system_prompt", None),
-                temperature=float(getattr(db_settings, "temperature", 0.0) or 0.0),
-                top_p=float(getattr(db_settings, "top_p", 1.0) or 1.0),
                 max_steps=int(getattr(db_settings, "max_steps", 50) or 50),
                 compaction_auto=bool(getattr(db_settings, "compaction_auto", False)),
                 compaction_tail_turns=int(getattr(db_settings, "compaction_tail_turns", 4) or 4),
@@ -385,11 +369,8 @@ async def get_llm_settings(session: AsyncSession = Depends(get_session), current
         serper_api_key_set=bool(getattr(db_settings, "serper_api_key", None)),
         small_model_name=getattr(db_settings, "small_model_name", None),
         plan_model_name=getattr(db_settings, "plan_model_name", None),
-        use_reasoning=bool(getattr(db_settings, "use_reasoning", True)),
         build_system_prompt=getattr(db_settings, "build_system_prompt", None),
         plan_system_prompt=getattr(db_settings, "plan_system_prompt", None),
-        temperature=float(getattr(db_settings, "temperature", 0.0) or 0.0),
-        top_p=float(getattr(db_settings, "top_p", 1.0) or 1.0),
         max_steps=int(getattr(db_settings, "max_steps", 50) or 50),
         compaction_auto=bool(getattr(db_settings, "compaction_auto", False)),
         compaction_tail_turns=int(getattr(db_settings, "compaction_tail_turns", 4) or 4),
@@ -636,11 +617,8 @@ async def get_active_llm_settings(session: AsyncSession, consumer_key: str | Non
         "serper_api_key": getattr(db_settings, "serper_api_key", None),
         "small_model_name": getattr(db_settings, "small_model_name", None),
         "plan_model_name": getattr(db_settings, "plan_model_name", None),
-        "use_reasoning": bool(getattr(db_settings, "use_reasoning", True)),
         "build_system_prompt": getattr(db_settings, "build_system_prompt", None),
         "plan_system_prompt": getattr(db_settings, "plan_system_prompt", None),
-        "temperature": float(getattr(db_settings, "temperature", 0.0) or 0.0),
-        "top_p": float(getattr(db_settings, "top_p", 1.0) or 1.0),
         "max_steps": max(1, min(200, int(getattr(db_settings, "max_steps", 50) or 50))),
         "compaction_auto": bool(getattr(db_settings, "compaction_auto", False)),
         "compaction_tail_turns": max(1, min(50, int(getattr(db_settings, "compaction_tail_turns", 4) or 4))),

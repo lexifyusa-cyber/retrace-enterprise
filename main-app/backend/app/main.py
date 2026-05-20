@@ -160,10 +160,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
                 cursor.execute("ALTER TABLE llm_settings ADD COLUMN small_model_name VARCHAR(255)")
                 conn.commit()
                 print("[STARTUP] Added small_model_name column to llm_settings", flush=True)
-            if "use_reasoning" not in cols:
-                cursor.execute("ALTER TABLE llm_settings ADD COLUMN use_reasoning INTEGER DEFAULT 1")
-                conn.commit()
-                print("[STARTUP] Added use_reasoning column to llm_settings", flush=True)
             if "plan_model_name" not in cols:
                 cursor.execute("ALTER TABLE llm_settings ADD COLUMN plan_model_name VARCHAR(255)")
                 conn.commit()
@@ -176,14 +172,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
                 cursor.execute("ALTER TABLE llm_settings ADD COLUMN plan_system_prompt TEXT")
                 conn.commit()
                 print("[STARTUP] Added plan_system_prompt column to llm_settings", flush=True)
-            if "temperature" not in cols:
-                cursor.execute("ALTER TABLE llm_settings ADD COLUMN temperature REAL DEFAULT 0.0")
-                conn.commit()
-                print("[STARTUP] Added temperature column to llm_settings", flush=True)
-            if "top_p" not in cols:
-                cursor.execute("ALTER TABLE llm_settings ADD COLUMN top_p REAL DEFAULT 1.0")
-                conn.commit()
-                print("[STARTUP] Added top_p column to llm_settings", flush=True)
             if "max_steps" not in cols:
                 cursor.execute("ALTER TABLE llm_settings ADD COLUMN max_steps INTEGER DEFAULT 50")
                 conn.commit()
