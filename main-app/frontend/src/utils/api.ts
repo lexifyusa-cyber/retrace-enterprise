@@ -99,8 +99,8 @@ export const podApi = {
 
 // Local filesystem browse (backend server)
 export const localFilesApi = {
-  browse: async (path: string = '/'): Promise<DirectoryListing> => {
-    const response = await api.get('/files/browse', { params: { path } })
+  browse: async (path: string = '/', host: boolean = false): Promise<DirectoryListing> => {
+    const response = await api.get('/files/browse', { params: { path, host } })
     return response.data
   },
 }
@@ -259,8 +259,6 @@ export const queryApi = {
 
 // Agent APIs
 export const agentApi = {
-  /** Returns the SSE endpoint URL (caller uses fetch + EventSource pattern) */
-  getExecuteUrl: () => '/api/v1/agent/execute',
 
   /** Pre-start MCP extensions in the background (fire-and-forget). */
   warmupMcp: async (): Promise<void> => {
@@ -282,10 +280,6 @@ export const agentApi = {
     return response.data
   },
 
-  updateAgentTools: async (disabledTools: string[]) => {
-    const response = await api.patch('/settings/agent-tools', { disabled_tools: disabledTools })
-    return response.data
-  },
 
   // Conversations
   listConversations: async (teamId: string): Promise<Conversation[]> => {
@@ -401,6 +395,178 @@ export const agentApi = {
   getLlmLogs: async (conversationId: string): Promise<LlmLog[]> => {
     const response = await api.get('/agent/llm-logs', { params: { conversation_id: conversationId } })
     return response.data
+  },
+
+  // OpenCode proxy
+  opencode: {
+    getStatus: async (): Promise<{ running: boolean; healthy: boolean; port: number | null; external?: boolean }> => {
+      const response = await api.get('/agent/opencode/status')
+      return response.data
+    },
+    start: async (teamId?: string): Promise<{ status: string; port: number }> => {
+      const response = await api.post('/agent/opencode/start', null, { params: { team_id: teamId } })
+      return response.data
+    },
+    stop: async (): Promise<{ status: string }> => {
+      const response = await api.post('/agent/opencode/stop')
+      return response.data
+    },
+    createSession: async (teamId?: string, conversationId?: string, agent?: string): Promise<{ opencode_session_id: string; port: number }> => {
+      const response = await api.post('/agent/opencode/session', { team_id: teamId, conversation_id: conversationId, agent })
+      return response.data
+    },
+    getSession: async (sessionId: string) => {
+      const response = await api.get(`/agent/opencode/session/${sessionId}`)
+      return response.data
+    },
+    getMessageUrl: (sessionId: string) => `/api/v1/agent/opencode/session/${sessionId}/message`,
+    getMessages: async (sessionId: string) => {
+      const response = await api.get(`/agent/opencode/session/${sessionId}/message`)
+      return response.data
+    },
+    /** Revert to before a specific message (or before the last user message
+     * if `messageId` is omitted). Removes that message and everything after. */
+    revert: async (sessionId: string, messageId?: string) => {
+      const body = messageId ? { messageID: messageId } : undefined
+      const response = await api.post(`/agent/opencode/session/${sessionId}/revert`, body)
+      return response.data
+    },
+    unrevert: async (sessionId: string) => {
+      const response = await api.post(`/agent/opencode/session/${sessionId}/unrevert`)
+      return response.data
+    },
+    /** Get the agent's TODO list for the session. */
+    getTodos: async (sessionId: string) => {
+      const response = await api.get(`/agent/opencode/session/${sessionId}/todo`)
+      return response.data as Array<{ id?: string; content?: string; status?: string }>
+    },
+    getDiff: async (sessionId: string) => {
+      const response = await api.get(`/agent/opencode/session/${sessionId}/diff`)
+      return response.data
+    },
+    regenerateConfig: async (teamId?: string) => {
+      const params: Record<string, string> = {}
+      if (teamId) params.team_id = teamId
+      const response = await api.post('/agent/opencode/regenerate-config', null, { params })
+      return response.data
+    },
+    getCost: async (sessionId: string) => {
+      const response = await api.get(`/agent/opencode/session/${sessionId}/cost`)
+      return response.data
+    },
+    getConfig: async () => {
+      const response = await api.get('/agent/opencode/config')
+      return response.data
+    },
+    forkSession: async (sessionId: string, messageId?: string) => {
+      const body = messageId ? { messageID: messageId } : undefined
+      const response = await api.post(`/agent/opencode/session/${sessionId}/fork`, body)
+      return response.data
+    },
+    /** List MCP servers + their connection status (connected / failed / disabled). */
+    listMcpServers: async () => {
+      const response = await api.get('/agent/opencode/mcp')
+      return response.data as Record<string, { status: string; [k: string]: unknown }>
+    },
+    /** Reconnect a specific MCP server (e.g. one that's in failed status). */
+    mcpConnect: async (serverName: string) => {
+      const response = await api.post(`/agent/opencode/mcp/${encodeURIComponent(serverName)}/connect`)
+      return response.data
+    },
+    /**
+     * Live agent tool-toggle. Persists the new disabled list to settings AND
+     * applies it to every open OC session (PATCH session permission for
+     * native tools; MCP connect/disconnect for MCP-provided tools). No config
+     * file rewrite, no watcher fire, no instance dispose. Other open
+     * conversations are kept in sync because the backend fans the PATCH out.
+     */
+    setTools: async (disabledTools: string[]) => {
+      const response = await api.patch('/agent/opencode/tools', { disabled_tools: disabledTools })
+      return response.data
+    },
+    /** Disconnect a specific MCP server. Mostly for completeness / testing. */
+    mcpDisconnect: async (serverName: string) => {
+      const response = await api.post(`/agent/opencode/mcp/${encodeURIComponent(serverName)}/disconnect`)
+      return response.data
+    },
+    /** List sessions forked from this one — enriched with our conversation_id
+     * (when linked) so the UI can navigate directly. */
+    sessionChildren: async (sessionId: string) => {
+      const response = await api.get(`/agent/opencode/session/${sessionId}/children`)
+      return response.data as Array<{
+        id: string
+        title?: string
+        slug?: string
+        time?: { created?: number; updated?: number }
+        parentID?: string
+        model?: { id?: string; providerID?: string }
+        agent?: string
+        conversation_id?: string | null
+      }>
+    },
+    compactSession: async (sessionId: string) => {
+      const response = await api.post(`/agent/opencode/session/${sessionId}/compact`)
+      return response.data
+    },
+    respondPermission: async (sessionId: string, permissionId: string, response: 'once' | 'always' | 'reject') => {
+      const resp = await api.post(`/agent/opencode/session/${sessionId}/permissions/${permissionId}`, { response })
+      return resp.data
+    },
+    /** Submit answers for a pending OpenCode `question` tool request. */
+    replyToQuestion: async (requestId: string, answers: string[][]) => {
+      const resp = await api.post(`/agent/opencode/question/${requestId}/reply`, { answers })
+      return resp.data
+    },
+    /** Dismiss a pending question — agent will see a tool error. */
+    rejectQuestion: async (requestId: string) => {
+      const resp = await api.post(`/agent/opencode/question/${requestId}/reject`)
+      return resp.data
+    },
+    /** List currently-pending questions for the authed user. */
+    listPendingQuestions: async () => {
+      const resp = await api.get('/agent/opencode/questions')
+      return resp.data as Array<{
+        id: string
+        sessionID: string
+        questions: Array<{
+          question: string
+          header?: string
+          options?: Array<{ label: string; description?: string }>
+          multiple?: boolean
+          custom?: boolean
+        }>
+        tool?: { messageID?: string; callID?: string }
+      }>
+    },
+    /** Abort an in-flight prompt for the given OpenCode session. Returns
+     * { aborted: boolean }. Safe to call when nothing is actively generating. */
+    abort: async (sessionId: string): Promise<{ aborted: boolean }> => {
+      const resp = await api.post(`/agent/opencode/session/${sessionId}/abort`)
+      return resp.data
+    },
+    /** Generate a public share URL for the session. Returns OC's response,
+     * typically including a `url` field. */
+    shareSession: async (sessionId: string) => {
+      const resp = await api.post(`/agent/opencode/session/${sessionId}/share`)
+      return resp.data as { url?: string; [k: string]: any }
+    },
+    /** Revoke an existing share. */
+    unshareSession: async (sessionId: string) => {
+      const resp = await api.delete(`/agent/opencode/session/${sessionId}/share`)
+      return resp.data as { unshared: boolean }
+    },
+    /** Generate a session digest. Distinct from compact (which trims context
+     * for ongoing use). */
+    summarizeSession: async (sessionId: string) => {
+      const resp = await api.post(`/agent/opencode/session/${sessionId}/summarize`)
+      return resp.data
+    },
+    /** List the OpenCode-side slash commands available in the current
+     * project. Used by the frontend command palette. */
+    listCommands: async () => {
+      const resp = await api.get(`/agent/opencode/commands`)
+      return resp.data as Array<{ name: string; description?: string; agent?: string }>
+    },
   },
 }
 
@@ -557,7 +723,6 @@ export const channelApi = {
     channel_name: string
     channel_id: string
     bot_token: string
-    team_id?: string
     auto_respond?: boolean
     ingest_history?: boolean
   }) => {

@@ -190,6 +190,9 @@ async def update_my_extension(
     if mcp_client_manager.is_running(user_ext.extension_id, current_user.user_id):
         await mcp_client_manager.stop_extension(user_ext.extension_id, current_user.user_id)
 
+    # Restart the user's OpenCode so the /agent chat sees the updated config.
+    await _reload_user_opencode(current_user.user_id)
+
     return user_ext.to_dict()
 
 
@@ -260,6 +263,7 @@ async def delete_extension(
                 name=catalog_ext.name,
                 server_deleted=server_deleted,
                 files_deleted=files_deleted)
+    await _reload_user_opencode(current_user.user_id)
     return {
         "status": "deleted",
         "extension_id": catalog_ext.extension_id,
@@ -499,6 +503,7 @@ async def install_extension(
     await session.commit()
     await session.refresh(user_ext)
     logger.info("user_extension_installed", extension_id=extension_id, user_id=current_user.user_id)
+    await _reload_user_opencode(current_user.user_id)
     return user_ext.to_dict()
 
 
@@ -923,6 +928,18 @@ async def validate_user_access(
         logger.error("validate_user_access_error", error=str(exc))
         msg = f"Verification failed: {exc}" if settings.is_development else "Verification failed. Check server logs for details."
         return {"has_access": False, "message": msg}
+
+
+async def _reload_user_opencode(user_id: str) -> None:
+    """Best-effort: restart the user's OpenCode so an MCP extension change
+    (install, credential edit, enable/disable, delete) reaches the /agent chat.
+    Never raises — a reload failure must not fail the extension operation.
+    """
+    try:
+        from app.services.opencode_manager import opencode_manager
+        await opencode_manager.reload_for_user(user_id)
+    except Exception as exc:
+        logger.warning("mcp_extension_oc_reload_failed", user_id=user_id, error=str(exc))
 
 
 async def _get_user_extension(

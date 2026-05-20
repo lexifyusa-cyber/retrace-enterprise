@@ -145,7 +145,7 @@ export interface FileEntry {
 export interface ConversationMessage {
   message_id: string
   conversation_id: string
-  type: 'user' | 'status' | 'tools' | 'code' | 'output' | 'answer' | 'error' | 'done' | 'sop' | 'doc'
+  type: 'user' | 'status' | 'tools' | 'code' | 'output' | 'answer' | 'error' | 'done' | 'sop' | 'doc' | 'thinking'
   content: string
   iteration?: number
   meta?: Record<string, any>
@@ -156,6 +156,8 @@ export interface ConversationMessage {
 export interface Conversation {
   conversation_id: string
   team_id: string
+  user_id?: string | null
+  opencode_session_id?: string | null
   title: string
   created_at: string | null
   updated_at: string | null

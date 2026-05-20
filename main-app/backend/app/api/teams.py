@@ -742,7 +742,7 @@ async def train_team(
         team_id=team_id,
         team_name=team.team_name,
         groups=len(group_ids),
-        paths=len(folder_paths),
+        paths=len(folder_specs),
         force_full=force_full,
     )
 
@@ -750,7 +750,7 @@ async def train_team(
         "status": "started",
         "team_id": team_id,
         "folder_groups": len(group_ids),
-        "folder_paths": len(folder_paths),
+        "folder_paths": len(folder_specs),
         "incremental": not force_full,
     }
 

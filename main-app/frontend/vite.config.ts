@@ -21,6 +21,11 @@ export default defineConfig({
         target: 'ws://localhost:8000',
         ws: true,
       },
+      '/opencode': {
+        target: 'http://localhost:4096',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/opencode/, ''),
+      },
     },
   },
   build: {

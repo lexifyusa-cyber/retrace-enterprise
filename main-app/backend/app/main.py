@@ -66,6 +66,33 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     setup_logging()
     logger.info("Starting ReTrace", version=settings.APP_VERSION)
 
+    # Internal shared-secret for the MCP → backend browser bridge. The token
+    # is generated once per host (not per process), persisted to a file, and
+    # picked up by every Python process that needs to authenticate to / from
+    # the backend's internal endpoints (the FastAPI process itself, the OC
+    # sidecar, and the retrace-* MCP subprocesses).
+    # File location: ~/.local/share/retrace/internal-token. Mode 0600 so
+    # other users on the host can't read it.
+    try:
+        import os as _os
+        from pathlib import Path as _Path
+        import secrets as _secrets
+        token_dir = _Path.home() / ".local" / "share" / "retrace"
+        token_path = token_dir / "internal-token"
+        if not _os.environ.get("RETRACE_INTERNAL_TOKEN"):
+            token = None
+            if token_path.exists():
+                token = token_path.read_text().strip() or None
+            if not token:
+                token_dir.mkdir(parents=True, exist_ok=True)
+                token = _secrets.token_urlsafe(32)
+                token_path.write_text(token)
+                _os.chmod(token_path, 0o600)
+                logger.info("internal_token_generated", path=str(token_path))
+            _os.environ["RETRACE_INTERNAL_TOKEN"] = token
+    except Exception as exc:
+        logger.warning("internal_token_init_failed", error=str(exc))
+
     # Capture the asyncio event loop for PTY manager's background threads
     import asyncio as _asyncio
     from app.services.pty_manager import pty_manager as _pty_mgr
@@ -129,6 +156,78 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
                 cursor.execute("ALTER TABLE llm_settings ADD COLUMN serper_api_key TEXT")
                 conn.commit()
                 print("[STARTUP] Added serper_api_key column to llm_settings", flush=True)
+            if "small_model_name" not in cols:
+                cursor.execute("ALTER TABLE llm_settings ADD COLUMN small_model_name VARCHAR(255)")
+                conn.commit()
+                print("[STARTUP] Added small_model_name column to llm_settings", flush=True)
+            if "use_reasoning" not in cols:
+                cursor.execute("ALTER TABLE llm_settings ADD COLUMN use_reasoning INTEGER DEFAULT 1")
+                conn.commit()
+                print("[STARTUP] Added use_reasoning column to llm_settings", flush=True)
+            if "plan_model_name" not in cols:
+                cursor.execute("ALTER TABLE llm_settings ADD COLUMN plan_model_name VARCHAR(255)")
+                conn.commit()
+                print("[STARTUP] Added plan_model_name column to llm_settings", flush=True)
+            if "build_system_prompt" not in cols:
+                cursor.execute("ALTER TABLE llm_settings ADD COLUMN build_system_prompt TEXT")
+                conn.commit()
+                print("[STARTUP] Added build_system_prompt column to llm_settings", flush=True)
+            if "plan_system_prompt" not in cols:
+                cursor.execute("ALTER TABLE llm_settings ADD COLUMN plan_system_prompt TEXT")
+                conn.commit()
+                print("[STARTUP] Added plan_system_prompt column to llm_settings", flush=True)
+            if "temperature" not in cols:
+                cursor.execute("ALTER TABLE llm_settings ADD COLUMN temperature REAL DEFAULT 0.0")
+                conn.commit()
+                print("[STARTUP] Added temperature column to llm_settings", flush=True)
+            if "top_p" not in cols:
+                cursor.execute("ALTER TABLE llm_settings ADD COLUMN top_p REAL DEFAULT 1.0")
+                conn.commit()
+                print("[STARTUP] Added top_p column to llm_settings", flush=True)
+            if "max_steps" not in cols:
+                cursor.execute("ALTER TABLE llm_settings ADD COLUMN max_steps INTEGER DEFAULT 50")
+                conn.commit()
+                print("[STARTUP] Added max_steps column to llm_settings", flush=True)
+            if "compaction_auto" not in cols:
+                cursor.execute("ALTER TABLE llm_settings ADD COLUMN compaction_auto INTEGER DEFAULT 0")
+                conn.commit()
+                print("[STARTUP] Added compaction_auto column to llm_settings", flush=True)
+            if "compaction_tail_turns" not in cols:
+                cursor.execute("ALTER TABLE llm_settings ADD COLUMN compaction_tail_turns INTEGER DEFAULT 4")
+                conn.commit()
+                print("[STARTUP] Added compaction_tail_turns column to llm_settings", flush=True)
+            if "tool_output_max_lines" not in cols:
+                cursor.execute("ALTER TABLE llm_settings ADD COLUMN tool_output_max_lines INTEGER DEFAULT 200")
+                conn.commit()
+                print("[STARTUP] Added tool_output_max_lines column to llm_settings", flush=True)
+            if "tool_output_max_bytes" not in cols:
+                cursor.execute("ALTER TABLE llm_settings ADD COLUMN tool_output_max_bytes INTEGER DEFAULT 50000")
+                conn.commit()
+                print("[STARTUP] Added tool_output_max_bytes column to llm_settings", flush=True)
+            if "bash_shell" not in cols:
+                cursor.execute("ALTER TABLE llm_settings ADD COLUMN bash_shell VARCHAR(100)")
+                conn.commit()
+                print("[STARTUP] Added bash_shell column to llm_settings", flush=True)
+            if "snapshot_enabled" not in cols:
+                cursor.execute("ALTER TABLE llm_settings ADD COLUMN snapshot_enabled INTEGER DEFAULT 0")
+                conn.commit()
+                print("[STARTUP] Added snapshot_enabled column to llm_settings", flush=True)
+            if "disabled_tools" not in cols:
+                cursor.execute("ALTER TABLE llm_settings ADD COLUMN disabled_tools TEXT")
+                conn.commit()
+                print("[STARTUP] Added disabled_tools column to llm_settings", flush=True)
+            if "permission_config" not in cols:
+                cursor.execute("ALTER TABLE llm_settings ADD COLUMN permission_config TEXT")
+                conn.commit()
+                print("[STARTUP] Added permission_config column to llm_settings", flush=True)
+            if "custom_agents" not in cols:
+                cursor.execute("ALTER TABLE llm_settings ADD COLUMN custom_agents TEXT")
+                conn.commit()
+                print("[STARTUP] Added custom_agents column to llm_settings", flush=True)
+            if "custom_commands" not in cols:
+                cursor.execute("ALTER TABLE llm_settings ADD COLUMN custom_commands TEXT")
+                conn.commit()
+                print("[STARTUP] Added custom_commands column to llm_settings", flush=True)
             conn.close()
     except Exception as exc:
         print(f"[STARTUP] llm_settings migration skipped: {exc}", flush=True)
@@ -356,6 +455,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
                 cursor.execute("CREATE INDEX IF NOT EXISTS ix_conversations_user_id ON conversations(user_id)")
                 conn.commit()
                 print("[STARTUP] Added user_id column to conversations", flush=True)
+            if cols and "opencode_session_id" not in cols:
+                cursor.execute("ALTER TABLE conversations ADD COLUMN opencode_session_id VARCHAR(100)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS ix_conversations_opencode_session_id ON conversations(opencode_session_id)")
+                conn.commit()
+                print("[STARTUP] Added opencode_session_id column to conversations", flush=True)
     except Exception as exc:
         print(f"[STARTUP] conversations migration skipped: {exc}", flush=True)
 
@@ -518,6 +622,26 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     except Exception as exc:
         print(f"[STARTUP] Built-in extension seeding skipped: {exc}", flush=True)
 
+    # Rehydrate _active_team_id from user.preferences. Covers the case where
+    # the backend restarts and a user with a tab still open asks a KB
+    # question before their tab fires the next regenerate-config. The
+    # in-memory dict would otherwise be empty until that fires.
+    try:
+        from app.api.agent import _active_team_id
+        from app.models.user import User
+        async with async_session_maker() as session:
+            users_result = await session.execute(
+                select(User).where(User.is_active == True)
+            )
+            for u in users_result.scalars().all():
+                atid = (u.preferences or {}).get("active_team_id")
+                if atid:
+                    _active_team_id[u.user_id] = atid
+            if _active_team_id:
+                print(f"[STARTUP] Hydrated active_team_id for {len(_active_team_id)} user(s)", flush=True)
+    except Exception as exc:
+        print(f"[STARTUP] active_team hydration skipped: {exc}", flush=True)
+
     # Start automation scheduler
     from app.services.scheduler_service import automation_scheduler
     await automation_scheduler.start()
@@ -569,6 +693,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     
     # Shutdown
     logger.info("Shutting down ReTrace")
+    from app.services.opencode_manager import opencode_manager
+    await opencode_manager.stop_all()
     from app.services.pty_manager import pty_manager
     pty_manager.destroy_all()
     from app.services.scheduler_service import automation_scheduler

@@ -351,14 +351,13 @@ def get_all_tools(
     if screenops_api_key:
         try:
             from app.tools.screenops.tool import _make_coordinate_finder_invoker
-            from app.services.agent_service import _persist_llm_log
             import asyncio
 
             # Determine provider from API URL
             _coord_api_url = (screenops_api_url or "").strip()
             _coord_provider = "anthropic" if "anthropic" in _coord_api_url else "openai"
             _coord_model = screenops_model or "gpt-4o-mini"
-            _loop = main_event_loop  # FastAPI event loop passed from agent_service
+            _loop = main_event_loop  # FastAPI event loop, for scheduling DB writes
 
             def _coord_log_callback(messages, response_text, usage, latency_ms, model_name, error):
                 """Persist coordinate finder LLM call to llm_logs table."""

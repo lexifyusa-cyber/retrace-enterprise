@@ -14,7 +14,8 @@ import structlog
 import asyncio
 
 from app.db.database import get_session, async_session_maker
-from app.services.agent_service import AgentService
+# MCP Builder runs entirely on OpenCode (the `mcp-builder` OC agent). The
+# legacy LangGraph CodeAct path (AgentService) was removed in ADR-002 Phase 5.
 from app.core.security import CurrentUser, get_current_user
 from app.api.settings import get_active_llm_settings
 from app.services.mcp_builder_service import mcp_builder_service
@@ -499,7 +500,7 @@ class MCPDiscoverExternalRequest(BaseModel):
 
 class MCPGeneratorRequest(BaseModel):
     team_id: Optional[str] = None # Native team ID or None for external
-    team_name: str # Kept team_name as it's used in task_prompt and module_name
+    team_name: str # Used to derive module_name and the build message
     destination_folder: str
     selected_endpoints: List[dict] # Full list of selected endpoints with schema
     api_docs_url: Optional[str] = None
@@ -796,10 +797,8 @@ async def generate_mcp_server(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     logger.info("mcp_builder_start", team_name=request.team_name, dest=request.destination_folder)
-    
-    agent = AgentService()
 
-    # Compute module name early — needed in task prompts below
+    # Compute module name early — needed for the build message and validation below
     safe_team_name = re.sub(r'[^a-zA-Z0-9]', '_', request.team_name).lower().strip('_')
     safe_team_name = re.sub(r'_+', '_', safe_team_name)
     module_name = f"{safe_team_name}_mcp"
@@ -832,53 +831,6 @@ async def generate_mcp_server(
 
     is_external = bool(request.api_docs_url or request.api_docs_text)
 
-    if is_external:
-        task_prompt = (
-            f"Please generate a complete python MCP server for {request.team_name}. "
-            f"This is an EXTERNAL API — you do NOT have a knowledge base for it.\n\n"
-            f"Base URL: {request.api_base_url or 'Discover from the docs'}\n"
-            f"Auth Type: {request.auth_type or 'bearer'}\n\n"
-            f"The server MUST precisely implement the capabilities specified in the attached selected tools array.\n\n"
-            f"CRITICAL INSTRUCTION: You are running in an automated background pipeline. "
-            f"DO NOT WAIT FOR USER CONFIRMATION. The user has ALREADY selected and approved these exact tools in the UI. "
-            f"SKIP Phase 1 entirely — the API documentation has already been analyzed and the endpoint details "
-            f"are provided in your system prompt under EXTERNAL API MODE. "
-            f"DO NOT call web_fetch() or web_search() — all the information you need is already in your context. "
-            f"Proceed IMMEDIATELY to Phase 2 and write the FULL, complete implementation code for every single tool. "
-            f"Do not write empty stubs or 'pass'.\n\n"
-            f"FILE WRITING INSTRUCTION: You MUST use the write_file native tool to create files on disk.\n"
-            f"Write the following files to {dest}:\n"
-            f"1. {dest}/pyproject.toml (with dependencies: mcp, httpx, pydantic)\n"
-            f"2. {dest}/src/{module_name}/__init__.py (empty)\n"
-            f"3. {dest}/src/{module_name}/server.py (YOUR COMPLETE MCP SERVER CODE)\n"
-            f"4. {dest}/README.md\n\n"
-            f"CRITICAL: The generated code MUST sanitize API tokens/keys from environment variables. "
-            f"Always use `token = os.getenv('...').strip('<>').strip('\"').strip(\"' \")` to handle cases where users "
-            f"accidentally paste tokens with literal brackets or quotes.\n\n"
-            f"NEVER output code into your chat response. ALL code must be saved to files using write_file()."
-        )
-    else:
-        task_prompt = (
-            f"Please generate a complete python MCP server for {request.team_name}. "
-            f"The server MUST precisely implement the capabilities specified in the attached selected tools array.\n\n"
-            f"CRITICAL INSTRUCTION: You are running in an automated background pipeline. "
-            f"You MUST perform ALL of Phase 1 (all 6 queries) to deeply understand the team's API — "
-            f"exact parameter names, types, route prefixes, auth patterns, and error formats. "
-            f"However, do NOT wait for user confirmation at the end of Phase 1 — the user has ALREADY "
-            f"selected and approved these exact tools in the UI. After completing Phase 1, proceed directly to Phase 2 "
-            f"and write the FULL, complete implementation code for every single tool.\n\n"
-            f"FILE WRITING INSTRUCTION: You MUST use the write_file native tool to create files on disk.\n"
-            f"Write the following files to {dest}:\n"
-            f"1. {dest}/pyproject.toml (with dependencies: mcp, httpx, pydantic)\n"
-            f"2. {dest}/src/{module_name}/__init__.py (empty)\n"
-            f"3. {dest}/src/{module_name}/server.py (YOUR COMPLETE MCP SERVER CODE)\n"
-            f"4. {dest}/README.md\n\n"
-            f"CRITICAL: The generated code MUST sanitize API tokens/keys from environment variables. "
-            f"Always use `token = os.getenv('...').strip('<>').strip('\"').strip(\"' \")` to handle cases where users "
-            f"accidentally paste tokens with literal brackets or quotes.\n\n"
-            f"NEVER output code into your chat response. ALL code must be saved to files using write_file()."
-        )
-    
     mcp_config = {
         "language": "python",
         "output_dir": request.destination_folder,
@@ -892,52 +844,52 @@ async def generate_mcp_server(
         mcp_config["auth_type"] = request.auth_type
         mcp_config["auth_details"] = request.auth_details
         
-        # When KB exists, agent queries it directly — skip injecting docs text
-        # This saves context window space and lets the agent get focused results
-        if not request.kb_team_id:
-            # No KB — inject docs text into prompt as before
-            docs_text = request.api_docs_text
-            if docs_text:
-                sliced_spec = mcp_builder_service.slice_openapi_for_endpoints(docs_text, request.selected_endpoints)
-                if sliced_spec:
-                    mcp_config["api_docs_text"] = sliced_spec
-                else:
-                    mcp_config["api_docs_text"] = docs_text[:50000] + ("..." if len(docs_text) > 50000 else "")
-            elif request.api_docs_url:
-                try:
-                    import httpx
-                    async with httpx.AsyncClient(timeout=10.0) as http:
-                        resp = await http.get(request.api_docs_url)
-                        sliced_spec = mcp_builder_service.slice_openapi_for_endpoints(resp.text, request.selected_endpoints)
-                        if sliced_spec:
-                            mcp_config["api_docs_text"] = sliced_spec
-                            mcp_config["api_docs_url"] = None
-                except Exception:
-                    pass
+        # Always embed the API docs in the build message so the agent reads
+        # them straight from the task. External builds never route through a
+        # knowledge base — a KB lookup depends on the OpenCode sidecar reloading
+        # its team scope, which does not happen reliably.
+        docs_text = request.api_docs_text
+        if docs_text:
+            sliced_spec = mcp_builder_service.slice_openapi_for_endpoints(docs_text, request.selected_endpoints)
+            if sliced_spec:
+                mcp_config["api_docs_text"] = sliced_spec
+            else:
+                mcp_config["api_docs_text"] = docs_text[:50000] + ("..." if len(docs_text) > 50000 else "")
+        elif request.api_docs_url:
+            try:
+                import httpx
+                async with httpx.AsyncClient(timeout=10.0) as http:
+                    resp = await http.get(request.api_docs_url)
+                    sliced_spec = mcp_builder_service.slice_openapi_for_endpoints(resp.text, request.selected_endpoints)
+                    if sliced_spec:
+                        mcp_config["api_docs_text"] = sliced_spec
+                        mcp_config["api_docs_url"] = None
+            except Exception:
+                pass
 
-            # Fallback: build structured summary from selected endpoints
-            if not mcp_config.get("api_docs_text") and request.selected_endpoints:
-                ep_lines = []
-                for ep in request.selected_endpoints:
-                    line = f"{ep.get('method', 'GET')} {ep.get('path', '/')} — {ep.get('description', '')}"
-                    params = ep.get("parameters", [])
-                    if params:
-                        param_strs = []
-                        for p in params:
-                            req = " (required)" if p.get("required") else ""
-                            param_strs.append(f"  - {p.get('name')}: {p.get('type', 'string')}{req} [{p.get('location', 'body')}]")
-                        line += "\n" + "\n".join(param_strs)
-                    ep_lines.append(line)
-                auth_section = f"Auth Type: {request.auth_type or 'bearer'}"
-                if request.auth_details:
-                    auth_section += f"\nAuth Details: {request.auth_details}"
-                endpoint_summary = (
-                    f"API Base URL: {request.api_base_url or 'unknown'}\n"
-                    f"{auth_section}\n\n"
-                    f"Endpoints:\n\n" + "\n\n".join(ep_lines)
-                )
-                mcp_config["api_docs_text"] = endpoint_summary
-                mcp_config["api_docs_url"] = None
+        # Fallback: build structured summary from selected endpoints
+        if not mcp_config.get("api_docs_text") and request.selected_endpoints:
+            ep_lines = []
+            for ep in request.selected_endpoints:
+                line = f"{ep.get('method', 'GET')} {ep.get('path', '/')} — {ep.get('description', '')}"
+                params = ep.get("parameters", [])
+                if params:
+                    param_strs = []
+                    for p in params:
+                        req = " (required)" if p.get("required") else ""
+                        param_strs.append(f"  - {p.get('name')}: {p.get('type', 'string')}{req} [{p.get('location', 'body')}]")
+                    line += "\n" + "\n".join(param_strs)
+                ep_lines.append(line)
+            auth_section = f"Auth Type: {request.auth_type or 'bearer'}"
+            if request.auth_details:
+                auth_section += f"\nAuth Details: {request.auth_details}"
+            endpoint_summary = (
+                f"API Base URL: {request.api_base_url or 'unknown'}\n"
+                f"{auth_section}\n\n"
+                f"Endpoints:\n\n" + "\n\n".join(ep_lines)
+            )
+            mcp_config["api_docs_text"] = endpoint_summary
+            mcp_config["api_docs_url"] = None
 
     def _sse(event: str, data: Any) -> str:
         return f"event: {event}\ndata: {json.dumps(data)}\n\n"
@@ -1074,30 +1026,138 @@ async def generate_mcp_server(
 
     state = {"final_answer": ""}
 
-    async def _run_agent(task_str: str, max_iter: int):
-        """Run the agent and return (final_answer, error)."""
+    async def _run_via_opencode(message: str, max_steps: int):
+        """Run the build through the OpenCode `mcp-builder` agent.
+
+        Creates an OC session (or reuses `state['oc_session_id']` so the retry
+        sees its prior file writes), sends the build message, and relays OC's
+        SSE event stream as MCP Builder SSE events. Sets `state['final_answer']`
+        to the assistant's full text when the turn finishes.
+
+        OC event → MCP Builder event mapping:
+          message.part.updated text → agent_answer_chunk {done:false}
+          message.part.updated tool → agent_status + tool_output
+          message.updated finish=stop → agent_answer_chunk {done:true}
+          session.error → agent_status {step:error}
+        """
+        import httpx as _httpx
+        from app.services.opencode_manager import opencode_manager
+
         try:
-            async for event in agent.execute_task(
-                team_id=agent_team_id,
-                task=task_str,
-                session=session,
-                mcp_builder_config=mcp_config,
-                max_iterations=max_iter
-            ):
-                yield event
-                if event.startswith("event: agent_answer_chunk"):
-                    lines = event.split("\n")
-                    if len(lines) >= 2 and lines[1].startswith("data: "):
-                        try:
-                            # Safely extract the chunk
-                            data_json = json.loads(lines[1].replace("data: ", ""))
-                            if data_json.get("done") and "chunk" in data_json:
-                                state["final_answer"] = data_json["chunk"]
-                        except Exception:
-                            pass
+            port = await opencode_manager.start_for_user(
+                current_user.user_id, team_id=agent_team_id
+            )
         except Exception as e:
-            logger.error("mcp_builder_agent_error", error=str(e))
-            yield _sse("agent_status", {"step": "error", "message": f"Agent error: {str(e)}"})
+            logger.error("mcp_builder_oc_start_failed", error=str(e))
+            yield _sse("agent_status", {"step": "error", "message": f"OpenCode start failed: {e}"})
+            return
+
+        async with _httpx.AsyncClient(timeout=_httpx.Timeout(600.0, connect=10.0)) as client:
+            # Create the build session once; the retry reuses it so the agent
+            # sees the files it already wrote.
+            oc_session_id = state.get("oc_session_id")
+            if not oc_session_id:
+                try:
+                    resp = await client.post(
+                        f"http://127.0.0.1:{port}/session",
+                        json={"agent": "mcp-builder"},
+                    )
+                    if resp.status_code != 200:
+                        yield _sse("agent_status", {"step": "error", "message": f"OC session create failed: {resp.status_code}"})
+                        return
+                    oc_session_id = resp.json().get("id")
+                    state["oc_session_id"] = oc_session_id
+                    logger.info("mcp_builder_oc_session", session_id=oc_session_id, port=port)
+                except Exception as e:
+                    yield _sse("agent_status", {"step": "error", "message": f"OC session create error: {e}"})
+                    return
+
+            # Subscribe to the event stream BEFORE firing the prompt so no
+            # events are missed.
+            try:
+                event_stream = client.stream(
+                    "GET", f"http://127.0.0.1:{port}/global/event",
+                    headers={"Accept": "text/event-stream", "Cache-Control": "no-cache"},
+                )
+                event_resp = await event_stream.__aenter__()
+            except Exception as e:
+                yield _sse("agent_status", {"step": "error", "message": f"OC event subscribe failed: {e}"})
+                return
+
+            text_parts: dict[str, str] = {}
+            message_roles: dict[str, str] = {}
+            try:
+                async_resp = await client.post(
+                    f"http://127.0.0.1:{port}/session/{oc_session_id}/prompt_async",
+                    json={"parts": [{"type": "text", "text": message}]},
+                )
+                if async_resp.status_code not in (200, 204):
+                    yield _sse("agent_status", {"step": "error", "message": f"OC prompt_async failed: {async_resp.status_code}"})
+                    return
+
+                async for line in event_resp.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    data_str = line[5:].strip()
+                    if not data_str:
+                        continue
+                    try:
+                        wrapper = json.loads(data_str)
+                    except Exception:
+                        continue
+                    payload = wrapper.get("payload", wrapper)
+                    etype = payload.get("type", "")
+                    props = payload.get("properties", {})
+
+                    evt_sid = props.get("sessionID", "")
+                    if evt_sid and evt_sid != oc_session_id:
+                        continue
+
+                    if etype == "message.updated":
+                        info = props.get("info", {})
+                        iid = info.get("id", "")
+                        irole = info.get("role", "")
+                        if iid and irole:
+                            message_roles[iid] = irole
+                        # `finish == "stop"` marks the end of the whole turn
+                        # (intermediate tool-use steps have other finish reasons).
+                        if irole == "assistant" and info.get("finish") == "stop":
+                            final_text = "".join(text_parts.values())
+                            state["final_answer"] = final_text
+                            yield _sse("agent_answer_chunk", {"chunk": final_text, "done": True})
+                            return
+
+                    elif etype == "message.part.updated":
+                        part = props.get("part", {})
+                        msg_id = props.get("messageID", "") or part.get("messageID", "")
+                        if message_roles.get(msg_id) != "assistant":
+                            continue
+                        ptype = part.get("type")
+                        if ptype == "text":
+                            text_parts[part.get("id", "")] = part.get("text", "")
+                            yield _sse("agent_answer_chunk", {"chunk": part.get("text", ""), "done": False})
+                        elif ptype == "tool":
+                            tstate = part.get("state", {})
+                            tool_name = part.get("tool", "")
+                            yield _sse("agent_status", {"step": "tool", "message": f"Running {tool_name}"})
+                            out = tstate.get("output", "")
+                            if out:
+                                yield _sse("tool_output", {"output": str(out)[:2000], "tool": tool_name})
+
+                    elif etype == "session.error":
+                        err = props.get("error", {}) or {}
+                        emsg = err.get("message") or (err.get("data") or {}).get("message") or "Session error"
+                        logger.warning("mcp_builder_oc_session_error", message=str(emsg)[:200])
+                        yield _sse("agent_status", {"step": "error", "message": str(emsg)})
+                        return
+            except Exception as e:
+                logger.error("mcp_builder_oc_relay_error", error=str(e))
+                yield _sse("agent_status", {"step": "error", "message": f"OpenCode relay error: {e}"})
+            finally:
+                try:
+                    await event_stream.__aexit__(None, None, None)
+                except Exception:
+                    pass
 
     def _rescue_extract_server_code(answer: str) -> bool:
         """Last resort: if the agent dumped server code into its response text,
@@ -1248,7 +1308,19 @@ async def generate_mcp_server(
         update_progress(safe_team_name, status="in_progress", phase="Starting generation...")
 
         # ── Attempt 1: Full generation ────────────────────────────
-        async for event in _run_agent(task_prompt, max_iter=60):
+        from app.skills.mcp_builder_oc_prompt import build_mcp_builder_oc_message
+        oc_message = build_mcp_builder_oc_message(
+            output_dir=dest,
+            service_name=safe_team_name,
+            is_external=is_external,
+            has_kb=False,  # external builds embed docs in the message — never KB research
+            api_docs_text=mcp_config.get("api_docs_text"),
+            api_base_url=request.api_base_url,
+            auth_type=request.auth_type,
+            auth_details=request.auth_details,
+            selected_endpoints=request.selected_endpoints,
+        )
+        async for event in _run_via_opencode(oc_message, max_steps=80):
             _mirror_to_progress(event)
             yield event
 
@@ -1284,13 +1356,8 @@ async def generate_mcp_server(
                     f"3. Each tool must make a real HTTP request using httpx.AsyncClient\n"
                     f"4. Also ensure {dest}/src/{module_name}/__init__.py exists\n"
                     f"5. Run `cd {dest} && uv sync` after writing the files\n\n"
-                    f"IMPORTANT: To write the file, use the write_file native tool like this:\n"
-                    f"write_file(\"{dest}/src/{module_name}/server.py\", '''<your complete server code here>''')\n\n"
-                    f"Alternatively, you can use terminal to write:\n"
-                    f"```python\n"
-                    f"terminal(\"mkdir -p {dest}/src/{module_name} && cat > {dest}/src/{module_name}/server.py << 'PYEOF'\\n<your code>\\nPYEOF\")\n"
-                    f"```\n\n"
-                    f"DO NOT output code into your response text. You MUST use write_file() or terminal() to save files to disk."
+                    f"Use the `write` tool to create each file on disk. "
+                    f"DO NOT output code into your response text — all code must be saved to files."
                 )
             elif severity == "incomplete":
                 retry_prompt = (
@@ -1305,32 +1372,17 @@ async def generate_mcp_server(
                 retry_prompt = (
                     f"The MCP server at {dest} has a syntax/import error:\n\n"
                     f"```\n{validation_error}\n```\n\n"
-                    f"Read the file, fix the error with str_replace, then verify with "
+                    f"Read the file, fix the error with the `edit` tool, then verify with "
                     f"`py_compile` and an import check."
                 )
 
             update_progress(safe_team_name, phase=f"Retrying ({severity})...")
-            retry_agent = AgentService()
-            async for event in retry_agent.execute_task(
-                team_id=agent_team_id,
-                task=retry_prompt,
-                session=session,
-                mcp_builder_config=mcp_config,
-                max_iterations=20
-            ):
+            # Reuses the same OC session (state['oc_session_id']) so the retry
+            # agent sees the files it already wrote.
+            async for event in _run_via_opencode(retry_prompt, max_steps=40):
                 _mirror_to_progress(event)
                 yield event
-                if event.startswith("event: agent_answer_chunk"):
-                    lines = event.split("\n")
-                    if len(lines) >= 2 and lines[1].startswith("data: "):
-                        try:
-                            data_json = json.loads(lines[1].replace("data: ", ""))
-                            if data_json.get("done") and "chunk" in data_json:
-                                retry_answer = data_json["chunk"]
-                                if retry_answer:
-                                    final_answer = retry_answer
-                        except Exception:
-                            pass
+            final_answer = state["final_answer"] or final_answer
 
             # Re-validate after retry
             validation_error_2, severity_2 = await _validate_server()
@@ -1390,6 +1442,7 @@ async def generate_mcp_server(
             logger.warning("mcp_builder_uv_sync_error", error=str(uv_err))
 
         # ── Save to registry ─────────────────────────────────────
+        oc_reload_needed = False
         try:
             from app.models.mcp_server import McpServer
             source_type = "internal"
@@ -1503,11 +1556,28 @@ async def generate_mcp_server(
 
                     await bridge_session.commit()
                     logger.info("mcp_builder_bridge_created", extension_id=ext.extension_id, user_id=current_user.user_id)
+                    oc_reload_needed = True
             except Exception as bridge_exc:
                 logger.warning("mcp_builder_bridge_failed", error=str(bridge_exc))
 
         except Exception as exc:
             logger.warning("mcp_server_save_failed", error=str(exc))
+
+        # ── Hand the new server to the agent ─────────────────────
+        # The McpExtension/UserExtension rows exist now; restart the user's
+        # OpenCode so its config regenerates and the /agent chat picks up the
+        # new MCP server. Best-effort — a reload failure must not fail a build
+        # that otherwise succeeded.
+        if oc_reload_needed:
+            try:
+                yield _sse("agent_status", {
+                    "step": "activate",
+                    "message": "Activating server for the agent...",
+                })
+                from app.services.opencode_manager import opencode_manager
+                await opencode_manager.reload_for_user(current_user.user_id)
+            except Exception as reload_exc:
+                logger.warning("mcp_builder_oc_reload_failed", error=str(reload_exc))
 
         update_progress(safe_team_name, status="completed", phase="Complete",
                         result={"status": status, "mcpServers": mcp_servers_config,

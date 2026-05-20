@@ -689,7 +689,7 @@ export default function McpBuilder() {
     setBrowseLoading(true)
     setBrowsePath(path)
     try {
-      const data = await localFilesApi.browse(path)
+      const data = await localFilesApi.browse(path, true)
       // Sort: directories first, then files, alphabetical
       const sorted = [...data.files].sort((a, b) => {
         if (a.type !== b.type) return a.type === 'directory' ? -1 : 1
@@ -707,7 +707,7 @@ export default function McpBuilder() {
   const pickerBrowse = useCallback(async (path: string) => {
     setPickerLoading(true)
     try {
-      const data = await localFilesApi.browse(path)
+      const data = await localFilesApi.browse(path, true)
       const dirs = data.files
         .filter((f: FileEntry) => f.type === 'directory')
         .sort((a: FileEntry, b: FileEntry) => a.name.localeCompare(b.name))

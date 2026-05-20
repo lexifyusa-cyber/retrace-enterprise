@@ -39,6 +39,37 @@ class LLMSettings(BaseModel):
     screenshot_delay_ms: Optional[int] = Field(None, ge=0, le=30000)
     # Web Search — Serper API key for enhanced web search
     serper_api_key: Optional[str] = None
+    # OpenCode agent — small model for title generation, summaries
+    small_model_name: Optional[str] = None
+    # OpenCode agent — plan agent model (defaults to model_name)
+    plan_model_name: Optional[str] = None
+    # OpenCode agent — reasoning/extended thinking toggle
+    use_reasoning: Optional[bool] = None
+    # OpenCode agent — custom system prompts
+    build_system_prompt: Optional[str] = None
+    plan_system_prompt: Optional[str] = None
+    # OpenCode agent — LLM parameters
+    temperature: Optional[float] = Field(None, ge=0.0, le=2.0)
+    top_p: Optional[float] = Field(None, ge=0.0, le=1.0)
+    max_steps: Optional[int] = Field(None, ge=1, le=200)
+    # OpenCode agent — compaction
+    compaction_auto: Optional[bool] = None
+    compaction_tail_turns: Optional[int] = Field(None, ge=1, le=50)
+    # OpenCode agent — tool output truncation
+    tool_output_max_lines: Optional[int] = Field(None, ge=1, le=5000)
+    tool_output_max_bytes: Optional[int] = Field(None, ge=1000, le=500000)
+    # OpenCode agent — bash shell
+    bash_shell: Optional[str] = None
+    # OpenCode agent — snapshot
+    snapshot_enabled: Optional[bool] = None
+    # OpenCode agent — disabled tools (JSON list)
+    disabled_tools: Optional[str] = None
+    # OpenCode agent — permission config (JSON)
+    permission_config: Optional[str] = None
+    # OpenCode agent — custom agents (JSON)
+    custom_agents: Optional[str] = None
+    # OpenCode agent — custom commands (JSON)
+    custom_commands: Optional[str] = None
     # Agent max iterations (1–50, default 10)
     agent_max_iterations: Optional[int] = Field(None, ge=1, le=50)
     # Training: when True, pipeline logs included/excluded folders and files
@@ -59,6 +90,24 @@ class LLMSettingsResponse(BaseModel):
     api_key_set: bool
     screenops_api_key_set: bool = False
     serper_api_key_set: bool = False
+    small_model_name: Optional[str] = None
+    plan_model_name: Optional[str] = None
+    use_reasoning: bool = True
+    build_system_prompt: Optional[str] = None
+    plan_system_prompt: Optional[str] = None
+    temperature: float = 0.0
+    top_p: float = 1.0
+    max_steps: int = 50
+    compaction_auto: bool = False
+    compaction_tail_turns: int = 4
+    tool_output_max_lines: int = 200
+    tool_output_max_bytes: int = 50000
+    bash_shell: Optional[str] = None
+    snapshot_enabled: bool = False
+    disabled_tools: Optional[str] = None
+    permission_config: Optional[str] = None
+    custom_agents: Optional[str] = None
+    custom_commands: Optional[str] = None
     screenops_api_url: Optional[str] = None
     screenops_model: Optional[str] = None
     screenops_mouse_timeout: int = 30
@@ -178,6 +227,42 @@ async def update_llm_settings(settings_data: LLMSettings, current_user: CurrentU
                 # Serper API key for web search
                 if settings_data.serper_api_key is not None:
                     db_settings.serper_api_key = settings_data.serper_api_key if settings_data.serper_api_key else None
+                if settings_data.small_model_name is not None:
+                    db_settings.small_model_name = (settings_data.small_model_name or "").strip() or None
+                if settings_data.plan_model_name is not None:
+                    db_settings.plan_model_name = (settings_data.plan_model_name or "").strip() or None
+                if settings_data.use_reasoning is not None:
+                    db_settings.use_reasoning = bool(settings_data.use_reasoning)
+                if settings_data.build_system_prompt is not None:
+                    db_settings.build_system_prompt = (settings_data.build_system_prompt or "").strip() or None
+                if settings_data.plan_system_prompt is not None:
+                    db_settings.plan_system_prompt = (settings_data.plan_system_prompt or "").strip() or None
+                if settings_data.temperature is not None:
+                    db_settings.temperature = max(0.0, min(2.0, float(settings_data.temperature)))
+                if settings_data.top_p is not None:
+                    db_settings.top_p = max(0.0, min(1.0, float(settings_data.top_p)))
+                if settings_data.max_steps is not None:
+                    db_settings.max_steps = max(1, min(200, int(settings_data.max_steps)))
+                if settings_data.compaction_auto is not None:
+                    db_settings.compaction_auto = bool(settings_data.compaction_auto)
+                if settings_data.compaction_tail_turns is not None:
+                    db_settings.compaction_tail_turns = max(1, min(50, int(settings_data.compaction_tail_turns)))
+                if settings_data.tool_output_max_lines is not None:
+                    db_settings.tool_output_max_lines = max(1, min(5000, int(settings_data.tool_output_max_lines)))
+                if settings_data.tool_output_max_bytes is not None:
+                    db_settings.tool_output_max_bytes = max(1000, min(500000, int(settings_data.tool_output_max_bytes)))
+                if settings_data.bash_shell is not None:
+                    db_settings.bash_shell = (settings_data.bash_shell or "").strip() or None
+                if settings_data.snapshot_enabled is not None:
+                    db_settings.snapshot_enabled = bool(settings_data.snapshot_enabled)
+                if settings_data.disabled_tools is not None:
+                    db_settings.disabled_tools = settings_data.disabled_tools or None
+                if settings_data.permission_config is not None:
+                    db_settings.permission_config = settings_data.permission_config or None
+                if settings_data.custom_agents is not None:
+                    db_settings.custom_agents = settings_data.custom_agents or None
+                if settings_data.custom_commands is not None:
+                    db_settings.custom_commands = settings_data.custom_commands or None
                 if settings_data.agent_max_iterations is not None:
                     db_settings.agent_max_iterations = max(1, min(50, int(settings_data.agent_max_iterations)))
                 if settings_data.debug_logging is not None:
@@ -243,6 +328,24 @@ async def update_llm_settings(settings_data: LLMSettings, current_user: CurrentU
                 api_key_set=bool(db_settings.api_key),
                 screenops_api_key_set=bool(db_settings.screenops_api_key),
                 serper_api_key_set=bool(getattr(db_settings, "serper_api_key", None)),
+                small_model_name=getattr(db_settings, "small_model_name", None),
+                plan_model_name=getattr(db_settings, "plan_model_name", None),
+                use_reasoning=bool(getattr(db_settings, "use_reasoning", True)),
+                build_system_prompt=getattr(db_settings, "build_system_prompt", None),
+                plan_system_prompt=getattr(db_settings, "plan_system_prompt", None),
+                temperature=float(getattr(db_settings, "temperature", 0.0) or 0.0),
+                top_p=float(getattr(db_settings, "top_p", 1.0) or 1.0),
+                max_steps=int(getattr(db_settings, "max_steps", 50) or 50),
+                compaction_auto=bool(getattr(db_settings, "compaction_auto", False)),
+                compaction_tail_turns=int(getattr(db_settings, "compaction_tail_turns", 4) or 4),
+                tool_output_max_lines=int(getattr(db_settings, "tool_output_max_lines", 200) or 200),
+                tool_output_max_bytes=int(getattr(db_settings, "tool_output_max_bytes", 50000) or 50000),
+                bash_shell=getattr(db_settings, "bash_shell", None),
+                snapshot_enabled=bool(getattr(db_settings, "snapshot_enabled", False)),
+                disabled_tools=getattr(db_settings, "disabled_tools", None),
+                permission_config=getattr(db_settings, "permission_config", None),
+                custom_agents=getattr(db_settings, "custom_agents", None),
+                custom_commands=getattr(db_settings, "custom_commands", None),
                 screenops_api_url=getattr(db_settings, "screenops_api_url", None),
                 screenops_model=db_settings.screenops_model,
                 screenops_mouse_timeout=int(getattr(db_settings, "screenops_mouse_timeout", 30) or 30),
@@ -280,6 +383,24 @@ async def get_llm_settings(session: AsyncSession = Depends(get_session), current
         api_key_set=bool(db_settings.api_key or app_settings.OPENAI_API_KEY),
         screenops_api_key_set=bool(db_settings.screenops_api_key),
         serper_api_key_set=bool(getattr(db_settings, "serper_api_key", None)),
+        small_model_name=getattr(db_settings, "small_model_name", None),
+        plan_model_name=getattr(db_settings, "plan_model_name", None),
+        use_reasoning=bool(getattr(db_settings, "use_reasoning", True)),
+        build_system_prompt=getattr(db_settings, "build_system_prompt", None),
+        plan_system_prompt=getattr(db_settings, "plan_system_prompt", None),
+        temperature=float(getattr(db_settings, "temperature", 0.0) or 0.0),
+        top_p=float(getattr(db_settings, "top_p", 1.0) or 1.0),
+        max_steps=int(getattr(db_settings, "max_steps", 50) or 50),
+        compaction_auto=bool(getattr(db_settings, "compaction_auto", False)),
+        compaction_tail_turns=int(getattr(db_settings, "compaction_tail_turns", 4) or 4),
+        tool_output_max_lines=int(getattr(db_settings, "tool_output_max_lines", 200) or 200),
+        tool_output_max_bytes=int(getattr(db_settings, "tool_output_max_bytes", 50000) or 50000),
+        bash_shell=getattr(db_settings, "bash_shell", None),
+        snapshot_enabled=bool(getattr(db_settings, "snapshot_enabled", False)),
+        disabled_tools=getattr(db_settings, "disabled_tools", None),
+        permission_config=getattr(db_settings, "permission_config", None),
+        custom_agents=getattr(db_settings, "custom_agents", None),
+        custom_commands=getattr(db_settings, "custom_commands", None),
         screenops_api_url=getattr(db_settings, "screenops_api_url", None),
         screenops_model=db_settings.screenops_model,
         screenops_mouse_timeout=int(getattr(db_settings, "screenops_mouse_timeout", 30) or 30),
@@ -513,6 +634,24 @@ async def get_active_llm_settings(session: AsyncSession, consumer_key: str | Non
         "screenops_image_scale": max(25, min(100, int(getattr(db_settings, "screenops_image_scale", 100) or 100))),
         "screenshot_delay_ms": max(0, min(30000, int(getattr(db_settings, "screenshot_delay_ms", 2000) or 2000))),
         "serper_api_key": getattr(db_settings, "serper_api_key", None),
+        "small_model_name": getattr(db_settings, "small_model_name", None),
+        "plan_model_name": getattr(db_settings, "plan_model_name", None),
+        "use_reasoning": bool(getattr(db_settings, "use_reasoning", True)),
+        "build_system_prompt": getattr(db_settings, "build_system_prompt", None),
+        "plan_system_prompt": getattr(db_settings, "plan_system_prompt", None),
+        "temperature": float(getattr(db_settings, "temperature", 0.0) or 0.0),
+        "top_p": float(getattr(db_settings, "top_p", 1.0) or 1.0),
+        "max_steps": max(1, min(200, int(getattr(db_settings, "max_steps", 50) or 50))),
+        "compaction_auto": bool(getattr(db_settings, "compaction_auto", False)),
+        "compaction_tail_turns": max(1, min(50, int(getattr(db_settings, "compaction_tail_turns", 4) or 4))),
+        "tool_output_max_lines": max(1, min(5000, int(getattr(db_settings, "tool_output_max_lines", 200) or 200))),
+        "tool_output_max_bytes": max(1000, min(500000, int(getattr(db_settings, "tool_output_max_bytes", 50000) or 50000))),
+        "bash_shell": getattr(db_settings, "bash_shell", None),
+        "snapshot_enabled": bool(getattr(db_settings, "snapshot_enabled", False)),
+        "disabled_tools": getattr(db_settings, "disabled_tools", None),
+        "permission_config": getattr(db_settings, "permission_config", None),
+        "custom_agents": getattr(db_settings, "custom_agents", None),
+        "custom_commands": getattr(db_settings, "custom_commands", None),
         "agent_tools_config": agent_tools_config,
         "agent_max_iterations": max(1, min(50, int(getattr(db_settings, "agent_max_iterations", 10) or 10))),
         "debug_logging": bool(getattr(db_settings, "debug_logging", False)),

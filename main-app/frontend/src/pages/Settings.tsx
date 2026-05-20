@@ -4,6 +4,7 @@ import { Settings as SettingsIcon, Zap, CheckCircle, XCircle, Loader2, Info, Mon
 import { motion } from 'framer-motion'
 import toast from 'react-hot-toast'
 import axios from 'axios'
+import { emailApi } from '@/utils/api'
 import { useLayout } from '@/context/LayoutContext'
 import { useAuth } from '@/context/AuthContext'
 import { ConnectionsManager } from '@/pages/Connections'
@@ -20,6 +21,24 @@ interface LLMSettings {
   screenops_image_scale?: number | null
   screenshot_delay_ms?: number | null
   serper_api_key?: string | null
+  small_model_name?: string | null
+  plan_model_name?: string | null
+  use_reasoning?: boolean | null
+  build_system_prompt?: string | null
+  plan_system_prompt?: string | null
+  temperature?: number | null
+  top_p?: number | null
+  max_steps?: number | null
+  compaction_auto?: boolean | null
+  compaction_tail_turns?: number | null
+  tool_output_max_lines?: number | null
+  tool_output_max_bytes?: number | null
+  bash_shell?: string | null
+  snapshot_enabled?: boolean | null
+  disabled_tools?: string | null
+  permission_config?: string | null
+  custom_agents?: string | null
+  custom_commands?: string | null
   debug_logging?: boolean | null
   max_parallel_files?: number | null
   agent_max_iterations?: number | null
@@ -37,6 +56,24 @@ interface LLMSettingsResponse {
   screenops_mouse_timeout?: number
   screenops_image_scale?: number
   screenshot_delay_ms?: number
+  small_model_name?: string | null
+  plan_model_name?: string | null
+  use_reasoning?: boolean
+  build_system_prompt?: string | null
+  plan_system_prompt?: string | null
+  temperature?: number
+  top_p?: number
+  max_steps?: number
+  compaction_auto?: boolean
+  compaction_tail_turns?: number
+  tool_output_max_lines?: number
+  tool_output_max_bytes?: number
+  bash_shell?: string | null
+  snapshot_enabled?: boolean
+  disabled_tools?: string | null
+  permission_config?: string | null
+  custom_agents?: string | null
+  custom_commands?: string | null
   debug_logging?: boolean
   max_parallel_files?: number
   agent_max_iterations?: number
@@ -68,6 +105,30 @@ export default function Settings() {
   const [debugLogging, setDebugLogging] = useState(false)
   const [maxParallelFiles, setMaxParallelFiles] = useState(1)
   const [agentMaxIterations, setAgentMaxIterations] = useState(10)
+  const [smallModelName, setSmallModelName] = useState('')
+  const [planModelName, setPlanModelName] = useState('')
+  const [sameModelForAll, setSameModelForAll] = useState(false)
+  const [useReasoning, setUseReasoning] = useState(true)
+  const [buildSystemPrompt, setBuildSystemPrompt] = useState('')
+  const [planSystemPrompt, setPlanSystemPrompt] = useState('')
+  const [temperature, setTemperature] = useState(0.0)
+  const [topP, setTopP] = useState(1.0)
+  const [maxSteps, setMaxSteps] = useState(50)
+  const [compactionAuto, setCompactionAuto] = useState(false)
+  const [compactionTailTurns, setCompactionTailTurns] = useState(4)
+  const [toolOutputMaxLines, setToolOutputMaxLines] = useState(200)
+  const [toolOutputMaxBytes, setToolOutputMaxBytes] = useState(50000)
+  const [bashShell, setBashShell] = useState('')
+  const [snapshotEnabled, setSnapshotEnabled] = useState(false)
+  const [disabledToolsJson, setDisabledToolsJson] = useState('')
+  const [permissionConfigJson, setPermissionConfigJson] = useState('')
+  const [customAgentsJson, setCustomAgentsJson] = useState('')
+  const [customCommandsJson, setCustomCommandsJson] = useState('')
+  const [mcpAddName, setMcpAddName] = useState('')
+  const [mcpAddCommand, setMcpAddCommand] = useState('')
+  const [mcpAddUrl, setMcpAddUrl] = useState('')
+  const [mcpAddEnv, setMcpAddEnv] = useState('')
+  const [advancedExpanded, setAdvancedExpanded] = useState(false)
   const [testResult, setTestResult] = useState<{ success: boolean; message: string; latency_ms?: number } | null>(null)
   const [layoutThemeExpanded, setLayoutThemeExpanded] = useState(false)
   const [llmExpanded, setLlmExpanded] = useState(false)
@@ -269,6 +330,28 @@ export default function Settings() {
       setDebugLogging(currentSettings.debug_logging ?? false)
       setMaxParallelFiles(Math.max(1, Math.min(32, currentSettings.max_parallel_files ?? 1)))
       setAgentMaxIterations(Math.max(1, Math.min(50, currentSettings.agent_max_iterations ?? 10)))
+      setSmallModelName(currentSettings.small_model_name || '')
+      setPlanModelName(currentSettings.plan_model_name || '')
+      const mainModel = currentSettings.model_name || 'gpt-4o'
+      const sm = currentSettings.small_model_name || ''
+      const pm = currentSettings.plan_model_name || ''
+      setSameModelForAll((sm === mainModel && pm === mainModel) || (!sm && !pm))
+      setUseReasoning(currentSettings.use_reasoning ?? true)
+      setBuildSystemPrompt(currentSettings.build_system_prompt || '')
+      setPlanSystemPrompt(currentSettings.plan_system_prompt || '')
+      setTemperature(currentSettings.temperature ?? 0.0)
+      setTopP(currentSettings.top_p ?? 1.0)
+      setMaxSteps(currentSettings.max_steps ?? 50)
+      setCompactionAuto(currentSettings.compaction_auto ?? false)
+      setCompactionTailTurns(currentSettings.compaction_tail_turns ?? 4)
+      setToolOutputMaxLines(currentSettings.tool_output_max_lines ?? 200)
+      setToolOutputMaxBytes(currentSettings.tool_output_max_bytes ?? 50000)
+      setBashShell(currentSettings.bash_shell || '')
+      setSnapshotEnabled(currentSettings.snapshot_enabled ?? false)
+      setDisabledToolsJson(currentSettings.disabled_tools || '')
+      setPermissionConfigJson(currentSettings.permission_config || '')
+      setCustomAgentsJson(currentSettings.custom_agents || '')
+      setCustomCommandsJson(currentSettings.custom_commands || '')
       // Note: API keys are not loaded from server for security
     }
   }, [currentSettings])
@@ -299,7 +382,11 @@ export default function Settings() {
       await queryClient.invalidateQueries({ queryKey: ['settings', 'llm'] })
       await queryClient.refetchQueries({ queryKey: ['settings', 'llm'] })
       
-      toast.success('Settings saved successfully')
+      try {
+        await api.post('/opencode/regenerate-config')
+      } catch { /* ignore if OpenCode not running */ }
+      
+      toast.success('Settings saved & agent config updated')
     },
     onError: (error: any) => {
       console.error('Save settings error:', error)
@@ -562,6 +649,60 @@ export default function Settings() {
     payload.debug_logging = debugLogging
     payload.max_parallel_files = Math.max(1, Math.min(32, maxParallelFiles))
     payload.agent_max_iterations = Math.max(1, Math.min(50, agentMaxIterations))
+    if (smallModelName.trim()) {
+      payload.small_model_name = smallModelName.trim()
+    } else {
+      payload.small_model_name = null
+    }
+    if (planModelName.trim()) {
+      payload.plan_model_name = planModelName.trim()
+    } else {
+      payload.plan_model_name = null
+    }
+    payload.use_reasoning = useReasoning
+    if (buildSystemPrompt.trim()) {
+      payload.build_system_prompt = buildSystemPrompt.trim()
+    } else {
+      payload.build_system_prompt = null
+    }
+    if (planSystemPrompt.trim()) {
+      payload.plan_system_prompt = planSystemPrompt.trim()
+    } else {
+      payload.plan_system_prompt = null
+    }
+    payload.temperature = temperature
+    payload.top_p = topP
+    payload.max_steps = maxSteps
+    payload.compaction_auto = compactionAuto
+    payload.compaction_tail_turns = compactionTailTurns
+    payload.tool_output_max_lines = toolOutputMaxLines
+    payload.tool_output_max_bytes = toolOutputMaxBytes
+    if (bashShell.trim()) {
+      payload.bash_shell = bashShell.trim()
+    } else {
+      payload.bash_shell = null
+    }
+    payload.snapshot_enabled = snapshotEnabled
+    if (disabledToolsJson.trim()) {
+      payload.disabled_tools = disabledToolsJson.trim()
+    } else {
+      payload.disabled_tools = null
+    }
+    if (permissionConfigJson.trim()) {
+      payload.permission_config = permissionConfigJson.trim()
+    } else {
+      payload.permission_config = null
+    }
+    if (customAgentsJson.trim()) {
+      payload.custom_agents = customAgentsJson.trim()
+    } else {
+      payload.custom_agents = null
+    }
+    if (customCommandsJson.trim()) {
+      payload.custom_commands = customCommandsJson.trim()
+    } else {
+      payload.custom_commands = null
+    }
 
     console.log('Saving settings with payload:', {
       ...payload,
@@ -942,7 +1083,7 @@ export default function Settings() {
                   'model-name'
                 }
                 value={modelName}
-                onChange={(e) => setModelName(e.target.value)}
+                onChange={(e) => { setModelName(e.target.value); if (sameModelForAll) { setSmallModelName(e.target.value); setPlanModelName(e.target.value) } }}
               />
               <p className="text-xs text-rt-text-muted mt-1">
                 {provider === 'openai' && 'Examples: gpt-4o, gpt-4-turbo, gpt-3.5-turbo'}
@@ -1009,24 +1150,273 @@ export default function Settings() {
               </div>
             </div>
 
-            {/* Agent — Max iterations */}
+            {/* Agent Configuration */}
             <div className="border-t border-rt-border pt-4 mt-4">
-              <h4 className="text-xs font-semibold text-rt-text-muted uppercase tracking-wide mb-3">Agent</h4>
-              <div className="flex items-center gap-3">
-                <label htmlFor="agent-max-iterations" className="label whitespace-nowrap">Max iterations</label>
-                <select
-                  id="agent-max-iterations"
-                  value={agentMaxIterations}
-                  onChange={(e) => setAgentMaxIterations(Number(e.target.value))}
-                  className="input w-24"
-                >
-                  {[5, 10, 15, 20, 25, 30, 40, 50].map((n) => (
-                    <option key={n} value={n}>{n}</option>
-                  ))}
-                </select>
-                <p className="text-xs text-rt-text-muted">
-                  Max tool-use steps per agent task (higher = more steps, may hit context limits).
-                </p>
+              <h4 className="text-xs font-semibold text-rt-text-muted uppercase tracking-wide mb-3">Agent Configuration</h4>
+              <div className="space-y-4">
+                {/* Models */}
+                <div className="flex items-start gap-3">
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={sameModelForAll}
+                    onClick={() => {
+                      const next = !sameModelForAll
+                      setSameModelForAll(next)
+                      if (next) {
+                        setSmallModelName(modelName)
+                        setPlanModelName(modelName)
+                      }
+                    }}
+                    className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${sameModelForAll ? 'bg-rt-primary' : 'bg-rt-border'}`}
+                  >
+                    <span className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${sameModelForAll ? 'translate-x-4' : 'translate-x-0'}`} />
+                  </button>
+                  <div>
+                    <label className="label cursor-pointer" onClick={() => {
+                      const next = !sameModelForAll
+                      setSameModelForAll(next)
+                      if (next) {
+                        setSmallModelName(modelName)
+                        setPlanModelName(modelName)
+                      }
+                    }}>
+                      Use same model for all
+                    </label>
+                    <p className="text-xs text-rt-text-muted mt-0.5">
+                      Use the main chat model for title generation, summaries, and the Plan agent.
+                    </p>
+                  </div>
+                </div>
+                {!sameModelForAll && (
+                <>
+                <div>
+                  <label className="label mb-1 block">Small model name</label>
+                  <input
+                    type="text"
+                    className="input"
+                    placeholder="e.g. grok-3-mini-fast (same provider as chat model)"
+                    value={smallModelName}
+                    onChange={(e) => setSmallModelName(e.target.value)}
+                  />
+                  <p className="text-xs text-rt-text-muted mt-1">
+                    Used for title generation, session summaries, and other lightweight tasks.
+                    Same provider and API key as the chat model. Leave empty for OpenCode defaults.
+                  </p>
+                </div>
+                <div>
+                  <label className="label mb-1 block">Plan agent model</label>
+                  <input
+                    type="text"
+                    className="input"
+                    placeholder="e.g. grok-3-mini-fast (leave empty to use chat model)"
+                    value={planModelName}
+                    onChange={(e) => setPlanModelName(e.target.value)}
+                  />
+                  <p className="text-xs text-rt-text-muted mt-1">
+                    Separate model for the Plan agent (read-only analysis). Leave empty to use the main chat model.
+                  </p>
+                </div>
+                </>
+                )}
+
+                {/* System Prompts */}
+                <div>
+                  <label className="label mb-1 block">Build agent system prompt</label>
+                  <textarea
+                    className="input min-h-[80px] font-mono text-xs"
+                    placeholder="Custom system prompt for the Build agent. Leave empty for default ReTrace prompt."
+                    value={buildSystemPrompt}
+                    onChange={(e) => setBuildSystemPrompt(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="label mb-1 block">Plan agent system prompt</label>
+                  <textarea
+                    className="input min-h-[80px] font-mono text-xs"
+                    placeholder="Custom system prompt for the Plan agent. Leave empty for default ReTrace prompt."
+                    value={planSystemPrompt}
+                    onChange={(e) => setPlanSystemPrompt(e.target.value)}
+                  />
+                </div>
+
+                {/* Reasoning toggle */}
+                <div className="flex items-start gap-3">
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={useReasoning}
+                    onClick={() => setUseReasoning(!useReasoning)}
+                    className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${useReasoning ? 'bg-rt-primary' : 'bg-rt-border'}`}
+                  >
+                    <span className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${useReasoning ? 'translate-x-4' : 'translate-x-0'}`} />
+                  </button>
+                  <div>
+                    <label className="label cursor-pointer" onClick={() => setUseReasoning(!useReasoning)}>
+                      Extended reasoning
+                    </label>
+                    <p className="text-xs text-rt-text-muted mt-0.5">
+                      Enable extended thinking / reasoning mode. Works with reasoning-capable models.
+                    </p>
+                  </div>
+                </div>
+
+                {/* LLM Parameters */}
+                <div className="grid grid-cols-3 gap-4">
+                  <div>
+                    <label className="label text-xs mb-1 block">Temperature</label>
+                    <input
+                      type="number"
+                      className="input w-full text-center"
+                      min={0}
+                      max={2}
+                      step={0.1}
+                      value={temperature}
+                      onChange={(e) => setTemperature(Math.max(0, Math.min(2, Number(e.target.value) || 0)))}
+                    />
+                  </div>
+                  <div>
+                    <label className="label text-xs mb-1 block">Top P</label>
+                    <input
+                      type="number"
+                      className="input w-full text-center"
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      value={topP}
+                      onChange={(e) => setTopP(Math.max(0, Math.min(1, Number(e.target.value) || 1)))}
+                    />
+                  </div>
+                  <div>
+                    <label className="label text-xs mb-1 block">Max steps</label>
+                    <input
+                      type="number"
+                      className="input w-full text-center"
+                      min={1}
+                      max={200}
+                      value={maxSteps}
+                      onChange={(e) => setMaxSteps(Math.max(1, Math.min(200, Number(e.target.value) || 50)))}
+                    />
+                  </div>
+                </div>
+
+                {/* Compaction */}
+                <div className="border-t border-rt-border/50 pt-3">
+                  <div className="flex items-start gap-3 mb-3">
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={compactionAuto}
+                      onClick={() => setCompactionAuto(!compactionAuto)}
+                      className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${compactionAuto ? 'bg-rt-primary' : 'bg-rt-border'}`}
+                    >
+                      <span className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${compactionAuto ? 'translate-x-4' : 'translate-x-0'}`} />
+                    </button>
+                    <div>
+                      <label className="label cursor-pointer" onClick={() => setCompactionAuto(!compactionAuto)}>
+                        Auto-compaction
+                      </label>
+                      <p className="text-xs text-rt-text-muted mt-0.5">
+                        Automatically compact conversation history when context grows too large.
+                      </p>
+                    </div>
+                  </div>
+                  {compactionAuto && (
+                    <div className="flex items-center gap-3 ml-12">
+                      <label className="label text-xs whitespace-nowrap">Keep last</label>
+                      <input
+                        type="number"
+                        className="input w-20 text-center"
+                        min={1}
+                        max={50}
+                        value={compactionTailTurns}
+                        onChange={(e) => setCompactionTailTurns(Math.max(1, Math.min(50, Number(e.target.value) || 4)))}
+                      />
+                      <span className="text-xs text-rt-text-muted">turns</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Tool Output Truncation */}
+                <div className="border-t border-rt-border/50 pt-3">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="label text-xs mb-1 block">Max output lines</label>
+                      <input
+                        type="number"
+                        className="input w-full text-center"
+                        min={1}
+                        max={5000}
+                        value={toolOutputMaxLines}
+                        onChange={(e) => setToolOutputMaxLines(Math.max(1, Math.min(5000, Number(e.target.value) || 200)))}
+                      />
+                    </div>
+                    <div>
+                      <label className="label text-xs mb-1 block">Max output bytes</label>
+                      <input
+                        type="number"
+                        className="input w-full text-center"
+                        min={1000}
+                        max={500000}
+                        step={1000}
+                        value={toolOutputMaxBytes}
+                        onChange={(e) => setToolOutputMaxBytes(Math.max(1000, Math.min(500000, Number(e.target.value) || 50000)))}
+                      />
+                    </div>
+                  </div>
+                  <p className="text-xs text-rt-text-muted mt-1">
+                    Truncate tool output to prevent context overflow. Lines are truncated first, then bytes.
+                  </p>
+                </div>
+
+                {/* Bash Shell + Snapshot */}
+                <div className="border-t border-rt-border/50 pt-3 grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="label text-xs mb-1 block">Bash shell</label>
+                    <input
+                      type="text"
+                      className="input"
+                      placeholder="/bin/bash (leave empty for default)"
+                      value={bashShell}
+                      onChange={(e) => setBashShell(e.target.value)}
+                    />
+                  </div>
+                  <div className="flex items-start gap-3 pt-5">
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={snapshotEnabled}
+                      onClick={() => setSnapshotEnabled(!snapshotEnabled)}
+                      className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${snapshotEnabled ? 'bg-rt-primary' : 'bg-rt-border'}`}
+                    >
+                      <span className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${snapshotEnabled ? 'translate-x-4' : 'translate-x-0'}`} />
+                    </button>
+                    <div>
+                      <label className="label cursor-pointer" onClick={() => setSnapshotEnabled(!snapshotEnabled)}>
+                        Snapshots
+                      </label>
+                      <p className="text-xs text-rt-text-muted mt-0.5">Auto-snapshot workspace state</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Max iterations (legacy) */}
+                <div className="border-t border-rt-border/50 pt-3 flex items-center gap-3">
+                  <label htmlFor="agent-max-iterations" className="label whitespace-nowrap">Max iterations</label>
+                  <select
+                    id="agent-max-iterations"
+                    value={agentMaxIterations}
+                    onChange={(e) => setAgentMaxIterations(Number(e.target.value))}
+                    className="input w-24"
+                  >
+                    {[5, 10, 15, 20, 25, 30, 40, 50].map((n) => (
+                      <option key={n} value={n}>{n}</option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-rt-text-muted">
+                    Legacy max tool-use iterations (use Max steps for OpenCode agent).
+                  </p>
+                </div>
               </div>
             </div>
 
@@ -1217,14 +1607,184 @@ export default function Settings() {
                     Response time: {testResult.latency_ms}ms
                   </p>
                 )}
-                {testResult.model_info && (
+                {(testResult as any).model_info && (
                   <div className="text-xs text-rt-text-muted mt-2 font-mono bg-rt-surface/50 p-2 rounded">
-                    Model: {testResult.model_info.model}
+                    Model: {(testResult as any).model_info.model}
                   </div>
                 )}
               </div>
             </motion.div>
           )}
+
+          {/* MCP Servers */}
+            <div className="border-t border-rt-border pt-4 mt-4">
+              <div className="flex items-center gap-2 mb-3">
+                <Plug className="w-4 h-4 text-green-400" />
+                <h4 className="text-xs font-semibold text-rt-text-muted uppercase tracking-wide">MCP Servers</h4>
+              </div>
+              <div className="space-y-2">
+                {mcpConfigs.length > 0 && mcpConfigs.map((cfg: any) => (
+                  <div key={cfg.config_id} className="flex items-center gap-2 px-3 py-2 rounded-lg bg-rt-surface/30 border border-rt-border/40">
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs font-medium truncate">{cfg.name || 'Unnamed'}</div>
+                      <div className="text-[10px] text-rt-text-muted/60 truncate font-mono">
+                        {cfg.config_json?.command ? `cmd: ${Array.isArray(cfg.config_json.command) ? cfg.config_json.command.join(' ') : cfg.config_json.command}` :
+                         cfg.config_json?.url ? `url: ${cfg.config_json.url}` : 'No config'}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => mcpToggleMutation.mutate(cfg.config_id)}
+                      className={`text-xs px-2 py-0.5 rounded ${cfg.enabled !== false ? 'bg-rt-primary/20 text-rt-primary' : 'bg-rt-surface text-rt-text-muted'}`}
+                    >
+                      {cfg.enabled !== false ? 'On' : 'Off'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => mcpDeleteMutation.mutate(cfg.config_id)}
+                      className="p-1 rounded hover:bg-red-500/20 text-red-400 transition-colors"
+                      title="Remove"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  </div>
+                ))}
+                {mcpConfigs.length === 0 && (
+                  <p className="text-xs text-rt-text-muted/40 italic">No custom MCP servers configured</p>
+                )}
+                <div className="border-t border-rt-border/30 pt-3 mt-3 space-y-2">
+                  <div className="text-[10px] font-semibold text-rt-text-muted/60 uppercase tracking-wide">Add MCP Server</div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <input
+                      type="text"
+                      className="input text-xs"
+                      placeholder="Name (e.g. my-tool)"
+                      value={mcpAddName}
+                      onChange={(e) => setMcpAddName(e.target.value)}
+                    />
+                    <input
+                      type="text"
+                      className="input text-xs"
+                      placeholder="Command (e.g. npx my-mcp-server)"
+                      value={mcpAddCommand}
+                      onChange={(e) => setMcpAddCommand(e.target.value)}
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <input
+                      type="text"
+                      className="input text-xs"
+                      placeholder="URL (for remote/SSE servers)"
+                      value={mcpAddUrl}
+                      onChange={(e) => setMcpAddUrl(e.target.value)}
+                    />
+                    <input
+                      type="text"
+                      className="input text-xs"
+                      placeholder='Env vars JSON (e.g. {"KEY":"val"})'
+                      value={mcpAddEnv}
+                      onChange={(e) => setMcpAddEnv(e.target.value)}
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    disabled={!mcpAddName.trim() || (!mcpAddCommand.trim() && !mcpAddUrl.trim())}
+                    onClick={() => {
+                      const configJson: any = {}
+                      if (mcpAddCommand.trim()) {
+                        configJson.command = mcpAddCommand.trim().split(' ')
+                      }
+                      if (mcpAddUrl.trim()) {
+                        configJson.url = mcpAddUrl.trim()
+                      }
+                      if (mcpAddEnv.trim()) {
+                        try { configJson.environment = JSON.parse(mcpAddEnv) } catch {}
+                      }
+                      mcpSaveMutation.mutate({ name: mcpAddName.trim(), config_json: configJson, enabled: true })
+                      setMcpAddName(''); setMcpAddCommand(''); setMcpAddUrl(''); setMcpAddEnv('')
+                    }}
+                    className="btn-secondary text-xs"
+                  >
+                    <Plus className="w-3 h-3" /> Add Server
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Custom Commands */}
+            <div className="border-t border-rt-border pt-4 mt-4">
+              <div className="flex items-center gap-2 mb-3">
+                <Command className="w-4 h-4 text-blue-400" />
+                <h4 className="text-xs font-semibold text-rt-text-muted uppercase tracking-wide">Custom Commands</h4>
+              </div>
+              <textarea
+                className="input min-h-[80px] font-mono text-xs"
+                placeholder={'JSON array of custom commands:\n[\n  {"name": "review", "prompt": "Review this code for bugs and suggest improvements", "agent": "plan"},\n  {"name": "fix", "prompt": "Fix all lint errors in the project", "agent": "build"}\n]'}
+                value={customCommandsJson}
+                onChange={(e) => setCustomCommandsJson(e.target.value)}
+              />
+              <p className="text-xs text-rt-text-muted mt-1">
+                Custom slash commands for the agent. Each command has a name (used as /name), a prompt, and an optional agent ("build" or "plan").
+              </p>
+            </div>
+
+            {/* Advanced */}
+            <div className="border-t border-rt-border pt-4 mt-4">
+              <button
+                type="button"
+                onClick={() => setAdvancedExpanded(!advancedExpanded)}
+                className="flex items-center gap-2 w-full text-left"
+              >
+                {advancedExpanded ? (
+                  <ChevronDown className="w-3.5 h-3.5 text-rt-text-muted" />
+                ) : (
+                  <ChevronRight className="w-3.5 h-3.5 text-rt-text-muted" />
+                )}
+                <h4 className="text-xs font-semibold text-rt-text-muted uppercase tracking-wide">Advanced</h4>
+              </button>
+              {advancedExpanded && (
+                <div className="space-y-3 mt-3">
+                  <div>
+                    <label className="label text-xs mb-1 block">Disabled tools</label>
+                    <input
+                      type="text"
+                      className="input font-mono text-xs"
+                      placeholder='JSON list, e.g. ["task","todowrite"]'
+                      value={disabledToolsJson}
+                      onChange={(e) => setDisabledToolsJson(e.target.value)}
+                    />
+                    <p className="text-xs text-rt-text-muted mt-1">
+                      JSON array of tool names to disable. The agent will not use these tools.
+                    </p>
+                  </div>
+                  <div>
+                    <label className="label text-xs mb-1 block">Permission config</label>
+                    <input
+                      type="text"
+                      className="input font-mono text-xs"
+                      placeholder='JSON, e.g. {"edit":"allow","bash":"confirm"}'
+                      value={permissionConfigJson}
+                      onChange={(e) => setPermissionConfigJson(e.target.value)}
+                    />
+                    <p className="text-xs text-rt-text-muted mt-1">
+                      Override default agent permissions. Values: "allow", "deny", "confirm".
+                    </p>
+                  </div>
+                  <div>
+                    <label className="label text-xs mb-1 block">Custom agents</label>
+                    <textarea
+                      className="input min-h-[80px] font-mono text-xs"
+                      placeholder={'JSON array of custom agents:\n[\n  {"name": "security", "model": "grok-4-1-fast-reasoning", "prompt": "You are a security auditor...", "permission": {"edit": "deny", "bash": "deny"}}\n]'}
+                      value={customAgentsJson}
+                      onChange={(e) => setCustomAgentsJson(e.target.value)}
+                    />
+                    <p className="text-xs text-rt-text-muted mt-1">
+                      Additional agents beyond Build and Plan. Each gets its own model, prompt, and permissions.
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
 
           {/* Actions */}
           <div className="flex gap-3 justify-end mt-6 pt-6 border-t border-rt-border">

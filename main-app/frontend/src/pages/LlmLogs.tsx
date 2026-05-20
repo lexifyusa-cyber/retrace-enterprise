@@ -144,10 +144,22 @@ function LogEntry({
   expanded: boolean
   onToggle: () => void
 }) {
-  // Parse request messages JSON
+  // Parse request messages JSON. The shape is expected to be an array of
+  // {role, content} objects, but older / partially-written rows can be a
+  // single object (or other malformed payload). Always coerce to an array so
+  // the .map() below never crashes.
   const parsedMessages = useMemo(() => {
+    if (!log.request_messages) return []
     try {
-      return log.request_messages ? JSON.parse(log.request_messages) : []
+      const parsed = JSON.parse(log.request_messages)
+      if (Array.isArray(parsed)) return parsed
+      if (parsed && typeof parsed === 'object') {
+        // Render the bare object as a single "system" message so the user can
+        // still see what was stored. Common case: OC-side logs that recorded
+        // metadata as a flat dict instead of an array.
+        return [{ role: 'system', content: JSON.stringify(parsed, null, 2) }]
+      }
+      return []
     } catch {
       return []
     }

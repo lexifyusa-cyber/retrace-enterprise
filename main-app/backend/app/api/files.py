@@ -70,48 +70,13 @@ def _resolve_browse_path(path: str) -> Path:
     return Path(path)
 
 
-@router.get("/browse")
-async def browse_local_filesystem(
-    path: str = "/",
-    current_user: CurrentUser = Depends(get_current_user),
-):
-    """Browse the local filesystem on the backend server.
+def _browse_host(path: str) -> dict:
+    """List a directory on the host filesystem (the backend's own machine).
 
-    Only zero_admin can browse the filesystem. Trial/tenant users cannot
-    see the host filesystem — they should use POD agents for remote data.
+    Used for zero_admin browsing and for callers that pass `host=true` — e.g.
+    the MCP Builder destination picker, since generated MCP servers are built
+    on the host, not inside the sandbox container.
     """
-    # For non-system admins, browse inside their Docker container's filesystem
-    if current_user.role != "zero_admin":
-        try:
-            from app.services.sandbox_manager import get_or_create_session
-            import json as _json
-
-            # Create or reuse sandbox session with 30-second timeout (non-blocking via thread pool)
-            # This ensures the session exists before attempting to execute commands
-            session = None
-            try:
-                with concurrent.futures.ThreadPoolExecutor() as pool:
-                    future = pool.submit(get_or_create_session, current_user.user_id)
-                    session = future.result(timeout=30)
-                    if session:
-                        logger.info("sandbox_session_ready_for_browse", user_id=current_user.user_id)
-            except concurrent.futures.TimeoutError:
-                logger.warning("sandbox_session_creation_timeout_during_browse", user_id=current_user.user_id)
-                session = None
-
-            if session:
-                browse_path = path if path not in ("/", "~", "") else "/workspace"
-                # Restrict browsing to /workspace only
-                if not browse_path.startswith("/workspace"):
-                    browse_path = "/workspace"
-                result = session.execute_command(f"python3 -c \"\nimport os, json, datetime\ntarget = '{browse_path}'\nif not os.path.isdir(target):\n    print(json.dumps({{'files':[],'total_count':0,'total_size':0}}))\nelse:\n    files = []\n    total_size = 0\n    for e in os.scandir(target):\n        try:\n            s = e.stat()\n            is_dir = e.is_dir()\n            sz = s.st_size if not is_dir else 0\n            if not is_dir: total_size += sz\n            files.append({{'name':e.name,'path':os.path.join(target,e.name),'rel_path':e.name,'type':'directory' if is_dir else 'file','size':sz,'modified':datetime.datetime.utcfromtimestamp(s.st_mtime).isoformat()+'Z'}})\n        except: pass\n    print(json.dumps({{'files':files,'total_count':len(files),'total_size':total_size}}))\n\"")
-                stdout = (result.stdout or "").strip()
-                if stdout:
-                    return _json.loads(stdout)
-        except Exception as e:
-            logger.warning("sandbox_browse_error", user_id=current_user.user_id, error=str(e))
-        return {"files": [], "total_count": 0, "total_size": 0}
-
     resolved = _resolve_browse_path(path)
     if path not in ("/", "~", ""):
         allowed, resolved_check = _is_path_allowed(path)
@@ -143,18 +108,15 @@ async def browse_local_filesystem(
                 try:
                     stat = entry.stat()
                     name = entry.name
-                    entry_path = str(resolved / name)
-                    rel_path = name
                     is_dir = entry.is_dir()
                     size = stat.st_size if not is_dir else 0
                     if not is_dir:
                         total_size += size
-                    modified = stat.st_mtime
-                    modified_iso = datetime.utcfromtimestamp(modified).isoformat() + "Z"
+                    modified_iso = datetime.utcfromtimestamp(stat.st_mtime).isoformat() + "Z"
                     files.append({
                         "name": name,
-                        "path": entry_path,
-                        "rel_path": rel_path,
+                        "path": str(resolved / name),
+                        "rel_path": name,
                         "type": "directory" if is_dir else "file",
                         "size": size,
                         "modified": modified_iso,
@@ -167,8 +129,53 @@ async def browse_local_filesystem(
             detail=f"Cannot read directory: {e!s}",
         )
 
-    return {
-        "files": files,
-        "total_count": len(files),
-        "total_size": total_size,
-    }
+    return {"files": files, "total_count": len(files), "total_size": total_size}
+
+
+@router.get("/browse")
+async def browse_local_filesystem(
+    path: str = "/",
+    host: bool = False,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Browse the local filesystem on the backend server.
+
+    `host=true` forces a host-filesystem browse — used by the MCP Builder
+    destination picker, since generated MCP servers are built on the host,
+    not inside the sandbox container. zero_admin always browses the host.
+    """
+    if host or current_user.role == "zero_admin":
+        return _browse_host(path)
+
+    # Otherwise (non-admin, host not requested): prefer the sandbox container,
+    # falling back to the host filesystem when the sandbox is unavailable.
+    if current_user.role != "zero_admin":
+        try:
+            from app.services.sandbox_manager import get_or_create_session
+            import json as _json
+
+            session = None
+            try:
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    future = pool.submit(get_or_create_session, current_user.user_id)
+                    session = future.result(timeout=30)
+                    if session:
+                        logger.info("sandbox_session_ready_for_browse", user_id=current_user.user_id)
+            except concurrent.futures.TimeoutError:
+                logger.warning("sandbox_session_creation_timeout_during_browse", user_id=current_user.user_id)
+                session = None
+
+            if session:
+                browse_path = path if path not in ("/", "~", "") else "/workspace"
+                if not browse_path.startswith("/workspace"):
+                    browse_path = "/workspace"
+                result = session.execute_command(f"python3 -c \"\nimport os, json, datetime\ntarget = '{browse_path}'\nif not os.path.isdir(target):\n    print(json.dumps({{'files':[],'total_count':0,'total_size':0}}))\nelse:\n    files = []\n    total_size = 0\n    for e in os.scandir(target):\n        try:\n            s = e.stat()\n            is_dir = e.is_dir()\n            sz = s.st_size if not is_dir else 0\n            if not is_dir: total_size += sz\n            files.append({{'name':e.name,'path':os.path.join(target,e.name),'rel_path':e.name,'type':'directory' if is_dir else 'file','size':sz,'modified':datetime.datetime.utcfromtimestamp(s.st_mtime).isoformat()+'Z'}})\n        except: pass\n    print(json.dumps({{'files':files,'total_count':len(files),'total_size':total_size}}))\n\"")
+                stdout = (result.stdout or "").strip()
+                if stdout:
+                    return _json.loads(stdout)
+        except Exception as e:
+            logger.warning("sandbox_browse_error", user_id=current_user.user_id, error=str(e))
+
+        # Sandbox unavailable — fall back to direct filesystem browsing
+        logger.info("sandbox_unavailable_browse_fallback", user_id=current_user.user_id)
+        return _browse_host(path)
