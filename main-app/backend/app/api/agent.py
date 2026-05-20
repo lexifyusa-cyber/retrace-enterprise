@@ -142,21 +142,35 @@ _NATIVE_PERM_KEYS: dict[str, str] = {
 _BUILTIN_MCP_NAMES = {"retrace-kb", "retrace-browser", "retrace-screenops", "retrace-search"}
 
 
-def _build_native_deny_ruleset(disabled_names: set[str]) -> list[dict]:
+def _build_native_permission_ruleset(disabled_names: set[str]) -> list[dict]:
     """Translate the user's disabled-tools list into OC's Permission.Ruleset
-    shape — an array of `{permission, pattern, action}`. MCP-provided tools
-    are excluded (handled separately via mcp connect/disconnect). Multiple UI
-    names collapsing to the same OC key (write/multiEdit/edit → "edit") are
-    de-duplicated.
+    shape — an array of `{permission, pattern, action}`. Emits an EXPLICIT
+    rule for every native tool's OC permission key (deny if the UI name is in
+    disabled_names, otherwise allow). MCP-provided tools are excluded
+    (handled separately via mcp connect/disconnect).
+
+    Why emit explicit allows: OC's session PATCH MERGES the new ruleset onto
+    the existing one (Permission.merge = flat concat; evaluator uses
+    findLast for the effective rule). If we only ever sent denies, toggling
+    a tool back ON couldn't un-deny it — the prior deny rule would persist
+    forever and findLast would still pick it. Sending an explicit allow on
+    toggle-ON appends a newer rule that findLast prefers, so the effective
+    permission flips back.
+
+    UI names collapsing to the same OC key (write/multiEdit/edit → "edit")
+    are folded: the key is denied if *any* of the UI names is disabled,
+    otherwise allowed.
     """
-    rules: list[dict] = []
-    seen: set[str] = set()
-    for name in disabled_names:
-        key = _NATIVE_PERM_KEYS.get(name)
-        if key and key not in seen:
-            rules.append({"permission": key, "pattern": "*", "action": "deny"})
-            seen.add(key)
-    return rules
+    by_key: dict[str, str] = {}
+    for ui_name, oc_key in _NATIVE_PERM_KEYS.items():
+        action = "deny" if ui_name in disabled_names else "allow"
+        # If any UI name disables the key, deny wins regardless of order.
+        if by_key.get(oc_key) != "deny":
+            by_key[oc_key] = action
+    return [
+        {"permission": key, "pattern": "*", "action": action}
+        for key, action in by_key.items()
+    ]
 
 
 async def _cancel_active_stream(user_id: str, session_id: str) -> None:
@@ -724,7 +738,7 @@ async def opencode_create_session(
                 _llm = await get_active_llm_settings(_settings_session)
             _cfg = _llm.get("agent_tools_config") or {}
             _disabled = set(_cfg.get("disabled") or [])
-            _native_rules = _build_native_deny_ruleset(_disabled)
+            _native_rules = _build_native_permission_ruleset(_disabled)
             if _native_rules and oc_session_id:
                 patch_resp = await client.patch(
                     f"http://127.0.0.1:{port}/session/{oc_session_id}",
@@ -1382,7 +1396,7 @@ async def opencode_set_tools(
     # 3. Build the native deny ruleset for ALL currently-disabled native
     #    tools — OC's PATCH appends to existing permissions, so we pass the
     #    full current state every time and let `findLast()` resolve.
-    native_rules = _build_native_deny_ruleset(new_disabled)
+    native_rules = _build_native_permission_ruleset(new_disabled)
 
     # 4. MCP diff — which MCPs newly flipped this call.
     def _is_mcp(name: str) -> bool:
@@ -1397,8 +1411,32 @@ async def opencode_set_tools(
         # small (one per open session + one per changed MCP), so a single
         # client with short timeout is plenty.
         async with httpx.AsyncClient(timeout=5) as client:
-            # 5. Native permissions — fan out to every known live session.
-            for sid in list(_active_oc_sessions.get(user_id, set())):
+            # 5. Native permissions — fan out to EVERY OC session the user has
+            # right now: parent + any live subagents. We query OC's /session
+            # endpoint as the source of truth instead of relying on the
+            # `_active_oc_sessions` in-memory cache, because:
+            #   (a) the cache clears on backend restart — a post-restart toggle
+            #       would otherwise reach zero sessions and leave subagents
+            #       running with stale permissions;
+            #   (b) subagents are created on-the-fly by OC's `task` tool, not
+            #       through our `opencode_create_session` path, so they never
+            #       enter the cache anyway. The "subagent escape" we observed
+            #       was a direct consequence of (a) — the parent didn't get
+            #       the deny, so OC's `deriveSubagentSessionPermission`
+            #       (subagent-permissions.ts) had no parent deny to inherit.
+            # Now we PATCH all of them, including subagents. OC's permission
+            # merge appends our explicit ruleset; findLast resolves correctly.
+            session_ids: list[str] = []
+            try:
+                list_resp = await client.get(f"http://127.0.0.1:{port}/session")
+                if list_resp.status_code == 200:
+                    all_sessions = list_resp.json() or []
+                    session_ids = [s["id"] for s in all_sessions if isinstance(s, dict) and s.get("id")]
+            except Exception as exc:
+                logger.warning("set_tools session list failed; falling back to cache", error=str(exc))
+                session_ids = list(_active_oc_sessions.get(user_id, set()))
+
+            for sid in session_ids:
                 try:
                     resp = await client.patch(
                         f"http://127.0.0.1:{port}/session/{sid}",

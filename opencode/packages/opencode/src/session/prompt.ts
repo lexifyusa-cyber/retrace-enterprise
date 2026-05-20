@@ -1624,8 +1624,17 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         permissions.push({ permission: t, action: enabled ? "allow" : "deny", pattern: "*" })
       }
       if (permissions.length > 0) {
-        session.permission = permissions
-        yield* sessions.setPermission({ sessionID: session.id, permission: permissions })
+        // Merge instead of replace: when the task tool spawns a subagent it
+        // calls prompt({ tools: {...} }), and the subagent's session.permission
+        // was already populated by deriveSubagentSessionPermission with the
+        // parent's inherited denies (bash:deny etc.). The HTTP PATCH path at
+        // handlers/session.ts uses Permission.merge for the same reason; the
+        // internal setPermission writes directly, so we have to merge here too,
+        // otherwise the inherited denies are silently wiped and subagents
+        // bypass parent tool restrictions.
+        const merged = Permission.merge(session.permission ?? [], permissions)
+        session.permission = merged
+        yield* sessions.setPermission({ sessionID: session.id, permission: merged })
       }
 
       if (input.noReply === true) return message

@@ -99,6 +99,22 @@ install_node() {
 
 install_node
 
+install_bun() {
+    if ! command -v bun &> /dev/null; then
+        echo "📦 bun is not installed. Installing..."
+        curl -fsSL https://bun.sh/install | bash
+        # Pick up bun in the current shell — bun installs to ~/.bun/bin by default.
+        export PATH="$HOME/.bun/bin:$PATH"
+        if ! command -v bun &> /dev/null; then
+            echo "❌ bun install completed but bun is not on PATH. Add ~/.bun/bin to PATH and retry."
+            exit 1
+        fi
+        echo "✅ bun installed successfully"
+    fi
+}
+
+install_bun
+
 # Install uv (required for MCP Builder dependency management)
 if ! command -v uv &> /dev/null && [ ! -f "$HOME/.local/bin/uv" ]; then
     echo "📦 Installing uv (Python package manager for MCP Builder)..."
@@ -291,6 +307,9 @@ if lsof -ti :8000 &> /dev/null; then
 fi
 
 echo "Starting FastAPI backend..."
+# External-OC mode: tell the backend to route HTTP to the OC source we
+# launch below on :4096 instead of trying to spawn an `opencode` binary.
+export RETRACE_OPENCODE_EXTERNAL_URL="${RETRACE_OPENCODE_EXTERNAL_URL:-http://127.0.0.1:4096}"
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000 &
 BACKEND_PID=$!
 sleep 2  # Give backend time to start
@@ -311,12 +330,33 @@ npm run dev &
 FRONTEND_PID=$!
 echo "Frontend started (PID: $FRONTEND_PID)"
 
+# Start OpenCode (the agent runtime, port 4096). The forked source lives at
+# $PROJECT_ROOT/opencode and is run via bun directly — no build step. Edits
+# to opencode/.../src/*.ts get picked up on the next start.
+#
+# `run-for-retrace.sh` auto-detects user_id from ~/.config/opencode/projects/
+# and sets OPENCODE_CONFIG_DIR + RETRACE_USER_ID/BACKEND_URL/INTERNAL_TOKEN.
+# Skips OC startup gracefully if no user config exists yet (first-run case
+# where the user hasn't visited /agent yet to trigger generate_config).
+OC_PID=""
+echo ""
+echo "🤖 Starting OpenCode agent runtime..."
+if [ -d "$HOME/.config/opencode/projects" ] && [ -n "$(ls -A "$HOME/.config/opencode/projects" 2>/dev/null)" ]; then
+    "$PROJECT_ROOT/opencode/run-for-retrace.sh" &
+    OC_PID=$!
+    echo "OpenCode started (PID: $OC_PID, port: 4096)"
+else
+    echo "⚠️  No OpenCode user config found yet. Hit /agent once in the UI to"
+    echo "   generate one, then run: $PROJECT_ROOT/opencode/run-for-retrace.sh"
+fi
+
 # Cleanup function
 cleanup() {
     echo ""
     echo "🛑 Shutting down..."
     kill $BACKEND_PID 2>/dev/null
     kill $FRONTEND_PID 2>/dev/null
+    [ -n "$OC_PID" ] && kill $OC_PID 2>/dev/null
     exit 0
 }
 
@@ -326,9 +366,12 @@ echo ""
 echo "================================================"
 echo "✅ ReTrace Development Environment Running!"
 echo ""
-echo "  Backend:  http://localhost:8000"
-echo "  API Docs: http://localhost:8000/docs"
-echo "  Frontend: http://localhost:5173"
+echo "  Backend:   http://localhost:8000"
+echo "  API Docs:  http://localhost:8000/docs"
+echo "  Frontend:  http://localhost:5173"
+if [ -n "$OC_PID" ]; then
+echo "  OpenCode:  http://127.0.0.1:4096"
+fi
 echo ""
 echo "Press Ctrl+C to stop all services"
 echo "================================================"

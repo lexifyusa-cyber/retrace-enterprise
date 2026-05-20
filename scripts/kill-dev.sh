@@ -22,16 +22,23 @@ if lsof -ti :5173 &> /dev/null; then
     lsof -ti :5173 | xargs kill -9 2>/dev/null || true
 fi
 
+# OpenCode (bun on port 4096)
+if lsof -ti :4096 &> /dev/null; then
+    echo "  Killing OpenCode (port 4096)..."
+    lsof -ti :4096 | xargs kill -9 2>/dev/null || true
+fi
+
 # Catch any stragglers
 pkill -9 -f "uvicorn app.main:app" 2>/dev/null || true
 pkill -9 -f "npm run dev" 2>/dev/null || true
+pkill -9 -f "bun run --cwd packages/opencode" 2>/dev/null || true
 
 sleep 1
 
 # Verify
-REMAINING=$(lsof -ti :8000,:5173,:8001 2>/dev/null | wc -l | tr -d ' ')
+REMAINING=$(lsof -ti :8000,:5173,:8001,:4096 2>/dev/null | wc -l | tr -d ' ')
 if [ "$REMAINING" = "0" ]; then
     echo "All ReTrace processes stopped."
 else
-    echo "Warning: $REMAINING process(es) still running on ports 8000/5173/8001"
+    echo "Warning: $REMAINING process(es) still running on ports 8000/5173/8001/4096"
 fi
