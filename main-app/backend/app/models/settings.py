@@ -43,9 +43,6 @@ class LLMSettingsModel(Base):
     small_model_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     # OpenCode agent — separate model for plan agent (defaults to model_name if not set)
     plan_model_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    # OpenCode agent — custom system prompts
-    build_system_prompt: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    plan_system_prompt: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # OpenCode agent — max iterations per turn
     max_steps: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=50)
     # OpenCode agent — compaction settings
@@ -96,8 +93,6 @@ class LLMSettingsModel(Base):
             "serper_api_key": self.serper_api_key,
             "small_model_name": self.small_model_name,
             "plan_model_name": self.plan_model_name,
-            "build_system_prompt": self.build_system_prompt,
-            "plan_system_prompt": self.plan_system_prompt,
             "max_steps": self.max_steps if self.max_steps is not None else 50,
             "compaction_auto": bool(self.compaction_auto) if self.compaction_auto is not None else False,
             "compaction_tail_turns": self.compaction_tail_turns if self.compaction_tail_turns is not None else 4,

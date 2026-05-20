@@ -317,8 +317,6 @@ class OpenCodeManager:
                 model_name = model_override
         small_model_name = llm.get("small_model_name") or None
         plan_model_name = llm.get("plan_model_name") or None
-        build_system_prompt = llm.get("build_system_prompt") or None
-        plan_system_prompt = llm.get("plan_system_prompt") or None
         max_steps = llm.get("max_steps", 50)
         compaction_auto = llm.get("compaction_auto", False)
         compaction_tail_turns = llm.get("compaction_tail_turns", 4)
@@ -402,40 +400,34 @@ class OpenCodeManager:
 
         today = datetime.utcnow().strftime("%Y-%m-%d")
 
-        if build_system_prompt:
-            build_prompt = build_system_prompt
-        else:
-            build_prompt = (
-                f"You are ReTrace, an enterprise knowledge management assistant. Today is {today}.\n\n"
-                "You help users find information, automate tasks, and manage knowledge.\n"
-                "You have access to the following capabilities through MCP tools:\n"
-                "- **Knowledge Base**: Search and read team knowledge base documents\n"
-                "- **Browser**: Navigate web pages, take screenshots, click, type, and read content\n"
-                "- **Screen Automation**: Take screenshots, click, type, and interact with desktop applications\n"
-                "- **SOPs**: List, read, create, and run Standard Operating Procedures\n"
-                "- **Email**: List inboxes, read emails, and send emails\n\n"
-                "When using tools:\n"
-                "- Always check the knowledge base first when the user asks about information that might be in team docs\n"
-                "- Use the browser tool when you need to access web content or web applications\n"
-                "- Create SOPs for repeatable processes the user describes\n"
-                "- Be thorough but concise in your responses\n"
+        build_prompt = (
+            f"You are ReTrace, an enterprise knowledge management assistant. Today is {today}.\n\n"
+            "You help users find information, automate tasks, and manage knowledge.\n"
+            "You have access to the following capabilities through MCP tools:\n"
+            "- **Knowledge Base**: Search and read team knowledge base documents\n"
+            "- **Browser**: Navigate web pages, take screenshots, click, type, and read content\n"
+            "- **Screen Automation**: Take screenshots, click, type, and interact with desktop applications\n"
+            "- **SOPs**: List, read, create, and run Standard Operating Procedures\n"
+            "- **Email**: List inboxes, read emails, and send emails\n\n"
+            "When using tools:\n"
+            "- Always check the knowledge base first when the user asks about information that might be in team docs\n"
+            "- Use the browser tool when you need to access web content or web applications\n"
+            "- Create SOPs for repeatable processes the user describes\n"
+            "- Be thorough but concise in your responses\n"
+        )
+        if team_description:
+            build_prompt += (
+                f"\n## Team Context\n"
+                f"You are working within a team with the following description:\n"
+                f"{team_description}\n"
             )
-            if team_description:
-                build_prompt += (
-                    f"\n## Team Context\n"
-                    f"You are working within a team with the following description:\n"
-                    f"{team_description}\n"
-                )
 
-        if plan_system_prompt:
-            plan_prompt = plan_system_prompt
-        else:
-            plan_prompt = (
-                f"You are ReTrace Plan Agent, an analysis and planning assistant. Today is {today}.\n\n"
-                "You help users analyze problems, create plans, and review code or documents.\n"
-                "You do NOT edit files or execute commands — you only analyze and advise.\n"
-                "Use the knowledge base and browser tools to gather information as needed.\n"
-            )
+        plan_prompt = (
+            f"You are ReTrace Plan Agent, an analysis and planning assistant. Today is {today}.\n\n"
+            "You help users analyze problems, create plans, and review code or documents.\n"
+            "You do NOT edit files or execute commands — you only analyze and advise.\n"
+            "Use the knowledge base and browser tools to gather information as needed.\n"
+        )
 
         plan_model = plan_model_name or model_name
 

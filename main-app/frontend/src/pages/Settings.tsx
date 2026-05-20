@@ -23,8 +23,6 @@ interface LLMSettings {
   serper_api_key?: string | null
   small_model_name?: string | null
   plan_model_name?: string | null
-  build_system_prompt?: string | null
-  plan_system_prompt?: string | null
   max_steps?: number | null
   compaction_auto?: boolean | null
   compaction_tail_turns?: number | null
@@ -55,8 +53,6 @@ interface LLMSettingsResponse {
   screenshot_delay_ms?: number
   small_model_name?: string | null
   plan_model_name?: string | null
-  build_system_prompt?: string | null
-  plan_system_prompt?: string | null
   max_steps?: number
   compaction_auto?: boolean
   compaction_tail_turns?: number
@@ -102,8 +98,6 @@ export default function Settings() {
   const [smallModelName, setSmallModelName] = useState('')
   const [planModelName, setPlanModelName] = useState('')
   const [sameModelForAll, setSameModelForAll] = useState(false)
-  const [buildSystemPrompt, setBuildSystemPrompt] = useState('')
-  const [planSystemPrompt, setPlanSystemPrompt] = useState('')
   const [maxSteps, setMaxSteps] = useState(50)
   const [compactionAuto, setCompactionAuto] = useState(false)
   const [compactionTailTurns, setCompactionTailTurns] = useState(4)
@@ -327,8 +321,6 @@ export default function Settings() {
       const sm = currentSettings.small_model_name || ''
       const pm = currentSettings.plan_model_name || ''
       setSameModelForAll((sm === mainModel && pm === mainModel) || (!sm && !pm))
-      setBuildSystemPrompt(currentSettings.build_system_prompt || '')
-      setPlanSystemPrompt(currentSettings.plan_system_prompt || '')
       setMaxSteps(currentSettings.max_steps ?? 50)
       setCompactionAuto(currentSettings.compaction_auto ?? false)
       setCompactionTailTurns(currentSettings.compaction_tail_turns ?? 4)
@@ -646,16 +638,6 @@ export default function Settings() {
       payload.plan_model_name = planModelName.trim()
     } else {
       payload.plan_model_name = null
-    }
-    if (buildSystemPrompt.trim()) {
-      payload.build_system_prompt = buildSystemPrompt.trim()
-    } else {
-      payload.build_system_prompt = null
-    }
-    if (planSystemPrompt.trim()) {
-      payload.plan_system_prompt = planSystemPrompt.trim()
-    } else {
-      payload.plan_system_prompt = null
     }
     payload.max_steps = maxSteps
     payload.compaction_auto = compactionAuto
@@ -1204,26 +1186,6 @@ export default function Settings() {
                 </div>
                 </>
                 )}
-
-                {/* System Prompts */}
-                <div>
-                  <label className="label mb-1 block">Build agent system prompt</label>
-                  <textarea
-                    className="input min-h-[80px] font-mono text-xs"
-                    placeholder="Custom system prompt for the Build agent. Leave empty for default ReTrace prompt."
-                    value={buildSystemPrompt}
-                    onChange={(e) => setBuildSystemPrompt(e.target.value)}
-                  />
-                </div>
-                <div>
-                  <label className="label mb-1 block">Plan agent system prompt</label>
-                  <textarea
-                    className="input min-h-[80px] font-mono text-xs"
-                    placeholder="Custom system prompt for the Plan agent. Leave empty for default ReTrace prompt."
-                    value={planSystemPrompt}
-                    onChange={(e) => setPlanSystemPrompt(e.target.value)}
-                  />
-                </div>
 
                 {/* LLM Parameters */}
                 <div>

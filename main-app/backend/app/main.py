@@ -164,14 +164,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
                 cursor.execute("ALTER TABLE llm_settings ADD COLUMN plan_model_name VARCHAR(255)")
                 conn.commit()
                 print("[STARTUP] Added plan_model_name column to llm_settings", flush=True)
-            if "build_system_prompt" not in cols:
-                cursor.execute("ALTER TABLE llm_settings ADD COLUMN build_system_prompt TEXT")
-                conn.commit()
-                print("[STARTUP] Added build_system_prompt column to llm_settings", flush=True)
-            if "plan_system_prompt" not in cols:
-                cursor.execute("ALTER TABLE llm_settings ADD COLUMN plan_system_prompt TEXT")
-                conn.commit()
-                print("[STARTUP] Added plan_system_prompt column to llm_settings", flush=True)
             if "max_steps" not in cols:
                 cursor.execute("ALTER TABLE llm_settings ADD COLUMN max_steps INTEGER DEFAULT 50")
                 conn.commit()
