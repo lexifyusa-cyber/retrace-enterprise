@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import json
 import os
 import time
@@ -21,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 import structlog
+from PIL import Image as _PILImage
 
 logger = structlog.get_logger()
 
@@ -33,6 +35,30 @@ IDLE_TIMEOUT_SECONDS = 10 * 60  # 10 minutes
 # Max concurrent BrowserSessions (= Chromium tabs) per user. Beyond this the
 # LRU page is evicted to keep memory under control. ~30-80 MB / Page so 5 = ~200-400 MB.
 MAX_PAGES_PER_USER = 5
+
+
+def _resize_jpeg(data: bytes, scale_pct: int) -> bytes:
+    """Re-encode a JPEG at `scale_pct`% of its source dimensions.
+
+    Runs synchronously and is meant to be wrapped in `asyncio.to_thread` so
+    the event loop stays free. Bilinear (PIL default for thumbnail with
+    Image.LANCZOS would be sharper but ~2× slower; bilinear is the
+    pre-OC choice and adequate for vision input).
+
+    On any error, returns the original bytes — a slightly oversized
+    screenshot is better than a missing screenshot.
+    """
+    try:
+        with _PILImage.open(io.BytesIO(data)) as img:
+            new_w = max(1, int(img.width * scale_pct / 100))
+            new_h = max(1, int(img.height * scale_pct / 100))
+            resized = img.resize((new_w, new_h), _PILImage.BILINEAR)
+            buf = io.BytesIO()
+            resized.save(buf, format="JPEG", quality=SCREENSHOT_QUALITY)
+            return buf.getvalue()
+    except Exception as exc:
+        logger.warning("jpeg_resize_failed", scale_pct=scale_pct, error=str(exc))
+        return data
 
 
 def _resolve_user_id_for_conversation(conversation_id: str) -> Optional[str]:
@@ -76,6 +102,17 @@ class BrowserSession:
     current_url: str = "about:blank"
     current_title: str = ""
     is_navigating: bool = False
+    # Per-action post-settle delay in ms — sleep this long after each action
+    # before the screenshot is captured so animations / lazy-loaded UIs have
+    # time to render. Pre-OC's sandbox `browser_daemon.py` honored the same
+    # setting; host-Playwright now does too. Set per-session at creation
+    # time so a DB round-trip isn't needed on every action.
+    settle_delay_ms: int = 500
+    # 25-100, percent of viewport-sized JPEG sent to the LLM. Lower = fewer
+    # vision tokens per action (each browser action auto-attaches the
+    # screenshot via the retrace-browser MCP), at the cost of less detail.
+    # Applied in `get_screenshot_base64` AFTER Playwright's native capture.
+    image_scale_pct: int = 100
 
     def _run_browser_agent(self, action_json: str) -> dict:
         """Run a browser action inside the sandbox container via browser_control.py
@@ -159,8 +196,33 @@ class BrowserSession:
             pass
         return None
 
+    async def _settle(self) -> None:
+        """Sleep the user-configured post-action settle time before a
+        screenshot capture or status read. Pre-OC this was hardcoded at
+        500ms; now it's tunable via `settle_delay_ms` (= the user's
+        `screenshot_delay_ms` setting). Sites with carousel animations,
+        countdown timers, lazy-loaded skeletons, or post-click transitions
+        need longer; static pages can run at 100ms for speed. 0 = no wait.
+        Clamped to [0, 30000] ms.
+        """
+        delay = max(0, min(30000, int(self.settle_delay_ms))) / 1000.0
+        if delay > 0:
+            await asyncio.sleep(delay)
+
     async def get_screenshot_base64(self) -> Optional[str]:
-        """Read screenshot from shared volume (no SSH needed)."""
+        """Capture a JPEG screenshot of the current viewport, optionally
+        downscaled per `image_scale_pct`, and return it as base64.
+
+        Used by:
+          - The WebSocket panel push (live browser feed shown to the user).
+          - The retrace-browser MCP's auto-screenshot attach on every action
+            (so the LLM gets a vision input alongside the action's JSON
+            result). Every action invocation costs vision tokens; that's why
+            `image_scale_pct` exists — drop it below 100 to trade detail for
+            tokens.
+
+        Sandbox path is kept for back-compat but currently unused.
+        """
         if self.sandbox_session:
             # Read directly from disk — no podman exec, no SSH
             return await asyncio.to_thread(self._read_screenshot_from_volume)
@@ -172,6 +234,13 @@ class BrowserSession:
                 quality=SCREENSHOT_QUALITY,
                 full_page=False,
             )
+            scale = max(25, min(100, int(self.image_scale_pct)))
+            if scale < 100:
+                # Resize inside a worker thread — PIL is synchronous and
+                # decoding/encoding a 1280×900 JPEG can take ~20-50ms.
+                # asyncio.to_thread keeps the event loop responsive for the
+                # other actions happening in parallel.
+                data = await asyncio.to_thread(_resize_jpeg, data, scale)
             return base64.b64encode(data).decode("ascii")
         except Exception as exc:
             logger.warning("screenshot_failed", error=str(exc))
@@ -220,7 +289,7 @@ class BrowserSession:
             # Paint settle. Matches the pre-OC auto_browser sleep before the
             # screenshot push so the panel sees the new page, not a frame
             # from while it was still rendering.
-            await asyncio.sleep(0.5)
+            await self._settle()
             self.current_url = self.page.url
             self.current_title = await self.page.title()
             return {"url": self.current_url, "title": self.current_title}
@@ -243,7 +312,7 @@ class BrowserSession:
                 await self.page.wait_for_load_state("domcontentloaded", timeout=5000)
             except Exception:
                 pass
-            await asyncio.sleep(0.5)
+            await self._settle()
             self.current_url = self.page.url
             self.current_title = await self.page.title()
             return {"url": self.current_url, "title": self.current_title}
@@ -299,7 +368,7 @@ class BrowserSession:
             return {"error": "No browser page"}
         try:
             await self.page.go_back(wait_until="domcontentloaded", timeout=15000)
-            await asyncio.sleep(0.5)
+            await self._settle()
             self.current_url = self.page.url
             self.current_title = await self.page.title()
             return {"url": self.current_url, "title": self.current_title}
@@ -330,7 +399,7 @@ class BrowserSession:
             return {"error": "No browser page"}
         try:
             await self.page.reload(wait_until="domcontentloaded", timeout=15000)
-            await asyncio.sleep(0.5)
+            await self._settle()
             self.current_url = self.page.url
             self.current_title = await self.page.title()
             return {"url": self.current_url, "title": self.current_title}
@@ -365,7 +434,7 @@ class BrowserSession:
                 await self.page.wait_for_load_state("domcontentloaded", timeout=5000)
             except Exception:
                 pass
-            await asyncio.sleep(0.5)
+            await self._settle()
             self.current_url = self.page.url
             self.current_title = await self.page.title()
             return {"url": self.current_url, "title": self.current_title, "selector": selector}
@@ -454,7 +523,7 @@ class BrowserSession:
                 await self.page.wait_for_load_state("domcontentloaded", timeout=5000)
             except Exception:
                 pass
-            await asyncio.sleep(0.5)
+            await self._settle()
             self.current_url = self.page.url
             self.current_title = await self.page.title()
             return {

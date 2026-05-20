@@ -318,6 +318,25 @@ async def internal_browser_action(
     # are enforced per user).
     session = await browser_manager.get_or_create(real_conv_id, user_id=body.user_id)
 
+    # Apply the user's screenshot tunables to the session before dispatch:
+    #   - `screenshot_delay_ms` → post-action settle wait before capture
+    #     (replaces the pre-OC sandbox `browser_daemon.py`'s screenshot_delay
+    #     in the host-Playwright path)
+    #   - `screenops_image_scale` → JPEG resize percentage applied right
+    #     before base64-encoding the screenshot, cutting vision tokens for
+    #     the auto-attach path on every browser action
+    # Lookup is cheap (the settings row is singleton id=1, often cached
+    # in SQLAlchemy's identity map for the request).
+    try:
+        from app.api.settings import get_active_llm_settings
+        from app.db.database import async_session_maker
+        async with async_session_maker() as _llm_session:
+            _llm = await get_active_llm_settings(_llm_session)
+        session.settle_delay_ms = int(_llm.get("screenshot_delay_ms", 500) or 500)
+        session.image_scale_pct = int(_llm.get("screenops_image_scale", 100) or 100)
+    except Exception as exc:
+        logger.warning("browser_action_settings_lookup_failed", error=str(exc))
+
     action = body.action.lower()
     result: dict = {}
     try:
