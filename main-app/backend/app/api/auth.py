@@ -2,6 +2,7 @@
 Authentication API — register, login (email / LDAP / Azure AD / Google), refresh, logout, user management.
 """
 
+import asyncio
 from asyncio import to_thread
 from datetime import datetime, timedelta
 from typing import Optional
@@ -76,7 +77,7 @@ class InviteUserRequest(BaseModel):
     timezone: Optional[str] = None
     manager_id: Optional[str] = None
     employee_id: Optional[str] = None
-    max_products: Optional[int] = Field(None, ge=0, le=1000)
+    max_teams: Optional[int] = Field(None, ge=0, le=1000)
     max_managed_users: Optional[int] = Field(None, ge=0, le=10000)
 
 
@@ -91,7 +92,7 @@ class AddUserRequest(BaseModel):
     timezone: Optional[str] = None
     manager_id: Optional[str] = None
     employee_id: Optional[str] = None
-    max_products: Optional[int] = Field(None, ge=0, le=1000)
+    max_teams: Optional[int] = Field(None, ge=0, le=1000)
     max_managed_users: Optional[int] = Field(None, ge=0, le=10000)
 
 
@@ -104,7 +105,7 @@ class AddLdapUserRequest(BaseModel):
     timezone: Optional[str] = None
     manager_id: Optional[str] = None
     employee_id: Optional[str] = None
-    max_products: Optional[int] = Field(None, ge=0, le=1000)
+    max_teams: Optional[int] = Field(None, ge=0, le=1000)
     max_managed_users: Optional[int] = Field(None, ge=0, le=10000)
     tenant_id: Optional[str] = None
 
@@ -113,8 +114,8 @@ class UpdateUserRoleRequest(BaseModel):
     role: str = Field(...)
 
 
-class UpdateUserMaxProductsRequest(BaseModel):
-    max_products: Optional[int] = Field(None, ge=0, le=1000)
+class UpdateUserMaxTeamsRequest(BaseModel):
+    max_teams: Optional[int] = Field(None, ge=0, le=1000)
 
 
 class UpdateUserMaxManagedUsersRequest(BaseModel):
@@ -408,6 +409,7 @@ async def _create_session_and_tokens(
     user: User,
     request: Request,
     session: AsyncSession,
+    external_tokens: Optional[dict] = None,
 ) -> dict:
     if user.mfa_enabled and user.mfa_secret_encrypted and not user.force_password_change:
         mfa_token = create_mfa_pending_token(_build_token_payload(user))
@@ -429,11 +431,47 @@ async def _create_session_and_tokens(
         user_agent=request.headers.get("user-agent", "")[:512],
         expires_at=datetime.utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
     )
+    # Store external IdP tokens for MCP extension auth pass-through (Azure AD, etc.)
+    if external_tokens:
+        user_session.external_access_token = external_tokens.get("access_token")
+        user_session.external_id_token = external_tokens.get("id_token")
+        user_session.external_refresh_token = external_tokens.get("refresh_token")
+        user_session.external_token_expires_at = external_tokens.get("expires_at")
+        # Store LDAP credentials (password encrypted) for MCP Basic Auth pass-through
+        if external_tokens.get("ldap_username"):
+            from app.core.encryption import encrypt_value
+            user_session.external_username = external_tokens["ldap_username"]
+            user_session.external_password = encrypt_value(external_tokens["ldap_password"])
     session.add(user_session)
 
     user.last_login_at = datetime.utcnow()
     user.last_login_ip = request.client.host if request.client else None
     user.failed_login_count = 0
+
+    # ── Eager sandbox session initialization (non-blocking) ──
+    # Create a background task to initialize sandbox session for this user.
+    # Uses run_in_executor so the blocking Docker call runs in a thread pool
+    # without freezing the asyncio event loop for other requests.
+    async def _initialize_sandbox_async():
+        try:
+            from app.services.sandbox_manager import get_or_create_session
+            result = await asyncio.wait_for(
+                asyncio.get_event_loop().run_in_executor(
+                    None, get_or_create_session, user.user_id
+                ),
+                timeout=60,
+            )
+            if result:
+                logger.info("sandbox_session_eagerly_initialized_on_login", user_id=user.user_id)
+        except asyncio.TimeoutError:
+            logger.debug("sandbox_eager_init_timeout_on_login", user_id=user.user_id)
+        except Exception as e:
+            logger.warning("sandbox_eager_init_failed_on_login", user_id=user.user_id, error=str(e))
+
+    try:
+        asyncio.create_task(_initialize_sandbox_async())
+    except RuntimeError:
+        pass
 
     return TokenResponse(
         access_token=access_token,
@@ -493,6 +531,7 @@ async def register_tenant(
 
     result = await _create_session_and_tokens(user, request, session)
     logger.info("tenant_registered", tenant_id=tenant.tenant_id, email=user.email)
+
     return result
 
 
@@ -615,6 +654,9 @@ async def login(
                 user = existing_user
                 resolve_reason = "resolved_by_ldap_jit_existing"
             else:
+                if not getattr(tenant, 'auto_provision_enabled', False):
+                    logger.info("ldap_jit_blocked_no_auto_provision", email=email, tenant_id=tenant.tenant_id)
+                    raise HTTPException(status.HTTP_403_FORBIDDEN, "Account not found in Retrace. Contact your administrator for access.")
                 user = User(
                     tenant_id=tenant.tenant_id,
                     email=email,
@@ -683,7 +725,11 @@ async def login(
                          tenant_id=user.tenant_id,
                          details={"provider": "ldap", "resolve": resolve_reason})
         logger.info("unified_login_ldap_success", user_id=user.user_id, email=user.email)
-        return await _create_session_and_tokens(user, request, session)
+        external_tokens = {
+            "ldap_username": user.username or ident,
+            "ldap_password": data.password,
+        }
+        return await _create_session_and_tokens(user, request, session, external_tokens=external_tokens)
 
     # --- Local (email/password) auth ---
     if not user.hashed_password or not verify_password(data.password, user.hashed_password):
@@ -734,7 +780,7 @@ async def refresh_token(
             UserSession.revoked == False,
         )
     )
-    user_session = result.scalar_one_or_none()
+    user_session = result.scalars().first()  # Use first() to handle duplicate sessions gracefully
     if not user_session or user_session.expires_at < datetime.utcnow():
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Session expired or revoked")
 
@@ -745,7 +791,22 @@ async def refresh_token(
     # Revoke old session, create new one (rotation)
     user_session.revoked = True
 
-    return await _create_session_and_tokens(user, request, session)
+    # Carry forward external IdP tokens from old session
+    external_tokens = None
+    if user_session.external_access_token:
+        external_tokens = {
+            "access_token": user_session.external_access_token,
+            "id_token": getattr(user_session, "external_id_token", None),
+            "refresh_token": user_session.external_refresh_token,
+            "expires_at": user_session.external_token_expires_at,
+        }
+    if user_session.external_username:
+        external_tokens = external_tokens or {}
+        external_tokens["ldap_username"] = user_session.external_username
+        from app.core.encryption import decrypt_value
+        external_tokens["ldap_password"] = decrypt_value(user_session.external_password)
+
+    return await _create_session_and_tokens(user, request, session, external_tokens=external_tokens)
 
 
 # ── Logout ────────────────────────────────────────────────────────────
@@ -766,6 +827,15 @@ async def logout(
     )
     for s in result.scalars().all():
         s.revoked = True
+
+    # Stop any running MCP extension subprocesses for this user
+    try:
+        from app.services.mcp_client_service import mcp_client_manager
+        stopped = await mcp_client_manager.stop_user_connections(current_user.user_id)
+        if stopped:
+            logger.info("mcp_connections_stopped_on_logout", user_id=current_user.user_id, count=stopped)
+    except Exception as e:
+        logger.warning("mcp_cleanup_on_logout_failed", error=str(e))
 
     await _log_audit(session, "logout", request, actor_id=current_user.user_id,
                      actor_email=current_user.email, tenant_id=current_user.tenant_id)
@@ -1381,7 +1451,7 @@ async def invite_user(
         force_password_change=force_pw_change,
         password_reset_token=invite_token,
         password_reset_expires=datetime.utcnow() + timedelta(days=7),
-        max_products=data.max_products if current_user.is_admin and data.max_products is not None else None,
+        max_teams=data.max_teams if current_user.is_admin and data.max_teams is not None else None,
         max_managed_users=max_managed_val if data.role == "user_admin" else None,
     )
     session.add(user)
@@ -1481,10 +1551,60 @@ async def add_user(
         force_password_change=force_pw_change,
         password_reset_token=invite_token,
         password_reset_expires=datetime.utcnow() + timedelta(days=7),
-        max_products=data.max_products if current_user.is_admin and data.max_products is not None else None,
+        max_teams=data.max_teams if current_user.is_admin and data.max_teams is not None else None,
         max_managed_users=max_managed_val if data.role == "user_admin" else None,
     )
     session.add(user)
+    await session.flush()
+
+    # Auto-grant access to manager's teams (not all tenant teams)
+    from app.models.team_access import TeamAccess
+    from app.models.team import Team
+    manager_teams_result = await session.execute(
+        select(Team.team_id).where(Team.created_by == manager_id)
+    ) if manager_id else None
+    if manager_teams_result:
+        for (tid,) in manager_teams_result.all():
+            existing_access = await session.execute(
+                select(TeamAccess).where(
+                    TeamAccess.team_id == tid,
+                    TeamAccess.user_id == user.user_id,
+                )
+            )
+            if not existing_access.scalar_one_or_none():
+                session.add(TeamAccess(
+                    team_id=tid,
+                    user_id=user.user_id,
+                    permission="view",
+                    granted_by=current_user.user_id,
+                ))
+    # Auto-install manager's MCP extensions for the new user (not all tenant MCPs)
+    from app.models.mcp_extension import McpExtension
+    from app.models.user_extension import UserExtension
+    if manager_id:
+        manager_exts_result = await session.execute(
+            select(McpExtension.extension_id).where(
+                McpExtension.created_by == manager_id,
+                McpExtension.is_enabled == True,
+            )
+        )
+    else:
+        manager_exts_result = None
+    if manager_exts_result:
+        for (ext_id,) in manager_exts_result.all():
+            existing_ext = await session.execute(
+                select(UserExtension).where(
+                    UserExtension.extension_id == ext_id,
+                    UserExtension.user_id == user.user_id,
+                )
+            )
+            if not existing_ext.scalar_one_or_none():
+                session.add(UserExtension(
+                    extension_id=ext_id,
+                user_id=user.user_id,
+                tenant_id=resolved_tenant_id,
+                is_enabled=True,
+            ))
     await session.flush()
 
     await _log_audit(session, "user_added", request,
@@ -1499,6 +1619,7 @@ async def add_user(
         display_name=user.display_name or user.email,
         invite_token=invite_token,
     )
+
     return {"user": user.to_dict(), "email_sent": email_sent, "email_error": email_error}
 
 
@@ -1577,7 +1698,7 @@ async def add_ldap_user(
         auth_provider="ldap",
         invited_by=current_user.user_id,
         status="active",
-        max_products=data.max_products if current_user.is_admin and data.max_products is not None else None,
+        max_teams=data.max_teams if current_user.is_admin and data.max_teams is not None else None,
         max_managed_users=max_managed_val if data.role == "user_admin" else None,
     )
     session.add(user)
@@ -1628,28 +1749,28 @@ async def update_user_role(
     return user.to_dict()
 
 
-@router.patch("/users/{user_id}/max-products")
-async def update_user_max_products(
+@router.patch("/users/{user_id}/max-teams")
+async def update_user_max_teams(
     user_id: str,
-    data: UpdateUserMaxProductsRequest,
+    data: UpdateUserMaxTeamsRequest,
     request: Request,
     current_user: CurrentUser = Depends(require_role("admin")),
     session: AsyncSession = Depends(get_session),
 ):
-    """Admin only: set how many products a user_admin can create. Null = use tenant default."""
+    """Admin only: set how many teams a user_admin can create. Null = use tenant default."""
     user = await session.get(User, user_id)
     if not user:
         raise HTTPException(404, "User not found")
     if current_user.tenant_id is not None and user.tenant_id != current_user.tenant_id:
         raise HTTPException(404, "User not found")
 
-    user.max_products = data.max_products
+    user.max_teams = data.max_teams
 
-    await _log_audit(session, "max_products_updated", request,
+    await _log_audit(session, "max_teams_updated", request,
                      actor_id=current_user.user_id, actor_email=current_user.email,
                      tenant_id=current_user.tenant_id,
                      target_type="user", target_id=user_id,
-                     details={"max_products": data.max_products})
+                     details={"max_teams": data.max_teams})
 
     return user.to_dict()
 
@@ -1711,11 +1832,11 @@ async def deactivate_user(
         s.revoked = True
         sessions_revoked += 1
 
-    # Revoke all product access
-    from app.models.product_access import ProductAccess
+    # Revoke all team access
+    from app.models.team_access import TeamAccess
     from sqlalchemy import delete as sql_delete
     pa_result = await session.execute(
-        sql_delete(ProductAccess).where(ProductAccess.user_id == user_id)
+        sql_delete(TeamAccess).where(TeamAccess.user_id == user_id)
     )
     access_revoked = pa_result.rowcount
 
@@ -1773,13 +1894,13 @@ async def delete_user(
     _ensure_user_admin_lob_access(current_user, user)
 
     from sqlalchemy import delete as sql_del, update as sql_upd
-    from app.models.product_access import ProductAccess
-    from app.models.product import Product
+    from app.models.team_access import TeamAccess
+    from app.models.team import Team
 
     await session.execute(sql_del(UserSession).where(UserSession.user_id == user_id))
-    await session.execute(sql_del(ProductAccess).where(ProductAccess.user_id == user_id))
+    await session.execute(sql_del(TeamAccess).where(TeamAccess.user_id == user_id))
     await session.execute(sql_del(PasswordHistory).where(PasswordHistory.user_id == user_id))
-    await session.execute(sql_upd(Product).where(Product.created_by == user_id).values(created_by=None))
+    await session.execute(sql_upd(Team).where(Team.created_by == user_id).values(created_by=None))
     await session.delete(user)
 
     await _log_audit(session, "user_deleted", request,
@@ -1849,9 +1970,9 @@ async def bulk_user_action(
                     results["failed"] += 1
                     continue
                 from sqlalchemy import delete as sql_delete
-                from app.models.product_access import ProductAccess
+                from app.models.team_access import TeamAccess
                 await session.execute(sql_delete(UserSession).where(UserSession.user_id == uid))
-                await session.execute(sql_delete(ProductAccess).where(ProductAccess.user_id == uid))
+                await session.execute(sql_delete(TeamAccess).where(TeamAccess.user_id == uid))
                 await session.execute(sql_delete(PasswordHistory).where(PasswordHistory.user_id == uid))
                 await session.delete(target)
             elif action == "resend_invite":
@@ -2066,7 +2187,7 @@ async def force_logout_user(
 
 @router.get("/tenants")
 async def list_tenants(
-    current_user: CurrentUser = Depends(require_role("admin")),
+    current_user: CurrentUser = Depends(require_role("user_admin")),
     session: AsyncSession = Depends(get_session),
 ):
     """List all tenants (global admin only). Tenant admins see only their tenant."""
@@ -2081,7 +2202,7 @@ async def list_tenants(
 @router.get("/tenant/auth")
 async def get_tenant_auth(
     tenant_id: Optional[str] = None,
-    current_user: CurrentUser = Depends(require_role("admin")),
+    current_user: CurrentUser = Depends(require_role("user_admin")),
     session: AsyncSession = Depends(get_session),
 ):
     """Get tenant's auth config. Global admin must pass tenant_id. Tenant admin uses own tenant."""
@@ -2095,8 +2216,9 @@ async def get_tenant_auth(
         "auth_method": tenant.auth_method,
         "domain": tenant.domain,
         "ldap_require_ssl": getattr(tenant, "ldap_require_ssl", False),
-        "max_products_per_user_admin": tenant.max_products_per_user_admin,
+        "max_teams_per_user_admin": tenant.max_teams_per_user_admin,
         "max_managed_users_per_user_admin": getattr(tenant, "max_managed_users_per_user_admin", 50),
+        "auto_provision_enabled": getattr(tenant, "auto_provision_enabled", False),
     }
     if tenant.ldap_config:
         cfg = dict(tenant.ldap_config)
@@ -2122,7 +2244,7 @@ async def get_tenant_auth(
 async def update_tenant_auth(
     data: dict,
     request: Request,
-    current_user: CurrentUser = Depends(require_role("admin")),
+    current_user: CurrentUser = Depends(require_role("user_admin")),
     session: AsyncSession = Depends(get_session),
 ):
     """Update tenant's auth config. Global admin must pass tenant_id. Tenant admin uses own tenant."""
@@ -2166,10 +2288,12 @@ async def update_tenant_auth(
         tenant.mfa_required = data["mfa_required"]
     if "session_timeout_minutes" in data:
         tenant.session_timeout_minutes = data["session_timeout_minutes"]
-    if "max_products_per_user_admin" in data:
-        tenant.max_products_per_user_admin = int(data["max_products_per_user_admin"])
+    if "max_teams_per_user_admin" in data:
+        tenant.max_teams_per_user_admin = int(data["max_teams_per_user_admin"])
     if "max_managed_users_per_user_admin" in data:
         tenant.max_managed_users_per_user_admin = int(data["max_managed_users_per_user_admin"])
+    if "auto_provision_enabled" in data:
+        tenant.auto_provision_enabled = bool(data["auto_provision_enabled"])
     if "ip_allowlist" in data:
         tenant.ip_allowlist = data["ip_allowlist"] if isinstance(data["ip_allowlist"], list) else None
     if "ip_denylist" in data:
@@ -2229,11 +2353,18 @@ async def test_ldap(
     session: AsyncSession = Depends(get_session),
 ):
     """Test LDAP connectivity using the provided configuration."""
+    target_tenant_id = await _resolve_tenant_id(session, current_user, data)
+    tenant = await session.get(Tenant, target_tenant_id)
     ldap_config = data.get("ldap_config", {})
     if not ldap_config or not isinstance(ldap_config, dict):
         raise HTTPException(400, "ldap_config is required")
     if not ldap_config.get("host"):
         raise HTTPException(400, "LDAP host is required")
+
+    # If bind_password is masked, use the real one from stored config
+    if ldap_config.get("bind_password") in (None, "", "********"):
+        if tenant and tenant.ldap_config and tenant.ldap_config.get("bind_password"):
+            ldap_config = {**ldap_config, "bind_password": tenant.ldap_config["bind_password"]}
 
     from app.services.auth.ldap_auth import test_ldap_connection
     result = await test_ldap_connection(ldap_config, raw_password=True)
@@ -2260,62 +2391,40 @@ async def test_azure_ad(
     if not azure_config:
         raise HTTPException(400, "Azure AD config is not set")
 
-    client_id = azure_config.get("client_id", "")
-    client_secret = azure_config.get("client_secret", "")
-    az_tenant_id = azure_config.get("tenant_id", "common")
-
-    if not client_id:
-        raise HTTPException(400, "client_id is required")
-    if not client_secret or client_secret == "********":
+    # If client_secret is masked, use the real one from stored config
+    if azure_config.get("client_secret") in (None, "", "********"):
         if tenant.azure_ad_config and tenant.azure_ad_config.get("client_secret"):
-            client_secret = tenant.azure_ad_config["client_secret"]
-        else:
-            raise HTTPException(400, "client_secret is required")
+            azure_config = {**azure_config, "client_secret": tenant.azure_ad_config["client_secret"]}
 
-    import httpx
-    token_url = f"https://login.microsoftonline.com/{az_tenant_id}/oauth2/v2.0/token"
-    try:
-        async with httpx.AsyncClient(timeout=15) as http:
-            resp = await http.post(token_url, data={
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "scope": "https://graph.microsoft.com/.default",
-                "grant_type": "client_credentials",
-            })
-        if resp.status_code == 200:
-            return {"success": True, "message": "Azure AD credentials validated successfully."}
-        body = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
-        error_desc = body.get("error_description", resp.text[:200])
-        return {"success": False, "message": f"Azure AD returned {resp.status_code}: {error_desc}"}
-    except Exception as exc:
-        raise HTTPException(400, f"Azure AD connection test failed: {exc}")
+    from app.services.auth.azure_ad_auth import test_azure_ad_connection
+    return await test_azure_ad_connection(azure_config)
 
 
-# ── Product Access ────────────────────────────────────────────────────
+# ── Team Access ───────────────────────────────────────────────────────
 
 
-@router.get("/products/{product_id}/access")
-async def list_product_access(
-    product_id: str,
+@router.get("/teams/{team_id}/access")
+async def list_team_access(
+    team_id: str,
     current_user: CurrentUser = Depends(require_role("admin")),
     session: AsyncSession = Depends(get_session),
 ):
-    from app.models.product_access import ProductAccess
+    from app.models.team_access import TeamAccess
     result = await session.execute(
-        select(ProductAccess).where(ProductAccess.product_id == product_id)
+        select(TeamAccess).where(TeamAccess.team_id == team_id)
     )
     return [a.to_dict() for a in result.scalars().all()]
 
 
-@router.post("/products/{product_id}/access", status_code=201)
-async def grant_product_access(
-    product_id: str,
+@router.post("/teams/{team_id}/access", status_code=201)
+async def grant_team_access(
+    team_id: str,
     data: dict,
     request: Request,
     current_user: CurrentUser = Depends(require_role("admin")),
     session: AsyncSession = Depends(get_session),
 ):
-    from app.models.product_access import ProductAccess
+    from app.models.team_access import TeamAccess
     user_id = data.get("user_id")
     permission = data.get("permission", "view")
 
@@ -2327,16 +2436,16 @@ async def grant_product_access(
         raise HTTPException(404, "User not found in your organization")
 
     existing = await session.execute(
-        select(ProductAccess).where(
-            ProductAccess.product_id == product_id,
-            ProductAccess.user_id == user_id,
+        select(TeamAccess).where(
+            TeamAccess.team_id == team_id,
+            TeamAccess.user_id == user_id,
         )
     )
     if existing.scalar_one_or_none():
         raise HTTPException(400, "User already has access")
 
-    access = ProductAccess(
-        product_id=product_id,
+    access = TeamAccess(
+        team_id=team_id,
         user_id=user_id,
         permission=permission,
         granted_by=current_user.user_id,
@@ -2346,26 +2455,26 @@ async def grant_product_access(
     await _log_audit(session, "access_granted", request,
                      actor_id=current_user.user_id, actor_email=current_user.email,
                      tenant_id=current_user.tenant_id,
-                     target_type="product", target_id=product_id,
+                     target_type="team", target_id=team_id,
                      details={"user_id": user_id, "permission": permission})
 
     await session.flush()
     return access.to_dict()
 
 
-@router.delete("/products/{product_id}/access/{user_id}")
-async def revoke_product_access(
-    product_id: str,
+@router.delete("/teams/{team_id}/access/{user_id}")
+async def revoke_team_access(
+    team_id: str,
     user_id: str,
     request: Request,
     current_user: CurrentUser = Depends(require_role("admin")),
     session: AsyncSession = Depends(get_session),
 ):
-    from app.models.product_access import ProductAccess
+    from app.models.team_access import TeamAccess
     result = await session.execute(
-        select(ProductAccess).where(
-            ProductAccess.product_id == product_id,
-            ProductAccess.user_id == user_id,
+        select(TeamAccess).where(
+            TeamAccess.team_id == team_id,
+            TeamAccess.user_id == user_id,
         )
     )
     access = result.scalar_one_or_none()
@@ -2377,7 +2486,7 @@ async def revoke_product_access(
     await _log_audit(session, "access_revoked", request,
                      actor_id=current_user.user_id, actor_email=current_user.email,
                      tenant_id=current_user.tenant_id,
-                     target_type="product", target_id=product_id,
+                     target_type="team", target_id=team_id,
                      details={"user_id": user_id})
 
     return {"message": "Access revoked"}
@@ -2492,6 +2601,9 @@ async def login_ldap(
             user_result = await session.execute(select(User).where(User.email == email))
             user = user_result.scalar_one_or_none()
             if not user:
+                if not getattr(tenant, 'auto_provision_enabled', False):
+                    logger.info("ldap_jit_blocked_no_auto_provision", email=email, tenant_id=tenant.tenant_id)
+                    raise HTTPException(status.HTTP_403_FORBIDDEN, "Account not found in Retrace. Contact your administrator for access.")
                 user = User(
                     tenant_id=tenant.tenant_id,
                     email=email,
@@ -2524,7 +2636,15 @@ async def login_ldap(
                      tenant_id=tenant.tenant_id,
                      details={"provider": provider})
 
-    return await _create_session_and_tokens(user, request, session)
+    # Build external tokens for LDAP credential pass-through
+    external_tokens = None
+    if provider == "ldap":
+        external_tokens = {
+            "ldap_username": user.username or data.username,
+            "ldap_password": data.password,
+        }
+
+    return await _create_session_and_tokens(user, request, session, external_tokens=external_tokens)
 
 
 # ── Enterprise Auth: Azure AD ────────────────────────────────────────
@@ -2559,6 +2679,9 @@ async def login_azure_ad(
     user_result = await session.execute(select(User).where(User.email == azure_user.email))
     user = user_result.scalar_one_or_none()
     if not user:
+        if not getattr(tenant, 'auto_provision_enabled', False):
+            logger.info("azure_ad_jit_blocked_no_auto_provision", email=azure_user.email, tenant_id=tenant.tenant_id)
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Account not found in Retrace. Contact your administrator for access.")
         user = User(
             tenant_id=tenant.tenant_id,
             email=azure_user.email,
@@ -2582,7 +2705,16 @@ async def login_azure_ad(
                      actor_email=azure_user.email, tenant_id=tenant.tenant_id,
                      details={"provider": "azure_ad"})
 
-    return await _create_session_and_tokens(user, request, session)
+    # Capture Azure AD tokens for MCP extension auth pass-through
+    from datetime import timedelta
+    external_tokens = {
+        "access_token": azure_user.access_token,
+        "id_token": azure_user.id_token,
+        "refresh_token": azure_user.refresh_token,
+        "expires_at": datetime.utcnow() + timedelta(seconds=azure_user.expires_in) if azure_user.expires_in else None,
+    }
+
+    return await _create_session_and_tokens(user, request, session, external_tokens=external_tokens)
 
 
 @router.get("/azure-ad/authorize")
@@ -2626,6 +2758,9 @@ async def login_google(
     user_result = await session.execute(select(User).where(User.email == google_user.email))
     user = user_result.scalar_one_or_none()
     if not user:
+        if not getattr(tenant, 'auto_provision_enabled', False):
+            logger.info("google_jit_blocked_no_auto_provision", email=google_user.email, tenant_id=tenant.tenant_id)
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Account not found in Retrace. Contact your administrator for access.")
         user = User(
             tenant_id=tenant.tenant_id,
             email=google_user.email,
@@ -2722,6 +2857,10 @@ async def remote_login(
             )
             session.add(tenant)
             await session.flush()
+
+        if not getattr(tenant, 'auto_provision_enabled', False):
+            logger.info("supabase_jit_blocked_no_auto_provision", email=email)
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Account not found in Retrace. Contact your administrator for access.")
 
         from uuid import uuid4
         user = User(

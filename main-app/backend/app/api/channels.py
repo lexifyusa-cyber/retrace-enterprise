@@ -24,13 +24,13 @@ router = APIRouter()
 
 
 class ChannelConnectionCreate(BaseModel):
-    product_id: str
+    team_id: str
     platform: str = Field(..., pattern="^(slack|teams)$")
     channel_name: str = Field(..., min_length=1, max_length=255)
     channel_id: str = Field(..., min_length=1)
     # Slack: plain bot token string. Teams: JSON with client_id, client_secret, tenant_id
     bot_token: str = Field(..., min_length=1)
-    team_id: Optional[str] = None
+    ms_team_id: Optional[str] = None
     auto_respond: bool = False
     ingest_history: bool = True
 
@@ -43,11 +43,11 @@ class ChannelConnectionUpdate(BaseModel):
 
 class ChannelConnectionResponse(BaseModel):
     connection_id: str
-    product_id: str
+    team_id: str
     platform: str
     channel_name: str
     channel_id: str
-    team_id: Optional[str] = None
+    ms_team_id: Optional[str] = None
     is_active: bool
     auto_respond: bool
     ingest_history: bool
@@ -60,15 +60,15 @@ class ChannelConnectionResponse(BaseModel):
 
 @router.get("/connections", response_model=list[ChannelConnectionResponse])
 async def list_connections(
-    product_id: Optional[str] = None,
+    team_id: Optional[str] = None,
     session: AsyncSession = Depends(get_session),
     current_user: CurrentUser = Depends(require_role("admin")),
 ):
     query = select(ChannelConnection)
     if current_user.tenant_id:
         query = query.where(ChannelConnection.tenant_id == current_user.tenant_id)
-    if product_id:
-        query = query.where(ChannelConnection.product_id == product_id)
+    if team_id:
+        query = query.where(ChannelConnection.team_id == team_id)
     result = await session.execute(query)
     return [
         ChannelConnectionResponse(**c.to_dict()) for c in result.scalars().all()
@@ -83,12 +83,12 @@ async def create_connection(
 ):
     conn = ChannelConnection(
         tenant_id=current_user.tenant_id,
-        product_id=data.product_id,
+        team_id=data.team_id,
         platform=data.platform,
         channel_name=data.channel_name,
         channel_id=data.channel_id,
         bot_token_encrypted=data.bot_token,
-        team_id=data.team_id,
+        ms_team_id=data.ms_team_id,
         auto_respond=data.auto_respond,
         ingest_history=data.ingest_history,
         is_active=True,

@@ -3,70 +3,88 @@
 @tailwind utilities;
 
 /* ===================================================================
-   THEME DEFINITIONS
+   THEME DEFINITIONS — Editorial "Digital Curator" Design System
    =================================================================== */
 
-/* Dark Theme (default — Nord-inspired) */
+/* Light Theme (default — Warm Editorial) */
 :root,
-[data-theme="dark"] {
-  --rt-bg: #1e2128;
-  --rt-bg-light: #252932;
-  --rt-bg-lighter: #2e3440;
-  --rt-surface: #3b4252;
-  --rt-border: #434c5e;
-  --rt-text: #eceff4;
-  --rt-text-muted: #9ca3af;
-  --rt-primary: #88c0d0;
-  --rt-primary-dark: #5e81ac;
-  --rt-accent: #bf616a;
-  --rt-success: #a3be8c;
-  --rt-warning: #ebcb8b;
-  --rt-toast-bg: #3b4252;
-  --rt-toast-text: #eceff4;
-  --rt-toast-border: #434c5e;
-  --rt-shadow: rgba(0,0,0,0.4);
-  color-scheme: dark;
-}
-
-/* Light Theme (clean, corporate white) */
 [data-theme="light"] {
-  --rt-bg: #f8f9fc;
-  --rt-bg-light: #ffffff;
-  --rt-bg-lighter: #f1f3f9;
-  --rt-surface: #e8ecf4;
-  --rt-border: #d1d9e6;
-  --rt-text: #1a1d23;
-  --rt-text-muted: #64748b;
-  --rt-primary: #3b82f6;
-  --rt-primary-dark: #2563eb;
-  --rt-accent: #ef4444;
-  --rt-success: #22c55e;
-  --rt-warning: #f59e0b;
+  --rt-bg: #f4efea;
+  --rt-bg-light: #efe9e3;
+  --rt-bg-lighter: #e8e1da;
+  --rt-surface: #ffffff;
+  --rt-border: rgba(216, 195, 173, 0.2);
+  --rt-text: #1b1b1e;
+  --rt-text-muted: #534434;
+  --rt-primary: #855300;
+  --rt-primary-dark: #653e00;
+  --rt-primary-container: #f59e0b;
+  --rt-primary-fixed: #ffddb8;
+  --rt-accent: #ba1a1a;
+  --rt-success: #1b7d3a;
+  --rt-warning: #855300;
   --rt-toast-bg: #ffffff;
-  --rt-toast-text: #1a1d23;
-  --rt-toast-border: #d1d9e6;
-  --rt-shadow: rgba(0,0,0,0.08);
+  --rt-toast-text: #1b1b1e;
+  --rt-toast-border: rgba(216, 195, 173, 0.2);
+  --rt-shadow: rgba(133, 83, 0, 0.06);
+  --rt-on-surface-variant: #534434;
+  --rt-outline-variant: #d8c3ad;
+  --rt-surface-container-high: #eae7eb;
+  --rt-surface-container-low: #f6f2f7;
   color-scheme: light;
 }
 
-/* Colorful Theme (vibrant, gradient-heavy) */
+/* Dark Theme (Warm Dark Editorial) */
+[data-theme="dark"] {
+  --rt-bg: #1a1714;
+  --rt-bg-light: #221f1b;
+  --rt-bg-lighter: #2a2621;
+  --rt-surface: #2e2a25;
+  --rt-border: rgba(216, 195, 173, 0.12);
+  --rt-text: #ede0d4;
+  --rt-text-muted: #a89584;
+  --rt-primary: #ffb95f;
+  --rt-primary-dark: #f59e0b;
+  --rt-primary-container: #f59e0b;
+  --rt-primary-fixed: #4a3520;
+  --rt-accent: #ffb4ab;
+  --rt-success: #7ddc8e;
+  --rt-warning: #ffb95f;
+  --rt-toast-bg: #2e2a25;
+  --rt-toast-text: #ede0d4;
+  --rt-toast-border: rgba(216, 195, 173, 0.12);
+  --rt-shadow: rgba(0, 0, 0, 0.3);
+  --rt-on-surface-variant: #a89584;
+  --rt-outline-variant: #534434;
+  --rt-surface-container-high: #3a3530;
+  --rt-surface-container-low: #221f1b;
+  color-scheme: dark;
+}
+
+/* Colorful Theme (Amber & Gold Editorial) */
 [data-theme="colorful"] {
-  --rt-bg: #0f0a1a;
-  --rt-bg-light: #16102b;
-  --rt-bg-lighter: #1e1538;
-  --rt-surface: #2a2045;
-  --rt-border: #3d2f66;
-  --rt-text: #f0eeff;
-  --rt-text-muted: #a898d4;
-  --rt-primary: #a78bfa;
-  --rt-primary-dark: #7c3aed;
-  --rt-accent: #fb7185;
+  --rt-bg: #1c1408;
+  --rt-bg-light: #261c0d;
+  --rt-bg-lighter: #302413;
+  --rt-surface: #3a2d1a;
+  --rt-border: rgba(255, 185, 95, 0.15);
+  --rt-text: #ffecd4;
+  --rt-text-muted: #c4a77d;
+  --rt-primary: #f59e0b;
+  --rt-primary-dark: #d48806;
+  --rt-primary-container: #f59e0b;
+  --rt-primary-fixed: #4a3000;
+  --rt-accent: #ff6b6b;
   --rt-success: #34d399;
   --rt-warning: #fbbf24;
-  --rt-toast-bg: #2a2045;
-  --rt-toast-text: #f0eeff;
-  --rt-toast-border: #3d2f66;
-  --rt-shadow: rgba(0,0,0,0.5);
+  --rt-toast-bg: #3a2d1a;
+  --rt-toast-text: #ffecd4;
+  --rt-toast-border: rgba(255, 185, 95, 0.15);
+  --rt-shadow: rgba(0, 0, 0, 0.4);
+  --rt-on-surface-variant: #c4a77d;
+  --rt-outline-variant: #5c4a2e;
+  --rt-surface-container-high: #4a3d28;
+  --rt-surface-container-low: #261c0d;
   color-scheme: dark;
 }
 
@@ -87,17 +105,18 @@
 
   /* Custom scrollbar */
   ::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
+    width: 6px;
+    height: 6px;
   }
 
   ::-webkit-scrollbar-track {
-    background: var(--rt-bg-light);
+    background: transparent;
   }
 
   ::-webkit-scrollbar-thumb {
-    background: var(--rt-border);
+    background: var(--rt-outline-variant);
     border-radius: 9999px;
+    opacity: 0.5;
   }
 
   ::-webkit-scrollbar-thumb:hover {
@@ -106,35 +125,51 @@
 }
 
 /* ===================================================================
-   COMPONENT STYLES
+   EDITORIAL COMPONENT STYLES
    =================================================================== */
 
 @layer components {
+  /* Editorial shadow — warm amber tint */
+  .editorial-shadow {
+    box-shadow: 0 20px 40px var(--rt-shadow);
+  }
+
+  .editorial-shadow-sm {
+    box-shadow: 0 8px 20px var(--rt-shadow);
+  }
+
+  .editorial-shadow-hover {
+    box-shadow: 0 25px 50px var(--rt-shadow);
+  }
+
   .btn {
-    @apply px-4 py-2 rounded-lg font-medium transition-all duration-200;
+    @apply px-5 py-2.5 rounded-full font-semibold text-sm transition-all duration-200;
     @apply focus:outline-none focus:ring-2 focus:ring-offset-2;
     --tw-ring-offset-color: var(--rt-bg);
   }
 
   .btn-primary {
     @apply btn;
-    background-color: var(--rt-primary);
-    color: var(--rt-bg);
-    --tw-ring-color: var(--rt-primary);
+    background-color: var(--rt-primary-container);
+    color: #2a1700;
+    --tw-ring-color: var(--rt-primary-container);
   }
   .btn-primary:hover {
-    opacity: 0.9;
+    background-color: var(--rt-primary);
+    color: white;
+    transform: scale(1.02);
   }
 
   .btn-secondary {
-    @apply btn border;
+    @apply btn;
     background-color: var(--rt-surface);
     color: var(--rt-text);
-    border-color: var(--rt-border);
-    --tw-ring-color: var(--rt-border);
+    box-shadow: 0 0 0 1px var(--rt-outline-variant);
+    --tw-ring-color: var(--rt-outline-variant);
   }
   .btn-secondary:hover {
-    background-color: var(--rt-border);
+    background-color: var(--rt-bg-lighter);
+    transform: scale(1.02);
   }
 
   .btn-danger {
@@ -145,89 +180,125 @@
   }
   .btn-danger:hover {
     opacity: 0.9;
+    transform: scale(1.02);
   }
 
   .card {
-    background-color: var(--rt-bg-light);
-    border: 1px solid var(--rt-border);
-    @apply rounded-xl p-6;
+    background-color: var(--rt-surface);
+    @apply rounded-2xl p-6;
+    box-shadow: 0 20px 40px var(--rt-shadow);
   }
 
   .input {
-    @apply w-full px-4 py-2 rounded-lg transition-all duration-200;
-    background-color: var(--rt-surface);
-    border: 1px solid var(--rt-border);
+    @apply w-full px-4 py-2.5 rounded-xl transition-all duration-200;
+    background-color: var(--rt-bg-lighter);
+    border: 1px solid transparent;
     color: var(--rt-text);
-    --tw-ring-color: var(--rt-primary);
+    --tw-ring-color: var(--rt-primary-container);
   }
   .input::placeholder {
     color: var(--rt-text-muted);
+    opacity: 0.6;
   }
   .input:focus {
     @apply outline-none ring-2 border-transparent;
   }
 
   .label {
-    @apply block text-sm font-medium mb-2;
+    @apply block text-xs font-semibold mb-2 uppercase tracking-wider;
     color: var(--rt-text-muted);
   }
 
   .badge {
-    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
+    @apply inline-flex items-center px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider;
   }
 
   .badge-success {
     @apply badge;
-    background-color: color-mix(in srgb, var(--rt-success) 20%, transparent);
+    background-color: rgba(27, 125, 58, 0.1);
     color: var(--rt-success);
   }
 
   .badge-warning {
     @apply badge;
-    background-color: color-mix(in srgb, var(--rt-warning) 20%, transparent);
+    background-color: rgba(245, 158, 11, 0.15);
     color: var(--rt-warning);
   }
 
   .badge-error {
     @apply badge;
-    background-color: color-mix(in srgb, var(--rt-accent) 20%, transparent);
+    background-color: rgba(186, 26, 26, 0.1);
     color: var(--rt-accent);
   }
 
   .badge-info {
     @apply badge;
-    background-color: color-mix(in srgb, var(--rt-primary) 20%, transparent);
+    background-color: rgba(133, 83, 0, 0.1);
     color: var(--rt-primary);
+  }
+
+  /* Material Symbols helper */
+  .material-symbols-outlined {
+    font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+  }
+
+  /* Tinted icon orb — editorial "jewelry" style */
+  .icon-orb {
+    @apply w-12 h-12 rounded-full flex items-center justify-center;
+    background-color: rgba(255, 221, 184, 0.3);
+  }
+
+  .icon-orb-sm {
+    @apply w-9 h-9 rounded-full flex items-center justify-center;
+    background-color: rgba(255, 221, 184, 0.3);
+  }
+
+  /* Ghost border — barely visible boundary */
+  .ghost-border {
+    box-shadow: 0 0 0 1px var(--rt-outline-variant);
   }
 }
 
 /* ===================================================================
-   COLORFUL THEME — Extra gradient flair
+   DARK THEME — Override card & button styles
+   =================================================================== */
+
+[data-theme="dark"] .card {
+  background-color: var(--rt-bg-light);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+}
+
+[data-theme="dark"] .btn-primary {
+  background-color: var(--rt-primary-container);
+  color: #2a1700;
+}
+[data-theme="dark"] .btn-primary:hover {
+  background-color: var(--rt-primary);
+  color: #2a1700;
+}
+
+[data-theme="dark"] .icon-orb,
+[data-theme="dark"] .icon-orb-sm {
+  background-color: rgba(255, 185, 95, 0.15);
+}
+
+/* ===================================================================
+   COLORFUL THEME — Amber glow effects
    =================================================================== */
 
 [data-theme="colorful"] .card {
   background: linear-gradient(135deg, var(--rt-bg-light), var(--rt-bg-lighter));
-  border-color: var(--rt-border);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
 }
 
 [data-theme="colorful"] .btn-primary {
-  background: linear-gradient(135deg, #a78bfa, #7c3aed);
-  color: white;
+  background: linear-gradient(135deg, #f59e0b, #d48806);
+  color: #2a1700;
 }
 
-[data-theme="colorful"] .input {
-  background: rgba(42, 32, 69, 0.8);
-  border-color: var(--rt-border);
-}
-
-/* Light theme prose adjustments */
-[data-theme="light"] .prose code {
-  background-color: var(--rt-surface);
-}
-
-[data-theme="light"] .prose pre {
-  background-color: var(--rt-surface);
-  color: var(--rt-text);
+[data-theme="colorful"] .icon-orb,
+[data-theme="colorful"] .icon-orb-sm {
+  background-color: rgba(245, 158, 11, 0.15);
 }
 
 /* ===================================================================
@@ -249,7 +320,7 @@
 [data-theme="light"] .text-gray-300    { color: #374151 !important; }
 [data-theme="light"] .text-gray-400    { color: #4b5563 !important; }
 
-/* --- Muted icon variants: -400/60 opacity → stronger for light bg --- */
+/* --- Muted icon variants --- */
 [data-theme="light"] .text-emerald-400\/60 { color: rgba(4,120,87,0.7) !important; }
 [data-theme="light"] .text-amber-400\/60   { color: rgba(180,83,9,0.7) !important; }
 [data-theme="light"] .text-blue-400\/60    { color: rgba(29,78,216,0.7) !important; }
@@ -258,7 +329,7 @@
 [data-theme="light"] .text-indigo-400\/60  { color: rgba(67,56,202,0.7) !important; }
 [data-theme="light"] .text-orange-400\/60  { color: rgba(194,65,12,0.7) !important; }
 
-/* --- Badge backgrounds: increase opacity from /15 to /12 for contrast --- */
+/* --- Badge backgrounds --- */
 [data-theme="light"] .bg-emerald-500\/15 { background-color: rgba(16,185,129,0.12) !important; }
 [data-theme="light"] .bg-amber-500\/15   { background-color: rgba(245,158,11,0.15) !important; }
 [data-theme="light"] .bg-blue-500\/15    { background-color: rgba(59,130,246,0.12) !important; }
@@ -275,7 +346,7 @@
 [data-theme="light"] .hover\:bg-indigo-500\/15:hover   { background-color: rgba(99,102,241,0.12) !important; }
 [data-theme="light"] .hover\:bg-orange-500\/15:hover   { background-color: rgba(249,115,22,0.12) !important; }
 
-/* --- Hover text colors: darken for light --- */
+/* --- Hover text colors --- */
 [data-theme="light"] .hover\:text-emerald-400:hover { color: #047857 !important; }
 [data-theme="light"] .hover\:text-blue-400:hover    { color: #1d4ed8 !important; }
 [data-theme="light"] .hover\:text-red-400:hover     { color: #b91c1c !important; }
@@ -283,30 +354,17 @@
 [data-theme="light"] .hover\:text-indigo-400:hover   { color: #4338ca !important; }
 [data-theme="light"] .hover\:text-orange-400:hover   { color: #c2410c !important; }
 
-/* --- Code/terminal output blocks in light theme (use theme surface so text is visible) --- */
-[data-theme="light"] .bg-\[\#0d1117\] { background-color: var(--rt-surface) !important; }
-[data-theme="light"] .bg-\[\#1e293b\] { background-color: var(--rt-surface) !important; }
+/* --- Code blocks --- */
+[data-theme="light"] .bg-\[\#0d1117\] { background-color: var(--rt-bg-lighter) !important; }
+[data-theme="light"] .bg-\[\#1e293b\] { background-color: var(--rt-bg-lighter) !important; }
 
 /* --- Primary opacity backgrounds --- */
-[data-theme="light"] .bg-rt-primary\/10 { background-color: rgba(59,130,246,0.08) !important; }
-[data-theme="light"] .bg-rt-primary\/5  { background-color: rgba(59,130,246,0.05) !important; }
-
-/* --- Gradient accent for command center top bar --- */
-[data-theme="light"] .from-rt-primary { --tw-gradient-from: #3b82f6 !important; }
-
-/* --- Extra opacity variants used in some components --- */
-[data-theme="light"] .bg-emerald-500\/10 { background-color: rgba(16,185,129,0.1) !important; }
-[data-theme="light"] .bg-emerald-500\/20 { background-color: rgba(16,185,129,0.15) !important; }
-[data-theme="light"] .hover\:bg-emerald-500\/20:hover { background-color: rgba(16,185,129,0.15) !important; }
-
-/* --- Brand gradient text: darken for light theme readability --- */
-[data-theme="light"] .from-indigo-400 { --tw-gradient-from: #4338ca !important; }
-[data-theme="light"] .via-purple-400  { --tw-gradient-via: #7e22ce !important; }
-[data-theme="light"] .to-violet-400   { --tw-gradient-to: #6d28d9 !important; }
+[data-theme="light"] .bg-rt-primary\/10 { background-color: rgba(133,83,0,0.08) !important; }
+[data-theme="light"] .bg-rt-primary\/5  { background-color: rgba(133,83,0,0.05) !important; }
 
 /* --- Shadow adjustments for light theme cards --- */
-[data-theme="light"] .shadow-xl { box-shadow: 0 20px 25px -5px rgba(0,0,0,0.06), 0 8px 10px -6px rgba(0,0,0,0.04) !important; }
-[data-theme="light"] .shadow-lg { box-shadow: 0 10px 15px -3px rgba(0,0,0,0.06), 0 4px 6px -4px rgba(0,0,0,0.03) !important; }
+[data-theme="light"] .shadow-xl { box-shadow: 0 20px 40px rgba(133,83,0,0.06) !important; }
+[data-theme="light"] .shadow-lg { box-shadow: 0 10px 25px rgba(133,83,0,0.05) !important; }
 
 /* ===================================================================
    PROSE / MARKDOWN STYLES
@@ -318,7 +376,7 @@
 }
 
 .prose h1, .prose h2, .prose h3, .prose h4 {
-  @apply font-display font-semibold mt-6 mb-4;
+  @apply font-headline font-bold mt-6 mb-4;
   color: var(--rt-text);
 }
 
@@ -339,13 +397,13 @@
 }
 
 .prose code {
-  @apply font-mono text-sm px-1.5 py-0.5 rounded;
-  background-color: var(--rt-surface);
+  @apply font-mono text-sm px-1.5 py-0.5 rounded-lg;
+  background-color: var(--rt-bg-lighter);
 }
 
 .prose pre {
-  @apply font-mono text-sm p-4 rounded-lg overflow-x-auto mb-4;
-  background-color: var(--rt-surface);
+  @apply font-mono text-sm p-4 rounded-xl overflow-x-auto mb-4;
+  background-color: var(--rt-bg-lighter);
 }
 
 .prose pre code {
@@ -359,7 +417,243 @@
 }
 
 .prose blockquote {
-  border-left: 4px solid var(--rt-primary);
+  border-left: 3px solid var(--rt-primary-container);
   color: var(--rt-text-muted);
   @apply pl-4 italic;
+}
+
+/* ===================================================================
+   AGENT CHAT PROSE — ChatGPT/Claude-style markdown rendering
+   =================================================================== */
+
+.prose-agent {
+  color: var(--rt-text);
+  font-size: 15px;
+  line-height: 1.7;
+  max-width: none;
+}
+
+.prose-agent h1, .prose-agent h2, .prose-agent h3, .prose-agent h4 {
+  font-family: 'Inter', sans-serif;
+  font-weight: 600;
+  color: var(--rt-text);
+  letter-spacing: -0.01em;
+}
+
+.prose-agent h1 { font-size: 1.375rem; margin: 1.25rem 0 0.75rem; }
+.prose-agent h2 { font-size: 1.2rem; margin: 1.125rem 0 0.625rem; }
+.prose-agent h3 { font-size: 1.05rem; margin: 1rem 0 0.5rem; }
+
+.prose-agent p {
+  margin-bottom: 0.75rem;
+  line-height: 1.7;
+}
+
+.prose-agent p:last-child {
+  margin-bottom: 0;
+}
+
+.prose-agent ul, .prose-agent ol {
+  margin: 0.5rem 0 0.75rem;
+  padding-left: 1.5rem;
+}
+
+.prose-agent li {
+  margin-bottom: 0.375rem;
+  line-height: 1.6;
+}
+
+.prose-agent li::marker {
+  color: var(--rt-text-muted);
+}
+
+.prose-agent strong {
+  font-weight: 600;
+  color: var(--rt-text);
+}
+
+.prose-agent code {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.8125rem;
+  padding: 0.2rem 0.4rem;
+  border-radius: 0.375rem;
+  background-color: var(--rt-bg-lighter);
+  border: 1px solid var(--rt-border);
+  color: var(--rt-text);
+}
+
+.prose-agent pre {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  padding: 1rem 1.25rem;
+  border-radius: 0.75rem;
+  overflow-x: auto;
+  margin: 0.75rem 0;
+  background-color: var(--rt-bg-lighter);
+  border: 1px solid var(--rt-border);
+}
+
+.prose-agent pre code {
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-size: inherit;
+}
+
+.prose-agent a {
+  color: var(--rt-primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.prose-agent a:hover {
+  opacity: 0.8;
+}
+
+.prose-agent blockquote {
+  border-left: 3px solid var(--rt-primary-container);
+  color: var(--rt-text-muted);
+  padding-left: 1rem;
+  margin: 0.75rem 0;
+  font-style: italic;
+}
+
+.prose-agent table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.75rem 0;
+  font-size: 0.875rem;
+}
+
+.prose-agent th, .prose-agent td {
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--rt-border);
+  text-align: left;
+}
+
+.prose-agent th {
+  background-color: var(--rt-bg-lighter);
+  font-weight: 600;
+}
+
+.prose-agent hr {
+  border: none;
+  border-top: 1px solid var(--rt-border);
+  margin: 1.25rem 0;
+}
+
+/* Light theme prose */
+[data-theme="light"] .prose code {
+  background-color: var(--rt-bg-lighter);
+}
+
+[data-theme="light"] .prose pre {
+  background-color: var(--rt-bg-lighter);
+  color: var(--rt-text);
+}
+
+[data-theme="light"] .prose-agent code {
+  background-color: var(--rt-bg-lighter);
+}
+
+[data-theme="light"] .prose-agent pre {
+  background-color: var(--rt-bg-lighter);
+  color: var(--rt-text);
+}
+
+/* ===================================================================
+   BROWSER PANEL — Glow Animation + Click Indicators
+   =================================================================== */
+
+.browser-glow-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 40;
+  background:
+    linear-gradient(to bottom, rgba(245, 158, 11, 0.12) 0%, transparent 15%),
+    linear-gradient(to top, rgba(245, 158, 11, 0.12) 0%, transparent 15%),
+    linear-gradient(to right, rgba(245, 158, 11, 0.10) 0%, transparent 10%),
+    linear-gradient(to left, rgba(245, 158, 11, 0.10) 0%, transparent 10%);
+  animation: glowPulse 2.5s ease-in-out infinite;
+}
+
+@keyframes glowPulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+.click-dot {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  border-radius: 50%;
+  background: #f59e0b;
+  pointer-events: none;
+  z-index: 50;
+  animation: clickDotFade 0.6s ease-out forwards;
+}
+
+.click-ripple {
+  position: absolute;
+  width: 40px;
+  height: 40px;
+  margin: -20px 0 0 -20px;
+  border-radius: 50%;
+  border: 2px solid #f59e0b;
+  background: transparent;
+  pointer-events: none;
+  z-index: 50;
+  animation: clickRippleExpand 0.6s ease-out forwards;
+}
+
+@keyframes clickDotFade {
+  0% { opacity: 1; transform: scale(1); }
+  100% { opacity: 0; transform: scale(0.5); }
+}
+
+@keyframes clickRippleExpand {
+  0% { opacity: 0.8; transform: scale(0); }
+  100% { opacity: 0; transform: scale(3); }
+}
+
+/* Help Assistant Widget — custom move cursor on entire surface (16×16, hotspot centred) */
+.help-widget,
+.help-widget.help-widget-dragging {
+  cursor: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IiNmNTllMGIiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj48cG9seWxpbmUgcG9pbnRzPSI1IDkgMiAxMiA1IDE1Ii8+PHBvbHlsaW5lIHBvaW50cz0iOSA1IDEyIDIgMTUgNSIvPjxwb2x5bGluZSBwb2ludHM9IjE1IDE5IDEyIDIyIDkgMTkiLz48cG9seWxpbmUgcG9pbnRzPSIxOSA5IDIyIDEyIDE5IDE1Ii8+PGxpbmUgeDE9IjIiIHkxPSIxMiIgeDI9IjIyIiB5Mj0iMTIiLz48bGluZSB4MT0iMTIiIHkxPSIyIiB4Mj0iMTIiIHkyPSIyMiIvPjwvc3ZnPg==") 8 8, move !important;
+}
+
+/* Help Assistant — highlight phrases in the dashboard pitch.
+   Continuous amber shimmer sweep. Bold base weight.
+   Reduced-motion users see a static amber glow instead. */
+@keyframes rtShimmerSweep {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+.rt-shimmer {
+  font-weight: 700;
+  background: linear-gradient(
+    100deg,
+    #000000 0%,
+    #000000 40%,
+    #ffffff 50%,    /* narrow bright flash */
+    #000000 60%,
+    #000000 100%
+  );
+  background-size: 300% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: rtShimmerSweep 4.5s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .rt-shimmer {
+    animation: none;
+    background: none;
+    -webkit-background-clip: initial;
+    background-clip: initial;
+    color: #000000;
+  }
 }

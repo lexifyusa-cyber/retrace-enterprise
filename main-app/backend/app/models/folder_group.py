@@ -22,9 +22,9 @@ class FolderGroup(Base):
         primary_key=True,
         default=lambda: str(uuid4())
     )
-    product_id: Mapped[str] = mapped_column(
+    team_id: Mapped[str] = mapped_column(
         String(36),
-        ForeignKey("products.product_id", ondelete="CASCADE"),
+        ForeignKey("teams.team_id", ondelete="CASCADE"),
         nullable=True  # Temporarily nullable for migration, should be False for new groups
     )
     pod_id: Mapped[str] = mapped_column(
@@ -53,7 +53,7 @@ class FolderGroup(Base):
     )
     
     # Relationships
-    product = relationship("Product", back_populates="folder_groups")
+    team = relationship("Team", back_populates="folder_groups")
     pod = relationship("Pod", back_populates="folder_groups")
     folder_paths = relationship(
         "FolderPath",
@@ -76,7 +76,7 @@ class FolderGroup(Base):
             gtype = "code"
         return {
             "group_id": self.group_id,
-            "product_id": self.product_id,
+            "team_id": self.team_id,
             "pod_id": self.pod_id,
             "group_name": self.group_name,
             "group_type": gtype,
@@ -106,6 +106,14 @@ class FolderPath(Base):
     )
     absolute_path: Mapped[str] = mapped_column(Text, nullable=False)
     scan_recursive: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Optional remote-source connection. NULL = local filesystem (or remote
+    # POD agent path). Non-null = path lives inside the named connection
+    # (SFTP/SMB/S3/Azure) and must be staged via the connector before scan.
+    connection_id: Mapped[Optional[str]] = mapped_column(
+        String(36),
+        ForeignKey("connections.connection_id", ondelete="SET NULL"),
+        nullable=True,
+    )
     file_filters: Mapped[Optional[dict]] = mapped_column(
         JSON,
         default=lambda: {"include": [], "exclude": []}
@@ -126,6 +134,7 @@ class FolderPath(Base):
             "group_id": self.group_id,
             "absolute_path": self.absolute_path,
             "scan_recursive": self.scan_recursive,
+            "connection_id": self.connection_id,
             "file_filters": self.file_filters or {"include": [], "exclude": []},
             "is_active": self.is_active,
             "created_at": self.created_at.isoformat() if self.created_at else None,

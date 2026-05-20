@@ -16,6 +16,7 @@ import structlog
 from app.db.database import get_session
 from app.models.query import QueryHistory
 from app.services.query_service import query_service
+from app.core.security import get_current_user, CurrentUser
 
 logger = structlog.get_logger()
 router = APIRouter()
@@ -24,10 +25,10 @@ router = APIRouter()
 class QueryRequest(BaseModel):
     """Schema for query request."""
     question: str = Field(..., min_length=1, max_length=5000)
-    product_ids: list[str] = Field(
+    team_ids: list[str] = Field(
         ...,
         min_length=1,
-        description="Product IDs to search for context",
+        description="Team IDs to search for context",
     )
 
 
@@ -79,7 +80,7 @@ async def ask_question(
     session: AsyncSession = Depends(get_session)
 ):
     """
-    Ask a natural language question scoped to selected products.
+    Ask a natural language question scoped to selected teams.
 
     Retrieves relevant chunks from the RAG index, assembles context,
     and generates an answer via the configured LLM.
@@ -91,13 +92,13 @@ async def ask_question(
         "Processing query",
         query_id=query_id,
         question=request.question[:100],
-        product_ids=request.product_ids,
+        team_ids=request.team_ids,
     )
 
     try:
         result = await query_service.process_query(
             question=request.question,
-            product_ids=request.product_ids,
+            team_ids=request.team_ids,
             session=session,
         )
 
@@ -107,7 +108,7 @@ async def ask_question(
         history = QueryHistory(
             query_id=query_id,
             question=request.question,
-            scope_filter={"product_ids": request.product_ids},
+            scope_filter={"team_ids": request.team_ids},
             answer=result["answer"],
             confidence_score=result["confidence_score"],
             sources={
@@ -168,13 +169,13 @@ async def ask_question_stream(
     logger.info(
         "Processing streaming query",
         question=request.question[:100],
-        product_ids=request.product_ids,
+        team_ids=request.team_ids,
     )
 
     async def event_generator():
         async for event in query_service.process_query_stream(
             question=request.question,
-            product_ids=request.product_ids,
+            team_ids=request.team_ids,
             session=session,
         ):
             yield event
@@ -193,14 +194,16 @@ async def ask_question_stream(
 @router.get("/history", response_model=list[QueryHistoryResponse])
 async def get_query_history(
     limit: int = 20,
-    session: AsyncSession = Depends(get_session)
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
-    """Get recent query history."""
-    result = await session.execute(
-        select(QueryHistory)
-        .order_by(QueryHistory.created_at.desc())
-        .limit(limit)
-    )
+    """Get recent query history for the current user."""
+    query = select(QueryHistory).order_by(QueryHistory.created_at.desc()).limit(limit)
+    # Scope to current user's queries only
+    if current_user.role != "zero_admin":
+        query = query.where(QueryHistory.user_id == current_user.user_id)
+
+    result = await session.execute(query)
     queries = result.scalars().all()
 
     return [
@@ -219,12 +222,15 @@ async def get_query_history(
 @router.get("/{query_id}", response_model=QueryResponse)
 async def get_query(
     query_id: str,
-    session: AsyncSession = Depends(get_session)
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """Get a specific query by ID."""
-    result = await session.execute(
-        select(QueryHistory).where(QueryHistory.query_id == query_id)
-    )
+    query = select(QueryHistory).where(QueryHistory.query_id == query_id)
+    if current_user.role != "zero_admin":
+        query = query.where(QueryHistory.user_id == current_user.user_id)
+
+    result = await session.execute(query)
     query = result.scalar_one_or_none()
 
     if not query:

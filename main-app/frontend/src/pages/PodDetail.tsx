@@ -3,7 +3,7 @@ import { useParams, Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { ArrowLeft, Server, Folder, FolderOpen, File, RefreshCw } from 'lucide-react'
 import { motion } from 'framer-motion'
-import { podApi, productApi } from '@/utils/api'
+import { podApi, teamApi } from '@/utils/api'
 import { FileEntry } from '@/types'
 
 export default function PodDetail() {
@@ -16,14 +16,14 @@ export default function PodDetail() {
     enabled: !!podId,
   })
   
-  const { data: products = [] } = useQuery({
-    queryKey: ['products'],
-    queryFn: () => productApi.list(),
+  const { data: teams = [] } = useQuery({
+    queryKey: ['teams'],
+    queryFn: () => teamApi.list(),
     enabled: !!podId,
   })
   
-  // Get all folder groups from all products that belong to this POD
-  const groups = products
+  // Get all folder groups from all teams that belong to this POD
+  const groups = teams
     .flatMap(p => p.folder_groups)
     .filter(g => g.pod_id === podId)
   
@@ -230,7 +230,7 @@ export default function PodDetail() {
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-display font-semibold">Folder Groups</h2>
               <Link
-                to="/products"
+                to="/teams"
                 className="text-sm text-rt-primary hover:underline"
               >
                 Manage

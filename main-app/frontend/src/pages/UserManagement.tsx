@@ -9,6 +9,7 @@ import {
 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { useAuth } from '@/context/AuthContext'
+import { isAdmin as checkIsAdmin, assignableRoles } from '@/utils/roles'
 import axios from 'axios'
 import UserDetailDrawer from '@/components/UserDetailDrawer'
 
@@ -44,8 +45,8 @@ function timeAgo(dateStr: string | null | undefined): string {
 
 const ROLE_OPTIONS = [
   { value: 'admin', label: 'Admin', desc: 'Full access to everything', icon: ShieldCheck },
-  { value: 'user_admin', label: 'User Admin', desc: 'Manage users + assigned products', icon: Shield },
-  { value: 'user', label: 'User', desc: 'Access assigned products only', icon: User },
+  { value: 'user_admin', label: 'User Admin', desc: 'Manage users + assigned teams', icon: Shield },
+  { value: 'user', label: 'User', desc: 'Access assigned teams only', icon: User },
 ]
 
 const roleLabel = (r: string) => {
@@ -98,7 +99,7 @@ export default function UserManagement() {
   const [inviteName, setInviteName] = useState('')
   const [inviteRole, setInviteRole] = useState('user')
   const [inviteAuthProvider, setInviteAuthProvider] = useState<'email' | 'ldap' | 'azure_ad'>('email')
-  const [inviteMaxProducts, setInviteMaxProducts] = useState<string>('')
+  const [inviteMaxTeams, setInviteMaxTeams] = useState<string>('')
   const [inviteMaxManagedUsers, setInviteMaxManagedUsers] = useState<string>('')
   const [inviteManagerId, setInviteManagerId] = useState<string>('')
   const [invitePhone, setInvitePhone] = useState('')
@@ -106,8 +107,11 @@ export default function UserManagement() {
   const [inviteTimezone, setInviteTimezone] = useState('')
   const [inviteEmployeeId, setInviteEmployeeId] = useState('')
 
-  const isAdmin = currentUser?.role === 'zero_admin' || currentUser?.role === 'admin' || currentUser?.role === 'super_admin' || currentUser?.role === 'tenant_admin'
-  const isZeroAdmin = currentUser?.role === 'zero_admin'
+  const isAdmin = checkIsAdmin(currentUser?.role)
+  const roleOptions = useMemo(
+    () => ROLE_OPTIONS.filter(r => assignableRoles(currentUser?.role).includes(r.value)),
+    [currentUser?.role]
+  )
 
   const { data: usersResponse, isLoading, refetch, isFetching, dataUpdatedAt } = useQuery({
     queryKey: ['auth', 'users', search, roleFilter, statusFilter, authFilter, sortBy, sortDir, page, perPage],
@@ -140,7 +144,7 @@ export default function UserManagement() {
     mutationFn: async (data: any) => {
       const payload: any = { email: data.email, display_name: data.display_name, role: data.role }
       if (data.auth_provider) payload.auth_provider = data.auth_provider
-      if (data.max_products !== undefined && data.max_products !== null) payload.max_products = data.max_products
+      if (data.max_teams !== undefined && data.max_teams !== null) payload.max_teams = data.max_teams
       if (data.max_managed_users !== undefined && data.max_managed_users !== null) payload.max_managed_users = data.max_managed_users
       if (data.manager_id) payload.manager_id = data.manager_id
       if (data.phone) payload.phone = data.phone
@@ -175,7 +179,7 @@ export default function UserManagement() {
     setInviteName('')
     setInviteRole('user')
     setInviteAuthProvider('email')
-    setInviteMaxProducts('')
+    setInviteMaxTeams('')
     setInviteMaxManagedUsers('')
     setInviteManagerId('')
     setInvitePhone('')
@@ -233,7 +237,12 @@ export default function UserManagement() {
   return (
     <div className="p-6 max-w-[1400px] mx-auto">
       {/* Header - sticky so Refresh stays visible when scrolling */}
-      <div className="sticky top-0 z-10 -mx-6 px-6 py-4 mb-6 bg-rt-bg/95 backdrop-blur-sm border-b border-rt-border/50">
+      <motion.div
+        initial={{ opacity: 0, y: -20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4 }}
+        className="sticky top-0 z-10 -mx-6 px-6 py-4 mb-6 bg-rt-bg/95 backdrop-blur-sm border-b border-rt-border/50"
+      >
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-indigo-500/10 flex items-center justify-center">
@@ -264,9 +273,14 @@ export default function UserManagement() {
             </button>
           </div>
         </div>
-      </div>
+      </motion.div>
 
       {/* Search & Filters bar */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4, delay: 0.1 }}
+      >
       <div className="flex items-center gap-3 mb-4">
         <div className="relative flex-1 max-w-md">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-rt-text-muted" />
@@ -526,6 +540,7 @@ export default function UserManagement() {
           )}
         </div>
       )}
+      </motion.div>
 
       {/* User Detail Drawer */}
       <UserDetailDrawer
@@ -580,12 +595,12 @@ export default function UserManagement() {
                     toast.error('Select a User Admin (LOB owner)')
                     return
                   }
-                  const maxProductsVal = inviteMaxProducts.trim() ? parseInt(inviteMaxProducts, 10) : undefined
+                  const maxTeamsVal = inviteMaxTeams.trim() ? parseInt(inviteMaxTeams, 10) : undefined
                   const maxManagedUsersVal = inviteMaxManagedUsers.trim() ? parseInt(inviteMaxManagedUsers, 10) : undefined
                   addUserMutation.mutate({
                     email: inviteEmail, display_name: inviteName, role: inviteRole,
                     auth_provider: inviteAuthProvider,
-                    max_products: maxProductsVal,
+                    max_teams: maxTeamsVal,
                     max_managed_users: maxManagedUsersVal,
                     manager_id: isAdmin && inviteRole === 'user' ? inviteManagerId : undefined,
                     phone: invitePhone || undefined,
@@ -694,7 +709,7 @@ export default function UserManagement() {
                         Role <span className="text-red-400">*</span>
                       </label>
                       <div className="grid grid-cols-3 gap-2">
-                        {ROLE_OPTIONS.filter(r => isAdmin || r.value !== 'admin').map((r) => (
+                        {roleOptions.map((r) => (
                           <label
                             key={r.value}
                             className={`flex flex-col items-center gap-1.5 p-3 rounded-lg border cursor-pointer transition-all text-center ${
@@ -724,10 +739,10 @@ export default function UserManagement() {
                         <>
                           <div>
                             <label className="text-xs font-medium text-rt-text-muted mb-1.5 block">
-                              Max Products <span className="text-rt-text-muted/60 font-normal">(optional)</span>
+                              Max Teams <span className="text-rt-text-muted/60 font-normal">(optional)</span>
                             </label>
                             <input type="number" min={0} max={1000} placeholder="Use org default" className="input w-full"
-                              value={inviteMaxProducts} onChange={(e) => setInviteMaxProducts(e.target.value)} />
+                              value={inviteMaxTeams} onChange={(e) => setInviteMaxTeams(e.target.value)} />
                           </div>
                           <div>
                             <label className="text-xs font-medium text-rt-text-muted mb-1.5 block">

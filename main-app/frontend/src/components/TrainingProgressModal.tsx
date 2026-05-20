@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, CheckCircle, AlertCircle, Loader2, FolderTree, RefreshCw, ScrollText, StopCircle, FileText, Brain, Shield, FolderSearch } from 'lucide-react'
 import toast from 'react-hot-toast'
-import { productApi } from '@/utils/api'
+import { teamApi } from '@/utils/api'
 
 interface GroupStatus {
   group_id: string
@@ -15,8 +15,8 @@ interface GroupStatus {
 }
 
 interface TrainingStatus {
-  product_id: string
-  product_name: string
+  team_id: string
+  team_name: string
   is_training: boolean
   all_completed: boolean
   any_failed: boolean
@@ -24,7 +24,7 @@ interface TrainingStatus {
 }
 
 interface TrainingProgressModalProps {
-  productId: string
+  teamId: string
   onClose: () => void
 }
 
@@ -39,7 +39,7 @@ const PHASE_CONFIG: Record<string, { label: string; icon: string; color: string;
   completed: { label: 'Done',          icon: '✅', color: 'bg-green-500',   weight: 0 },
 }
 
-export default function TrainingProgressModal({ productId, onClose }: TrainingProgressModalProps) {
+export default function TrainingProgressModal({ teamId, onClose }: TrainingProgressModalProps) {
   const [status, setStatus] = useState<TrainingStatus | null>(null)
   const [isPolling, setIsPolling] = useState(true)
   const [startedAt] = useState(() => new Date())
@@ -51,7 +51,7 @@ export default function TrainingProgressModal({ productId, onClose }: TrainingPr
     if (!confirm('Stop training? This will cancel all in-progress work.')) return
     setIsStopping(true)
     try {
-      await productApi.stopTraining(productId)
+      await teamApi.stopTraining(teamId)
       toast.success('Training stop requested')
     } catch (error: any) {
       toast.error(error?.response?.data?.detail || 'Failed to stop training')
@@ -74,7 +74,7 @@ export default function TrainingProgressModal({ productId, onClose }: TrainingPr
 
   const pollStatus = useCallback(async () => {
     try {
-      const data = await productApi.getTrainingStatus(productId)
+      const data = await teamApi.getTrainingStatus(teamId)
       setStatus(data)
       if (!data.is_training) {
         setIsPolling(false)
@@ -82,7 +82,7 @@ export default function TrainingProgressModal({ productId, onClose }: TrainingPr
     } catch (error) {
       console.error('Error polling training status:', error)
     }
-  }, [productId])
+  }, [teamId])
 
   useEffect(() => {
     if (!isPolling) return
@@ -232,7 +232,7 @@ export default function TrainingProgressModal({ productId, onClose }: TrainingPr
               </h2>
               {status && (
                 <p className="text-sm text-rt-text-muted mt-1">
-                  {status.product_name} · {elapsed} elapsed
+                  {status.team_name} · {elapsed} elapsed
                 </p>
               )}
             </div>

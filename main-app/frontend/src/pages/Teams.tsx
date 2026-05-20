@@ -1,24 +1,25 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Plus, Package, Trash2, Play, X, Folder, FolderOpen, ChevronRight, ChevronDown, Check, FolderTree, FileCode, FileText, Image, TicketIcon, AlertTriangle, Database, Layers, File, Brain, Download, Monitor, Server, Loader2, Mail, Copy, CheckCircle } from 'lucide-react'
+import { Plus, Package, Trash2, Play, X, Folder, FolderOpen, ChevronRight, ChevronDown, Check, FolderTree, FileCode, FileText, Image, TicketIcon, AlertTriangle, Database, Layers, File, Brain, Download, Monitor, Server, Loader2, Mail, Copy, CheckCircle, RefreshCw } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import toast from 'react-hot-toast'
-import { podApi, productApi, groupApi, localFilesApi, emailApi } from '@/utils/api'
-import { Product, Pod, FileEntry, FolderGroup } from '@/types'
+import { podApi, teamApi, groupApi, localFilesApi, emailApi, connectionsApi } from '@/utils/api'
+import { Team, Pod, FileEntry, FolderGroup } from '@/types'
 import TrainingProgressModal from '@/components/TrainingProgressModal'
 import { useAuth } from '@/context/AuthContext'
+import { hasRole } from '@/utils/roles'
 
-export default function Products() {
+export default function Teams() {
   const { user: authUser } = useAuth()
-  const isAdmin = authUser?.role === 'admin' || authUser?.role === 'super_admin' || authUser?.role === 'tenant_admin' || authUser?.role === 'zero_admin'
+  const isAdmin = hasRole(authUser?.role, 'user_admin')
   const [showCreateModal, setShowCreateModal] = useState(false)
-  const [trainingProductId, setTrainingProductId] = useState<string | null>(null)
+  const [trainingTeamId, setTrainingTeamId] = useState<string | null>(null)
   const [showProgressModal, setShowProgressModal] = useState(false)
   const queryClient = useQueryClient()
   
-  const { data: products = [], isLoading } = useQuery({
-    queryKey: ['products'],
-    queryFn: () => productApi.list(),
+  const { data: teams = [], isLoading } = useQuery({
+    queryKey: ['teams'],
+    queryFn: () => teamApi.list(),
   })
   
   const { data: pods = [] } = useQuery({
@@ -27,25 +28,27 @@ export default function Products() {
   })
   
   const deleteMutation = useMutation({
-    mutationFn: productApi.delete,
+    mutationFn: teamApi.delete,
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['products'] })
-      toast.success('Product deleted')
+      queryClient.invalidateQueries({ queryKey: ['teams'] })
+      queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] })
+      toast.success('Team deleted')
     },
     onError: () => {
-      toast.error('Failed to delete product')
+      toast.error('Failed to delete team')
     },
   })
   
   const trainMutation = useMutation({
-    mutationFn: productApi.trainAll,
-    onSuccess: (data: any, productId: string) => {
-      queryClient.invalidateQueries({ queryKey: ['products'] })
-      
-      // Open progress modal for this product
-      setTrainingProductId(productId)
+    mutationFn: teamApi.trainAll,
+    onSuccess: (data: any, teamId: string) => {
+      queryClient.invalidateQueries({ queryKey: ['teams'] })
+      queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] })
+
+      // Open progress modal for this team
+      setTrainingTeamId(teamId)
       setShowProgressModal(true)
-      
+
       toast.success(`Training started for ${data.folder_groups || 0} folder group${(data.folder_groups || 0) === 1 ? '' : 's'}`)
     },
     onError: (error: any) => {
@@ -53,19 +56,24 @@ export default function Products() {
     },
   })
   
-  // Check if any product is currently training (for the floating reopen button)
-  const anyTrainingProduct = products.find(p => 
+  // Check if any team is currently training (for the floating reopen button)
+  const anyTrainingTeam = teams.find(p => 
     p.folder_groups.some(g => g.training_status === 'training')
   )
 
   return (
     <div className="p-6">
-      {/* Header */}
-      <div className="flex items-center justify-between mb-5">
+      {/* Header — fade + slide in (matches Dashboard) */}
+      <motion.div
+        initial={{ opacity: 0, y: -20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4 }}
+        className="flex items-center justify-between mb-5"
+      >
         <div>
-          <h1 className="text-2xl font-display font-bold mb-1">Products</h1>
+          <h1 className="text-2xl font-display font-bold mb-1">Teams</h1>
           <p className="text-rt-text-muted text-sm">
-            Manage products and their training data
+            Manage teams and their training data
           </p>
         </div>
         {isAdmin && (
@@ -74,12 +82,12 @@ export default function Products() {
             className="btn-primary flex items-center gap-2"
           >
             <Plus className="w-4 h-4" />
-            Create Product
+            Create Team
           </button>
         )}
-      </div>
+      </motion.div>
 
-      {/* Products */}
+      {/* Teams */}
       {isLoading ? (
         <div className="space-y-4">
           {[...Array(3)].map((_, i) => (
@@ -89,48 +97,35 @@ export default function Products() {
             </div>
           ))}
         </div>
-      ) : products.length === 0 ? (
-        <motion.div
-          initial={{ opacity: 0, scale: 0.95 }}
-          animate={{ opacity: 1, scale: 1 }}
-          className="card text-center py-16"
-        >
-          <Package className="w-16 h-16 mx-auto text-rt-text-muted mb-4" />
-          <h3 className="text-xl font-display font-semibold mb-2">No Products</h3>
-          <p className="text-rt-text-muted mb-6 max-w-md mx-auto">
-            Create a product to organize your folder groups.
-          </p>
-          <button
-            onClick={() => setShowCreateModal(true)}
-            className="btn-primary"
-          >
-            Create Your First Product
-          </button>
-        </motion.div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {products.map((product) => (
-            <ProductCard
-              key={product.product_id}
-              product={product}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4, delay: 0.1 }}
+          className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4"
+        >
+          {teams.map((team) => (
+            <TeamCard
+              key={team.team_id}
+              team={team}
               pods={pods}
               isAdmin={isAdmin}
               onDelete={() => {
-                if (confirm(`Delete "${product.product_name}" and all its folder groups?`)) {
-                  deleteMutation.mutate(product.product_id)
+                if (confirm(`Delete "${team.team_name}" and all its folder groups?`)) {
+                  deleteMutation.mutate(team.team_id)
                 }
               }}
-              onTrain={() => trainMutation.mutate(product.product_id)}
+              onTrain={() => trainMutation.mutate(team.team_id)}
               isTraining={trainMutation.isPending}
             />
           ))}
-        </div>
+        </motion.div>
       )}
 
       {/* Create Modal */}
       <AnimatePresence>
         {showCreateModal && (
-          <CreateProductModal
+          <CreateTeamModal
             pods={pods}
             onClose={() => setShowCreateModal(false)}
           />
@@ -139,13 +134,13 @@ export default function Products() {
 
       {/* Floating "View Training Progress" button — only when training is actually running */}
       <AnimatePresence>
-        {!showProgressModal && anyTrainingProduct && (
+        {!showProgressModal && anyTrainingTeam && (
           <motion.button
             initial={{ opacity: 0, y: 50 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 50 }}
             onClick={() => {
-              setTrainingProductId(anyTrainingProduct.product_id)
+              setTrainingTeamId(anyTrainingTeam.team_id)
               setShowProgressModal(true)
             }}
             className="fixed bottom-6 right-6 z-40 flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-3 rounded-full shadow-lg transition-colors"
@@ -158,13 +153,13 @@ export default function Products() {
 
       {/* Training Progress Modal */}
       <AnimatePresence>
-        {showProgressModal && trainingProductId && (
+        {showProgressModal && trainingTeamId && (
           <TrainingProgressModal
-            productId={trainingProductId}
+            teamId={trainingTeamId}
             onClose={() => {
               setShowProgressModal(false)
-              setTrainingProductId(null)
-              queryClient.invalidateQueries({ queryKey: ['products'] })
+              setTrainingTeamId(null)
+              queryClient.invalidateQueries({ queryKey: ['teams'] })
             }}
           />
         )}
@@ -173,15 +168,15 @@ export default function Products() {
   )
 }
 
-function ProductCard({
-  product,
+function TeamCard({
+  team,
   pods,
   isAdmin,
   onDelete,
   onTrain,
   isTraining,
 }: {
-  product: Product
+  team: Team
   pods: Pod[]
   isAdmin: boolean
   onDelete: () => void
@@ -197,22 +192,22 @@ function ProductCard({
   const [showUnreadModal, setShowUnreadModal] = useState(false)
   const queryClient = useQueryClient()
 
-  // Email inbox for this product
+  // Email inbox for this team
   const { data: emailConnections = [] } = useQuery<any[]>({
     queryKey: ['email', 'connections'],
     queryFn: () => emailApi.listConnections(),
   })
 
   const { data: inbox } = useQuery<any>({
-    queryKey: ['email', 'inbox', product.product_id],
-    queryFn: () => emailApi.getInbox(product.product_id),
+    queryKey: ['email', 'inbox', team.team_id],
+    queryFn: () => emailApi.getInbox(team.team_id),
   })
 
   const createInboxMutation = useMutation({
     mutationFn: (connectionId: string) =>
-      emailApi.createInbox(product.product_id, { connection_id: connectionId }),
+      emailApi.createInbox(team.team_id, { connection_id: connectionId }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['email', 'inbox', product.product_id] })
+      queryClient.invalidateQueries({ queryKey: ['email', 'inbox', team.team_id] })
       toast.success('AI Email inbox created')
     },
     onError: (error: any) => {
@@ -222,9 +217,9 @@ function ProductCard({
 
   const updateInboxMutation = useMutation({
     mutationFn: (config: Record<string, any>) =>
-      emailApi.updateInbox(product.product_id, { action_config: config }),
+      emailApi.updateInbox(team.team_id, { action_config: config }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['email', 'inbox', product.product_id] })
+      queryClient.invalidateQueries({ queryKey: ['email', 'inbox', team.team_id] })
       toast.success('Email settings updated')
     },
     onError: () => {
@@ -233,9 +228,9 @@ function ProductCard({
   })
 
   const deleteInboxMutation = useMutation({
-    mutationFn: () => emailApi.deleteInbox(product.product_id),
+    mutationFn: () => emailApi.deleteInbox(team.team_id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['email', 'inbox', product.product_id] })
+      queryClient.invalidateQueries({ queryKey: ['email', 'inbox', team.team_id] })
       toast.success('AI Email inbox removed')
     },
     onError: () => {
@@ -244,9 +239,10 @@ function ProductCard({
   })
 
   const removeGroupMutation = useMutation({
-    mutationFn: () => productApi.removeFolderGroup(product.product_id, ''),
+    mutationFn: () => teamApi.removeFolderGroup(team.team_id, ''),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['products'] })
+      queryClient.invalidateQueries({ queryKey: ['teams'] })
+      queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] })
       toast.success('Folder group removed')
     },
     onError: () => {
@@ -270,26 +266,26 @@ function ProductCard({
           <Package className="w-5 h-5 text-rt-primary flex-shrink-0" />
           <div className="flex-1 min-w-0">
             <button
-              onClick={() => product.description && setShowDescription(!showDescription)}
-              className={`text-left ${product.description ? 'cursor-pointer hover:text-rt-primary transition-colors' : ''}`}
+              onClick={() => team.description && setShowDescription(!showDescription)}
+              className={`text-left ${team.description ? 'cursor-pointer hover:text-rt-primary transition-colors' : ''}`}
             >
-              <h2 className="text-lg font-display font-semibold truncate">{product.product_name}</h2>
+              <h2 className="text-lg font-display font-semibold truncate">{team.team_name}</h2>
             </button>
-            {product.description && showDescription && (
+            {team.description && showDescription && (
               <div className="mt-1 text-xs text-rt-text-muted leading-relaxed">
-                {product.description}
+                {team.description}
               </div>
             )}
           </div>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
           <span className="text-xs text-rt-text-muted">
-            {product.folder_groups.length} {product.folder_groups.length === 1 ? 'group' : 'groups'}
+            {team.folder_groups.length} {team.folder_groups.length === 1 ? 'group' : 'groups'}
           </span>
-          {isAdmin && product.folder_groups.length > 0 && (
+          {isAdmin && team.folder_groups.length > 0 && (
             <button
               onClick={onTrain}
-              disabled={isTraining || product.folder_groups.some(g => g.training_status === 'training')}
+              disabled={isTraining || team.folder_groups.some(g => g.training_status === 'training')}
               className="btn-primary text-xs py-1 px-2.5 flex items-center gap-1.5"
             >
               <Play className="w-3 h-3" />
@@ -311,16 +307,16 @@ function ProductCard({
       <div className="mb-3 min-h-0 overflow-y-auto rounded-lg border border-rt-border bg-rt-bg-light/50 flex-shrink-0 max-h-[180px]">
       {(() => {
         // Get stats from any group that has training metadata (logs, files_kept, or legacy files_discovered)
-        const statsGroup = product.folder_groups.find(g => g.metadata && (
+        const statsGroup = team.folder_groups.find(g => g.metadata && (
           Array.isArray(g.metadata.logs) ||
           g.metadata.files_kept != null ||
           g.metadata.files_discovered != null ||
           g.metadata.phase === 'completed'
         ))
         const stats = statsGroup?.metadata as Record<string, any> | undefined
-        const isAnyTraining = product.folder_groups.some(g => g.training_status === 'training')
-        const isAnyCompleted = product.folder_groups.some(g => g.training_status === 'completed' && g.last_trained)
-        const isAnyFailed = product.folder_groups.some(g => g.training_status === 'failed')
+        const isAnyTraining = team.folder_groups.some(g => g.training_status === 'training')
+        const isAnyCompleted = team.folder_groups.some(g => g.training_status === 'completed' && g.last_trained)
+        const isAnyFailed = team.folder_groups.some(g => g.training_status === 'failed')
         
         if (isAnyTraining) {
           return (
@@ -333,11 +329,12 @@ function ProductCard({
                 onClick={async () => {
                   if (!confirm('Stop training?')) return
                   try {
-                    await productApi.stopTraining(product.product_id)
-                    queryClient.invalidateQueries({ queryKey: ['products'] })
+                    await teamApi.stopTraining(team.team_id)
+                    queryClient.invalidateQueries({ queryKey: ['teams'] })
+                    queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] })
                   } catch (e: any) {
                     // If stop fails, force refresh anyway
-                    queryClient.invalidateQueries({ queryKey: ['products'] })
+                    queryClient.invalidateQueries({ queryKey: ['teams'] })
                   }
                 }}
                 className="text-xs px-2 py-1 rounded bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/20 transition-colors"
@@ -349,7 +346,7 @@ function ProductCard({
         }
         
         if (isAnyFailed && !isAnyCompleted) {
-          const failedGroup = product.folder_groups.find(g => g.training_status === 'failed')
+          const failedGroup = team.folder_groups.find(g => g.training_status === 'failed')
           const failMeta = failedGroup?.metadata as Record<string, any> | undefined
           const failLogs = failMeta?.logs as string[] | undefined
           return (
@@ -466,7 +463,7 @@ function ProductCard({
               {/* Training Tree View */}
               {showTrainingTree && (
                 <div className="mt-2">
-                  <TrainingTreeView productId={product.product_id} />
+                  <TrainingTreeView teamId={team.team_id} />
                 </div>
               )}
 
@@ -490,7 +487,7 @@ function ProductCard({
 
       {/* Remote Agents */}
       <div className="mb-3 max-h-[120px] overflow-y-auto flex-shrink-0">
-        <ProductAgents productId={product.product_id} />
+        <TeamAgents teamId={team.team_id} />
       </div>
 
       {/* Training Data — fixed height for consistent card layout */}
@@ -506,7 +503,7 @@ function ProductCard({
           </button>
         </div>
         <div className="max-h-[120px] overflow-y-auto rounded-lg border border-rt-border bg-rt-bg-light/50">
-        {product.folder_groups.length === 0 ? (
+        {team.folder_groups.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center py-4 bg-rt-surface/50 rounded-lg border border-dashed border-rt-border">
             <p className="text-xs text-rt-text-muted mb-2">No training data added yet</p>
             <button
@@ -518,7 +515,7 @@ function ProductCard({
           </div>
         ) : (
           <div className="p-2 space-y-0.5">
-              {product.folder_groups.map((group) => {
+              {team.folder_groups.map((group) => {
                 const pod = pods.find(p => p.pod_id === group.pod_id)
                 return (
                   <div key={group.group_id} className="flex items-center gap-2 py-1 text-xs group/row">
@@ -536,9 +533,10 @@ function ProductCard({
                     <button
                       onClick={() => {
                         if (confirm(`Delete "${group.group_name}"?`)) {
-                          productApi.removeFolderGroup(product.product_id, group.group_id)
+                          teamApi.removeFolderGroup(team.team_id, group.group_id)
                             .then(() => {
-                              queryClient.invalidateQueries({ queryKey: ['products'] })
+                              queryClient.invalidateQueries({ queryKey: ['teams'] })
+                              queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] })
                               toast.success('Removed')
                             })
                             .catch(() => toast.error('Failed'))
@@ -585,7 +583,7 @@ function ProductCard({
               </div>
             ) : !inbox ? (
               <div className="space-y-2">
-                <p className="text-xs text-rt-text-muted">Enable AI Email for this product:</p>
+                <p className="text-xs text-rt-text-muted">Enable AI Email for this team:</p>
                 {emailConnections.map((conn: any) => (
                   <button
                     key={conn.connection_id}
@@ -722,7 +720,7 @@ function ProductCard({
                 {/* Remove */}
                 <button
                   onClick={() => {
-                    if (confirm('Remove AI Email from this product?')) {
+                    if (confirm('Remove AI Email from this team?')) {
                       deleteInboxMutation.mutate()
                     }
                   }}
@@ -741,7 +739,7 @@ function ProductCard({
       <AnimatePresence>
         {showDraftsModal && (
           <EmailDraftsModal
-            productId={product.product_id}
+            teamId={team.team_id}
             onClose={() => setShowDraftsModal(false)}
           />
         )}
@@ -751,7 +749,7 @@ function ProductCard({
       <AnimatePresence>
         {showUnreadModal && (
           <UnreadMailsModal
-            productId={product.product_id}
+            teamId={team.team_id}
             onClose={() => setShowUnreadModal(false)}
           />
         )}
@@ -761,7 +759,7 @@ function ProductCard({
       <AnimatePresence>
         {showAddGroupModal && (
           <AddGroupModal
-            productId={product.product_id}
+            teamId={team.team_id}
             pods={pods}
             onClose={() => setShowAddGroupModal(false)}
           />
@@ -772,10 +770,10 @@ function ProductCard({
 }
 
 function EmailDraftsModal({
-  productId,
+  teamId,
   onClose,
 }: {
-  productId: string
+  teamId: string
   onClose: () => void
 }) {
   const queryClient = useQueryClient()
@@ -783,16 +781,16 @@ function EmailDraftsModal({
   const [editText, setEditText] = useState('')
 
   const { data: drafts = [], isLoading } = useQuery<any[]>({
-    queryKey: ['email', 'drafts', productId],
-    queryFn: () => emailApi.listDrafts(productId),
+    queryKey: ['email', 'drafts', teamId],
+    queryFn: () => emailApi.listDrafts(teamId),
     refetchInterval: 10000,
   })
 
   const approveMutation = useMutation({
     mutationFn: ({ messageId, edited }: { messageId: string; edited?: string }) =>
-      emailApi.approveDraft(productId, messageId, edited),
+      emailApi.approveDraft(teamId, messageId, edited),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['email', 'drafts', productId] })
+      queryClient.invalidateQueries({ queryKey: ['email', 'drafts', teamId] })
       toast.success('Draft approved and sent')
       setEditingId(null)
     },
@@ -802,9 +800,9 @@ function EmailDraftsModal({
   })
 
   const rejectMutation = useMutation({
-    mutationFn: (messageId: string) => emailApi.rejectDraft(productId, messageId),
+    mutationFn: (messageId: string) => emailApi.rejectDraft(teamId, messageId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['email', 'drafts', productId] })
+      queryClient.invalidateQueries({ queryKey: ['email', 'drafts', teamId] })
       toast.success('Draft rejected')
     },
     onError: () => {
@@ -962,15 +960,15 @@ function EmailDraftsModal({
 }
 
 function UnreadMailsModal({
-  productId,
+  teamId,
   onClose,
 }: {
-  productId: string
+  teamId: string
   onClose: () => void
 }) {
   const { data: unread = [], isLoading, error } = useQuery<any[]>({
-    queryKey: ['email', 'unread', productId],
-    queryFn: () => emailApi.listUnread(productId),
+    queryKey: ['email', 'unread', teamId],
+    queryFn: () => emailApi.listUnread(teamId),
     retry: false,
   })
 
@@ -1045,38 +1043,38 @@ function UnreadMailsModal({
   )
 }
 
-function CreateProductModal({
+function CreateTeamModal({
   pods,
   onClose,
 }: {
   pods: Pod[]
   onClose: () => void
 }) {
-  const [productName, setProductName] = useState('')
+  const [teamName, setTeamName] = useState('')
   const [description, setDescription] = useState('')
   const [autoGenerateDescription, setAutoGenerateDescription] = useState(true)
   const queryClient = useQueryClient()
   
   const createMutation = useMutation({
-    mutationFn: productApi.create,
+    mutationFn: teamApi.create,
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['products'] })
-      toast.success('Product created!')
+      queryClient.invalidateQueries({ queryKey: ['teams'] })
+      toast.success('Team created!')
       onClose()
     },
     onError: () => {
-      toast.error('Failed to create product')
+      toast.error('Failed to create team')
     },
   })
   
   const handleCreate = () => {
-    if (!productName.trim()) {
-      toast.error('Please enter a product name')
+    if (!teamName.trim()) {
+      toast.error('Please enter a team name')
       return
     }
     
     createMutation.mutate({
-      product_name: productName,
+      team_name: teamName,
       description: description || undefined,
       auto_generate_description: autoGenerateDescription,
     })
@@ -1097,17 +1095,17 @@ function CreateProductModal({
         className="bg-rt-bg-light border border-rt-border rounded-xl p-6 w-full max-w-lg"
         onClick={(e) => e.stopPropagation()}
       >
-        <h2 className="text-xl font-display font-semibold mb-6">Create Product</h2>
+        <h2 className="text-xl font-display font-semibold mb-6">Create Team</h2>
         
         <div className="space-y-4 mb-6">
           <div>
-            <label className="label">Product Name</label>
+            <label className="label">Team Name</label>
             <input
               type="text"
               className="input"
               placeholder="e.g., My Application"
-              value={productName}
-              onChange={(e) => setProductName(e.target.value)}
+              value={teamName}
+              onChange={(e) => setTeamName(e.target.value)}
             />
           </div>
           
@@ -1115,7 +1113,7 @@ function CreateProductModal({
             <label className="label">Description (optional)</label>
             <textarea
               className="input"
-              placeholder="Describe this product..."
+              placeholder="Describe this team..."
               rows={3}
               value={description}
               onChange={(e) => setDescription(e.target.value)}
@@ -1145,7 +1143,7 @@ function CreateProductModal({
             disabled={createMutation.isPending}
             className="btn-primary"
           >
-            {createMutation.isPending ? 'Creating...' : 'Create Product'}
+            {createMutation.isPending ? 'Creating...' : 'Create Team'}
           </button>
         </div>
       </motion.div>
@@ -1157,6 +1155,10 @@ interface TrainingEntry {
   podId: string
   path: string
   contentType: string
+  // For remote-source entries (SFTP/SMB/S3/Azure): the connection_id used.
+  // null/undefined = local filesystem or remote POD agent.
+  connectionId?: string | null
+  sourceLabel?: string  // e.g. "SFTP: prod" — for display only
 }
 
 const CONTENT_TYPES = [
@@ -1166,23 +1168,49 @@ const CONTENT_TYPES = [
   { value: 'tickets', label: 'Tickets / Issues' },
 ]
 
+const SOURCE_TYPE_LABELS: Record<string, string> = {
+  sftp: 'SFTP',
+  smb: 'SMB',
+  s3: 'S3',
+  azure_blob: 'Azure',
+  dropbox: 'Dropbox',
+  google_drive: 'Google Drive',
+  box: 'Box',
+}
+
 function AddGroupModal({
-  productId,
+  teamId,
   pods,
   onClose,
 }: {
-  productId: string
+  teamId: string
   pods: Pod[]
   onClose: () => void
 }) {
   const localOption = { pod_id: '__local__', pod_name: 'Local' }
   const podOptions = [localOption, ...pods]
-  const [curPod, setCurPod] = useState(podOptions[0]?.pod_id || '__local__')
+
+  // Stored connections (SFTP/SMB/S3/Azure)
+  const { data: connections = [] } = useQuery({
+    queryKey: ['connections'],
+    queryFn: () => connectionsApi.list(),
+    staleTime: 30000,
+  })
+
+  // Source picker is a single select that lists pods + connections
+  // value = "pod:<id>" or "conn:<id>"
+  const [sourceValue, setSourceValue] = useState<string>(`pod:${podOptions[0]?.pod_id || '__local__'}`)
   const [curType, setCurType] = useState('other')
   const [showBrowser, setShowBrowser] = useState(false)
+  const [showRemoteBrowser, setShowRemoteBrowser] = useState(false)
   const [entries, setEntries] = useState<TrainingEntry[]>([])
   const [submitting, setSubmitting] = useState(false)
   const queryClient = useQueryClient()
+
+  const isPodSource = sourceValue.startsWith('pod:')
+  const podId = isPodSource ? sourceValue.slice(4) : '__local__'
+  const connectionId = !isPodSource ? sourceValue.slice(5) : null
+  const selectedConnection = connections.find(c => c.connection_id === connectionId)
 
   const removeEntry = (index: number) => {
     setEntries(prev => prev.filter((_, i) => i !== index))
@@ -1192,9 +1220,26 @@ function AddGroupModal({
     const existing = new Set(entries.map(e => e.path))
     const newEntries = selectedPaths
       .filter(p => !existing.has(p))
-      .map(p => ({ podId: curPod, path: p, contentType: curType }))
+      .map(p => ({ podId, path: p, contentType: curType, connectionId: null }))
     setEntries(prev => [...prev, ...newEntries])
     setShowBrowser(false)
+  }
+
+  const handleRemoteBrowseConfirm = (selectedPaths: string[]) => {
+    if (!selectedConnection) return
+    const existing = new Set(entries.map(e => e.path))
+    const label = `${SOURCE_TYPE_LABELS[selectedConnection.source_type] || selectedConnection.source_type}: ${selectedConnection.name}`
+    const newEntries = selectedPaths
+      .filter(p => !existing.has(p))
+      .map(p => ({
+        podId: '__local__',  // remote-source training stages locally then ingests
+        path: p,
+        contentType: curType,
+        connectionId: selectedConnection.connection_id,
+        sourceLabel: label,
+      }))
+    setEntries(prev => [...prev, ...newEntries])
+    setShowRemoteBrowser(false)
   }
 
   const handleSubmit = async () => {
@@ -1205,11 +1250,11 @@ function AddGroupModal({
 
     setSubmitting(true)
     try {
-      // Group entries by (podId, contentType) → one folder group per combo
-      const groups: Record<string, { podId: string; contentType: string; paths: string[] }> = {}
+      // Group entries by (podId, contentType, connectionId) → one folder group per combo
+      const groups: Record<string, { podId: string; contentType: string; paths: string[]; connectionId: string | null }> = {}
       for (const e of entries) {
-        const key = `${e.podId}::${e.contentType}`
-        if (!groups[key]) groups[key] = { podId: e.podId, contentType: e.contentType, paths: [] }
+        const key = `${e.podId}::${e.contentType}::${e.connectionId || ''}`
+        if (!groups[key]) groups[key] = { podId: e.podId, contentType: e.contentType, paths: [], connectionId: e.connectionId || null }
         groups[key].paths.push(e.path)
       }
 
@@ -1219,15 +1264,19 @@ function AddGroupModal({
           ? g.paths[0].split('/').slice(-1)[0] || 'data'
           : `${label} (${g.paths.length} folders)`
 
-        await productApi.addFolderGroup(productId, {
+        await teamApi.addFolderGroup(teamId, {
           pod_id: g.podId,
           group_name: shortName,
           group_type: g.contentType,
-          folder_paths: g.paths.map(p => ({ absolute_path: p, scan_recursive: true })),
+          folder_paths: g.paths.map(p => ({
+            absolute_path: p,
+            scan_recursive: true,
+            connection_id: g.connectionId || null,
+          })),
         })
       }
 
-      queryClient.invalidateQueries({ queryKey: ['products'] })
+      queryClient.invalidateQueries({ queryKey: ['teams'] })
       toast.success(`Added ${entries.length} training ${entries.length === 1 ? 'path' : 'paths'}`)
       onClose()
     } catch (error: any) {
@@ -1261,13 +1310,24 @@ function AddGroupModal({
         <div className="space-y-2 mb-3">
           <div className="flex items-center gap-2">
             <select
-              value={curPod}
-              onChange={(e) => setCurPod(e.target.value)}
+              value={sourceValue}
+              onChange={(e) => setSourceValue(e.target.value)}
               className="bg-rt-surface border border-rt-border rounded px-2 py-1.5 text-xs focus:outline-none focus:border-rt-primary flex-1 min-w-0"
             >
-              {podOptions.map((pod) => (
-                <option key={pod.pod_id} value={pod.pod_id}>{pod.pod_name}</option>
-              ))}
+              <optgroup label="Local / POD agents">
+                {podOptions.map((pod) => (
+                  <option key={pod.pod_id} value={`pod:${pod.pod_id}`}>{pod.pod_name}</option>
+                ))}
+              </optgroup>
+              {connections.length > 0 && (
+                <optgroup label="Remote sources">
+                  {connections.map((c) => (
+                    <option key={c.connection_id} value={`conn:${c.connection_id}`}>
+                      {SOURCE_TYPE_LABELS[c.source_type] || c.source_type}: {c.name}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
             </select>
             <select
               value={curType}
@@ -1279,13 +1339,18 @@ function AddGroupModal({
               ))}
             </select>
           </div>
+          {connections.length === 0 && (
+            <div className="text-[11px] text-rt-text-muted bg-rt-surface/30 rounded px-2 py-1.5">
+              💡 Add SFTP, S3, SMB or Azure Blob credentials in <a href="/connections" className="text-rt-primary hover:underline">Connections settings</a> to ingest training data from those sources.
+            </div>
+          )}
           <button
             type="button"
-            onClick={() => setShowBrowser(true)}
+            onClick={() => isPodSource ? setShowBrowser(true) : setShowRemoteBrowser(true)}
             className="w-full py-1.5 rounded bg-rt-primary text-white text-xs hover:bg-rt-primary-dark transition-colors flex items-center justify-center gap-1.5"
           >
             <FolderOpen className="w-3.5 h-3.5" />
-            Browse Folders
+            Browse {isPodSource ? 'Folders' : `${SOURCE_TYPE_LABELS[selectedConnection?.source_type || ''] || 'Remote'} Source`}
           </button>
         </div>
 
@@ -1297,7 +1362,12 @@ function AddGroupModal({
               return (
                 <div key={index} className="flex items-center gap-1.5 px-2 py-1 border-b border-rt-border last:border-b-0 hover:bg-rt-surface/30">
                   <Folder className="w-3 h-3 text-rt-primary flex-shrink-0" />
-                  <span className="flex-1 font-mono truncate text-[11px]" title={entry.path}>{entry.path.split('/').slice(-2).join('/')}</span>
+                  <div className="flex-1 min-w-0">
+                    <div className="font-mono truncate text-[11px]" title={entry.path}>{entry.path.split('/').slice(-2).join('/')}</div>
+                    {entry.sourceLabel && (
+                      <div className="text-[9px] text-rt-text-muted truncate">{entry.sourceLabel}</div>
+                    )}
+                  </div>
                   <span className="text-[10px] text-rt-text-muted flex-shrink-0">{typeLabel}</span>
                   <button onClick={() => removeEntry(index)} className="p-0.5 text-rt-text-muted hover:text-red-400"><X className="w-2.5 h-2.5" /></button>
                 </div>
@@ -1324,10 +1394,20 @@ function AddGroupModal({
         <AnimatePresence>
           {showBrowser && (
             <FileBrowserModal
-              podId={curPod}
+              podId={podId}
               selectedPaths={entries.map(e => e.path)}
               onConfirm={handleBrowseConfirm}
               onClose={() => setShowBrowser(false)}
+            />
+          )}
+          {showRemoteBrowser && selectedConnection && (
+            <RemoteBrowserModal
+              connectionId={selectedConnection.connection_id}
+              connectionName={selectedConnection.name}
+              sourceType={selectedConnection.source_type}
+              selectedPaths={entries.map(e => e.path)}
+              onConfirm={handleRemoteBrowseConfirm}
+              onClose={() => setShowRemoteBrowser(false)}
             />
           )}
         </AnimatePresence>
@@ -1337,20 +1417,23 @@ function AddGroupModal({
 }
 
 // ---------------------------------------------------------------------------
-// Product Agents – download & manage remote agents for a product
+// Team Agents – download & manage remote agents for a team
 // ---------------------------------------------------------------------------
 
-function ProductAgents({ productId }: { productId: string }) {
+function TeamAgents({ teamId }: { teamId: string }) {
   const [showModal, setShowModal] = useState(false)
   const [agentName, setAgentName] = useState('')
   const [selectedOs, setSelectedOs] = useState<'linux' | 'windows'>('linux')
   const [generating, setGenerating] = useState(false)
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null)
+  const [podId, setPodId] = useState<string | null>(null)
+  const [wsHost, setWsHost] = useState<string>('')
+  const [archiveName, setArchiveName] = useState<string>('')
   const queryClient = useQueryClient()
 
   const { data: podData } = useQuery({
-    queryKey: ['product-pods', productId],
-    queryFn: () => productApi.listPods(productId),
+    queryKey: ['team-pods', teamId],
+    queryFn: () => teamApi.listPods(teamId),
     refetchInterval: 30000,
   })
 
@@ -1361,6 +1444,7 @@ function ProductAgents({ productId }: { productId: string }) {
     setAgentName('')
     setSelectedOs('linux')
     setDownloadUrl(null)
+    setPodId(null)
     setShowModal(true)
   }
 
@@ -1371,10 +1455,14 @@ function ProductAgents({ productId }: { productId: string }) {
     }
     setGenerating(true)
     setDownloadUrl(null)
+    setPodId(null)
     try {
-      const result = await productApi.generatePod(productId, selectedOs, agentName.trim())
+      const result = await teamApi.generatePod(teamId, selectedOs, agentName.trim())
       setDownloadUrl(result.download_url)
-      queryClient.invalidateQueries({ queryKey: ['product-pods', productId] })
+      setPodId(result.pod_id)
+      setWsHost(result.ws_host || '')
+      setArchiveName(result.archive_name || '')
+      queryClient.invalidateQueries({ queryKey: ['team-pods', teamId] })
       toast.success('Agent package generated')
     } catch (error: any) {
       toast.error(error?.response?.data?.detail || 'Failed to generate agent')
@@ -1387,7 +1475,7 @@ function ProductAgents({ productId }: { productId: string }) {
     if (!confirm(`Delete agent "${podName}"?`)) return
     try {
       await podApi.delete(podId)
-      queryClient.invalidateQueries({ queryKey: ['product-pods', productId] })
+      queryClient.invalidateQueries({ queryKey: ['team-pods', teamId] })
       toast.success('Agent deleted')
     } catch {
       toast.error('Failed to delete agent')
@@ -1556,14 +1644,13 @@ function ProductAgents({ productId }: { productId: string }) {
                     {selectedOs === 'windows' ? (
                       <div className="bg-rt-surface rounded-lg border border-rt-border p-4 font-mono text-xs text-rt-text space-y-1.5">
                         <p className="text-rt-success"># Extract and run</p>
-                        <p>Expand-Archive retrace-*.zip -DestinationPath .\agent</p>
-                        <p>cd agent</p>
+                        <p>tar -xf {archiveName || 'retrace-*.zip'}</p>
                         <p>.\retrace-agent.exe --config config.yaml</p>
                       </div>
                     ) : (
                       <div className="bg-rt-surface rounded-lg border border-rt-border p-4 font-mono text-xs text-rt-text space-y-1.5">
                         <p className="text-rt-success"># Extract, make executable, and run</p>
-                        <p>tar -xzf retrace-*.tar.gz</p>
+                        <p>tar -xzf {archiveName || 'retrace-*.tar.gz'}</p>
                         <p>chmod +x retrace-agent</p>
                         <p>./retrace-agent --config config.yaml</p>
                         <p></p>
@@ -1571,20 +1658,58 @@ function ProductAgents({ productId }: { productId: string }) {
                         <p>nohup ./retrace-agent --config config.yaml &amp;</p>
                       </div>
                     )}
+                    {wsHost && wsHost !== 'localhost' && (
+                      <p className="text-xs text-rt-text-muted mt-2">
+                        Agent will connect to <span className="font-mono text-rt-primary">{wsHost}</span>
+                      </p>
+                    )}
                   </div>
 
                   <div className="flex gap-3 justify-end pt-2">
                     <button onClick={() => setShowModal(false)} className="btn-secondary text-sm">
                       Close
                     </button>
-                    <a
-                      href={downloadUrl}
-                      download
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        // Why this is more elaborate than a plain <a href download>:
+                        //
+                        // The download endpoint requires a JWT — but a plain anchor
+                        // navigation strips the Authorization header, and the
+                        // "fetch + blob + synthetic click" workaround is silently
+                        // blocked inside the cross-origin iframe at retrace.me/try
+                        // (Chrome's transient-user-activation rule for cross-origin
+                        // iframe downloads expires across the multi-megabyte fetch).
+                        //
+                        // The signed-URL pattern dodges both: we exchange the
+                        // Bearer token for a 60s signed URL via a tiny POST (small
+                        // enough that user activation is still alive afterwards),
+                        // and then point a plain <a href download> at it. The
+                        // browser treats that as a normal HTTP navigation, the
+                        // server returns Content-Disposition: attachment, and
+                        // both top-frame and iframe contexts accept it.
+                        try {
+                          if (!podId) throw new Error('No pod ID')
+                          const signedUrl = await podApi.getDownloadUrl(podId)
+                          const a = document.createElement('a')
+                          a.href = signedUrl
+                          a.download = archiveName || 'retrace-agent.tar.gz'
+                          document.body.appendChild(a)
+                          a.click()
+                          document.body.removeChild(a)
+                        } catch (err: any) {
+                          toast.error(
+                            err?.response?.data?.detail ||
+                              err?.message ||
+                              'Failed to download installer',
+                          )
+                        }
+                      }}
                       className="btn-primary text-sm flex items-center gap-2"
                     >
                       <Download className="w-4 h-4" />
                       Download Package
-                    </a>
+                    </button>
                   </div>
                 </div>
               )}
@@ -1622,8 +1747,8 @@ interface TreeType {
 }
 
 interface TrainingTree {
-  product_id: string
-  product_name: string
+  team_id: string
+  team_name: string
   total_chunks: number
   total_files: number
   tree: TreeType[]
@@ -1639,10 +1764,10 @@ const TYPE_CONFIG: Record<string, { icon: typeof FileCode; color: string; label:
   other: { icon: Folder, color: 'text-rt-text-muted', label: 'Other' },
 }
 
-function TrainingTreeView({ productId }: { productId: string }) {
+function TrainingTreeView({ teamId }: { teamId: string }) {
   const { data, isLoading, error } = useQuery<TrainingTree>({
-    queryKey: ['training-tree', productId],
-    queryFn: () => productApi.getTrainingTree(productId),
+    queryKey: ['training-tree', teamId],
+    queryFn: () => teamApi.getTrainingTree(teamId),
   })
   const [expandedTypes, setExpandedTypes] = useState<Set<string>>(new Set())
   const [expandedSubCats, setExpandedSubCats] = useState<Set<string>>(new Set())
@@ -1688,7 +1813,7 @@ function TrainingTreeView({ productId }: { productId: string }) {
   if (data.tree.length === 0) {
     return (
       <div className="p-4 bg-rt-surface rounded-lg border border-rt-border text-center text-sm text-rt-text-muted">
-        No training data found. Train this product first.
+        No training data found. Train this team first.
       </div>
     )
   }
@@ -1709,7 +1834,7 @@ function TrainingTreeView({ productId }: { productId: string }) {
               <div className="absolute -top-1 -right-1 w-3 h-3 bg-rt-primary/20 rounded-full animate-pulse" />
             </div>
             <div>
-              <h3 className="text-sm font-semibold">{data.product_name}</h3>
+              <h3 className="text-sm font-semibold">{data.team_name}</h3>
               <p className="text-xs text-rt-text-muted">Knowledge Base Overview</p>
             </div>
           </div>
@@ -1842,10 +1967,11 @@ function FileBrowserModal({
   onConfirm: (paths: string[]) => void
   onClose: () => void
 }) {
-  const [currentPath, setCurrentPath] = useState('/')
+  const isLocal = podId === '__local__'
+  const initialPath = isLocal ? '/' : '.'
+  const [currentPath, setCurrentPath] = useState(initialPath)
   const [selected, setSelected] = useState<Set<string>>(new Set(selectedPaths))
   
-  const isLocal = podId === '__local__'
   const { data: directory, isLoading } = useQuery({
     queryKey: isLocal ? ['local-browse', currentPath] : ['pod-browse', podId, currentPath],
     queryFn: () =>
@@ -1855,7 +1981,10 @@ function FileBrowserModal({
     enabled: !!podId,
   })
   
-  const pathParts = currentPath.split('/').filter(Boolean)
+  const isRoot = isLocal ? currentPath === '/' : (currentPath === '.' || currentPath === '')
+  const pathParts = isLocal
+    ? currentPath.split('/').filter(Boolean)
+    : (currentPath === '.' ? [] : currentPath.split('/').filter(Boolean))
   
   const togglePath = (path: string) => {
     const newSelected = new Set(selected)
@@ -1890,18 +2019,21 @@ function FileBrowserModal({
         
         <div className="flex items-center gap-1 text-sm mb-4 overflow-x-auto bg-rt-surface rounded-lg px-3 py-2">
           <button
-            onClick={() => setCurrentPath('/')}
+            onClick={() => setCurrentPath(initialPath)}
             className={`px-2 py-1 rounded hover:bg-rt-border transition-colors ${
-              currentPath === '/' ? 'text-rt-primary' : ''
+              isRoot ? 'text-rt-primary' : ''
             }`}
           >
-            Root
+            {isLocal ? 'Root' : 'Agent Root'}
           </button>
           {pathParts.map((part, i) => (
             <div key={i} className="flex items-center">
               <ChevronRight className="w-4 h-4 text-rt-text-muted" />
               <button
-                onClick={() => setCurrentPath('/' + pathParts.slice(0, i + 1).join('/'))}
+                onClick={() => {
+                  const sub = pathParts.slice(0, i + 1).join('/')
+                  setCurrentPath(isLocal ? '/' + sub : sub)
+                }}
                 className={`px-2 py-1 rounded hover:bg-rt-border transition-colors ${
                   i === pathParts.length - 1 ? 'text-rt-primary' : ''
                 }`}
@@ -1919,11 +2051,16 @@ function FileBrowserModal({
             </div>
           ) : (
             <div className="flex-1 overflow-y-auto divide-y divide-rt-border">
-              {currentPath !== '/' && (
+              {!isRoot && (
                 <button
                   onClick={() => {
-                    const parent = '/' + pathParts.slice(0, -1).join('/')
-                    setCurrentPath(parent || '/')
+                    if (isLocal) {
+                      const parent = '/' + pathParts.slice(0, -1).join('/')
+                      setCurrentPath(parent || '/')
+                    } else {
+                      const parent = pathParts.slice(0, -1).join('/')
+                      setCurrentPath(parent || '.')
+                    }
                   }}
                   className="w-full flex items-center gap-3 p-3 hover:bg-rt-surface transition-colors text-left"
                 >
@@ -1978,6 +2115,179 @@ function FileBrowserModal({
           >
             Add Selected Paths
           </button>
+        </div>
+      </motion.div>
+    </motion.div>
+  )
+}
+
+
+// ---------------------------------------------------------------------------
+// RemoteBrowserModal — browse SFTP / SMB / S3 / Azure via the connections API.
+// Same UX as FileBrowserModal but talks to /api/v1/connections/{id}/list.
+// ---------------------------------------------------------------------------
+
+function RemoteBrowserModal({
+  connectionId,
+  connectionName,
+  sourceType,
+  selectedPaths,
+  onConfirm,
+  onClose,
+}: {
+  connectionId: string
+  connectionName: string
+  sourceType: string
+  selectedPaths: string[]
+  onConfirm: (paths: string[]) => void
+  onClose: () => void
+}) {
+  // Per source-type, the natural starting path varies:
+  //   sftp/smb → "/" or current user's home
+  //   s3/azure → "/" (root of bucket/container)
+  const [currentPath, setCurrentPath] = useState<string>('/')
+  const [selected, setSelected] = useState<Set<string>>(new Set(selectedPaths))
+
+  const { data, isLoading, refetch, error } = useQuery({
+    queryKey: ['conn-list', connectionId, currentPath],
+    queryFn: () => connectionsApi.listDir(connectionId, currentPath),
+    retry: false,
+  })
+
+  const entries = data?.entries ?? []
+  // Show directories first, then files
+  const dirs = entries.filter(e => e.is_dir)
+  const files = entries.filter(e => !e.is_dir)
+
+  const toggleSelect = (path: string) => {
+    setSelected(prev => {
+      const next = new Set(prev)
+      next.has(path) ? next.delete(path) : next.add(path)
+      return next
+    })
+  }
+
+  const goUp = () => {
+    if (currentPath === '/' || currentPath === '') return
+    const parent = currentPath.replace(/\/$/, '').split('/').slice(0, -1).join('/') || '/'
+    setCurrentPath(parent)
+  }
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ scale: 0.95, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.95, opacity: 0 }}
+        className="bg-rt-bg-light border border-rt-border rounded-xl p-5 w-full max-w-2xl flex flex-col h-[70vh]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <h2 className="text-base font-display font-semibold">Browse {SOURCE_TYPE_LABELS[sourceType] || sourceType}: {connectionName}</h2>
+            <p className="text-xs text-rt-text-muted mt-0.5">
+              Pick folders or files to ingest. Sub-folders are scanned recursively.
+            </p>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded hover:bg-rt-surface">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Path bar */}
+        <div className="flex items-center gap-2 mb-3 bg-rt-surface px-2.5 py-1.5 rounded text-xs">
+          <button
+            onClick={goUp}
+            disabled={currentPath === '/' || !currentPath}
+            className="px-2 py-0.5 rounded hover:bg-rt-bg-light disabled:opacity-40"
+          >
+            ↑
+          </button>
+          <span className="font-mono flex-1 truncate text-rt-text-muted">{currentPath || '/'}</span>
+          <button onClick={() => refetch()} className="p-1 rounded hover:bg-rt-bg-light text-rt-text-muted">
+            <RefreshCw className="w-3 h-3" />
+          </button>
+        </div>
+
+        {/* Listing */}
+        <div className="flex-1 overflow-y-auto border border-rt-border rounded">
+          {isLoading ? (
+            <div className="p-6 text-center text-rt-text-muted text-sm">
+              <Loader2 className="w-4 h-4 mx-auto animate-spin" />
+            </div>
+          ) : error ? (
+            <div className="p-4 text-sm text-amber-500">
+              Couldn't load: {(error as any)?.response?.data?.detail || (error as any)?.message || 'unknown error'}
+            </div>
+          ) : entries.length === 0 ? (
+            <div className="p-6 text-center text-rt-text-muted text-sm">Empty</div>
+          ) : (
+            <>
+              {dirs.map(d => (
+                <div
+                  key={d.path}
+                  className="flex items-center gap-2 px-3 py-2 border-b border-rt-border/50 hover:bg-rt-surface/40 cursor-pointer"
+                  onDoubleClick={() => setCurrentPath(d.path)}
+                >
+                  <input
+                    type="checkbox"
+                    checked={selected.has(d.path)}
+                    onChange={() => toggleSelect(d.path)}
+                    onClick={(e) => e.stopPropagation()}
+                    className="cursor-pointer"
+                  />
+                  <Folder className="w-3.5 h-3.5 text-rt-primary flex-shrink-0" />
+                  <span
+                    className="flex-1 font-mono text-xs truncate cursor-pointer"
+                    onClick={() => setCurrentPath(d.path)}
+                  >
+                    {d.name}/
+                  </span>
+                </div>
+              ))}
+              {files.map(f => (
+                <div key={f.path} className="flex items-center gap-2 px-3 py-2 border-b border-rt-border/50 hover:bg-rt-surface/40">
+                  <input
+                    type="checkbox"
+                    checked={selected.has(f.path)}
+                    onChange={() => toggleSelect(f.path)}
+                    className="cursor-pointer"
+                  />
+                  <File className="w-3.5 h-3.5 text-rt-text-muted flex-shrink-0" />
+                  <span className="flex-1 font-mono text-xs truncate">{f.name}</span>
+                  <span className="text-[10px] text-rt-text-muted">
+                    {f.size > 1024 * 1024
+                      ? `${(f.size / (1024 * 1024)).toFixed(1)} MB`
+                      : f.size > 1024
+                      ? `${(f.size / 1024).toFixed(1)} KB`
+                      : `${f.size} B`}
+                  </span>
+                </div>
+              ))}
+            </>
+          )}
+        </div>
+
+        <div className="flex items-center justify-between mt-3">
+          <span className="text-xs text-rt-text-muted">
+            {selected.size === 0 ? 'No selections' : `${selected.size} selected`}
+          </span>
+          <div className="flex gap-2">
+            <button onClick={onClose} className="btn-secondary">Cancel</button>
+            <button
+              onClick={() => onConfirm(Array.from(selected))}
+              disabled={selected.size === 0}
+              className="btn-primary"
+            >
+              Add Selected Paths
+            </button>
+          </div>
         </div>
       </motion.div>
     </motion.div>

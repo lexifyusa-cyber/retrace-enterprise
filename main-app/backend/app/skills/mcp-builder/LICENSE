@@ -1,0 +1,7 @@
+The reference files in this directory are vendored from:
+https://github.com/anthropics/skills/tree/main/skills/mcp-builder
+
+Licensed under the Apache License, Version 2.0.
+Copyright (c) Anthropic, PBC.
+
+See https://github.com/anthropics/skills/blob/main/LICENSE.txt for full terms.

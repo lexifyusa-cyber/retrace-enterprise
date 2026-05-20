@@ -14,7 +14,12 @@ from pathlib import Path
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 _KEY_ENV = "CHUNK_ENCRYPTION_KEY"
-_KEY_FILE = Path(__file__).parent.parent.parent / ".chunk_key"
+
+# Key file location: prefer /data/.chunk_key (persistent volume on Fly.io/Docker),
+# fall back to backend/.chunk_key (local dev).
+_PERSISTENT_KEY_FILE = Path("/data/.chunk_key")
+_LOCAL_KEY_FILE = Path(__file__).parent.parent.parent / ".chunk_key"
+_KEY_FILE = _PERSISTENT_KEY_FILE if _PERSISTENT_KEY_FILE.parent.is_dir() else _LOCAL_KEY_FILE
 
 
 def _load_key() -> bytes:

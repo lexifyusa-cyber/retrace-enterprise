@@ -28,7 +28,7 @@ from app.core.security import get_optional_user, require_role, CurrentUser
 
 logger = structlog.get_logger()
 router = APIRouter()
-product_email_router = APIRouter()
+team_email_router = APIRouter()
 
 
 # ── Schemas ───────────────────────────────────────────────────────────
@@ -81,7 +81,7 @@ class InboxUpdate(BaseModel):
 
 class InboxResponse(BaseModel):
     inbox_id: str
-    product_id: str
+    team_id: str
     connection_id: str
     email_address: str
     is_active: bool
@@ -96,7 +96,7 @@ class DraftAction(BaseModel):
 class MessageResponse(BaseModel):
     message_id: str
     inbox_id: str
-    product_id: str
+    team_id: str
     from_address: str
     subject: str
     body_text: str
@@ -284,7 +284,7 @@ async def sync_connection(
     if not inbox_list:
         return {
             "synced": 0,
-            "message": "No AI inboxes linked to this connection. Add an AI Email to a product first (Products → product → AI Email).",
+            "message": "No AI inboxes linked to this connection. Add an AI Email to a team first (Teams → team → AI Email).",
         }
 
     inbox_emails = {i.email_address.lower().strip() for i in inbox_list}
@@ -382,19 +382,19 @@ async def sync_connection(
     await session.commit()
     return {
         "synced": processed,
-        "message": f"Synced {processed} new message(s). Check Email Drafts for the product(s) linked to this inbox.",
+        "message": f"Synced {processed} new message(s). Check Email Drafts for the team(s) linked to this inbox.",
     }
 
 
-# ── Email Inboxes (per product) ──────────────────────────────────────
+# ── Email Inboxes (per team) ──────────────────────────────────────
 
 
-@product_email_router.get("/{product_id}/inbox", response_model=Optional[InboxResponse])
+@team_email_router.get("/{team_id}/inbox", response_model=Optional[InboxResponse])
 async def get_inbox(
-    product_id: str, session: AsyncSession = Depends(get_session)
+    team_id: str, session: AsyncSession = Depends(get_session)
 ):
     result = await session.execute(
-        select(EmailInbox).where(EmailInbox.product_id == product_id)
+        select(EmailInbox).where(EmailInbox.team_id == team_id)
     )
     inbox = result.scalar_one_or_none()
     if not inbox:
@@ -402,18 +402,18 @@ async def get_inbox(
     return InboxResponse(**inbox.to_dict())
 
 
-@product_email_router.post("/{product_id}/inbox", response_model=InboxResponse, status_code=201)
+@team_email_router.post("/{team_id}/inbox", response_model=InboxResponse, status_code=201)
 async def create_inbox(
-    product_id: str,
+    team_id: str,
     data: InboxCreate,
     session: AsyncSession = Depends(get_session),
 ):
     # Check if inbox already exists
     existing = await session.execute(
-        select(EmailInbox).where(EmailInbox.product_id == product_id)
+        select(EmailInbox).where(EmailInbox.team_id == team_id)
     )
     if existing.scalar_one_or_none():
-        raise HTTPException(400, "Product already has an AI inbox")
+        raise HTTPException(400, "Team already has an AI inbox")
 
     conn = await session.get(EmailConnection, data.connection_id)
     if not conn:
@@ -432,7 +432,7 @@ async def create_inbox(
         raise HTTPException(400, f"Failed to create inbox: {exc}")
 
     inbox = EmailInbox(
-        product_id=product_id,
+        team_id=team_id,
         connection_id=data.connection_id,
         email_address=email_address.lower(),
         is_active=True,
@@ -454,18 +454,18 @@ async def create_inbox(
     return InboxResponse(**inbox.to_dict())
 
 
-@product_email_router.patch("/{product_id}/inbox", response_model=InboxResponse)
+@team_email_router.patch("/{team_id}/inbox", response_model=InboxResponse)
 async def update_inbox(
-    product_id: str,
+    team_id: str,
     data: InboxUpdate,
     session: AsyncSession = Depends(get_session),
 ):
     result = await session.execute(
-        select(EmailInbox).where(EmailInbox.product_id == product_id)
+        select(EmailInbox).where(EmailInbox.team_id == team_id)
     )
     inbox = result.scalar_one_or_none()
     if not inbox:
-        raise HTTPException(404, "No inbox for this product")
+        raise HTTPException(404, "No inbox for this team")
     if data.is_active is not None:
         inbox.is_active = data.is_active
     if data.action_config is not None:
@@ -474,16 +474,16 @@ async def update_inbox(
     return InboxResponse(**inbox.to_dict())
 
 
-@product_email_router.delete("/{product_id}/inbox", status_code=204)
+@team_email_router.delete("/{team_id}/inbox", status_code=204)
 async def delete_inbox(
-    product_id: str, session: AsyncSession = Depends(get_session)
+    team_id: str, session: AsyncSession = Depends(get_session)
 ):
     result = await session.execute(
-        select(EmailInbox).where(EmailInbox.product_id == product_id)
+        select(EmailInbox).where(EmailInbox.team_id == team_id)
     )
     inbox = result.scalar_one_or_none()
     if not inbox:
-        raise HTTPException(404, "No inbox for this product")
+        raise HTTPException(404, "No inbox for this team")
     await session.delete(inbox)
     await session.flush()
 
@@ -525,14 +525,14 @@ async def inbound_email_webhook(
 # ── Drafts (Draft & Review mode) ─────────────────────────────────────
 
 
-@product_email_router.get("/{product_id}/inbox/drafts", response_model=list[MessageResponse])
+@team_email_router.get("/{team_id}/inbox/drafts", response_model=list[MessageResponse])
 async def list_drafts(
-    product_id: str, session: AsyncSession = Depends(get_session)
+    team_id: str, session: AsyncSession = Depends(get_session)
 ):
     result = await session.execute(
         select(EmailMessage)
         .where(
-            EmailMessage.product_id == product_id,
+            EmailMessage.team_id == team_id,
             EmailMessage.status == "drafted",
         )
         .order_by(EmailMessage.received_at.desc())
@@ -548,17 +548,17 @@ def _normalize_to_email(addr: str) -> str:
     return m.group(1).strip().lower() if m else addr
 
 
-@product_email_router.get("/{product_id}/inbox/unread", response_model=list[UnreadMessageResponse])
+@team_email_router.get("/{team_id}/inbox/unread", response_model=list[UnreadMessageResponse])
 async def list_unread(
-    product_id: str, session: AsyncSession = Depends(get_session)
+    team_id: str, session: AsyncSession = Depends(get_session)
 ):
-    """Return the 5 most recent unread emails for this product's inbox, regardless of age."""
+    """Return the 5 most recent unread emails for this team's inbox, regardless of age."""
     result = await session.execute(
-        select(EmailInbox).where(EmailInbox.product_id == product_id)
+        select(EmailInbox).where(EmailInbox.team_id == team_id)
     )
     inbox = result.scalar_one_or_none()
     if not inbox:
-        logger.warning("list_unread_no_inbox", product_id=product_id)
+        logger.warning("list_unread_no_inbox", team_id=team_id)
         return []
     conn = await session.get(EmailConnection, inbox.connection_id)
     if not conn:
@@ -570,7 +570,7 @@ async def list_unread(
     client_id = getattr(conn, "client_id", None) or ""
     client_secret = getattr(conn, "client_secret", None) or ""
 
-    logger.info("list_unread_start", product_id=product_id, provider=conn.provider, has_token=bool(access_token))
+    logger.info("list_unread_start", team_id=team_id, provider=conn.provider, has_token=bool(access_token))
 
     if conn.provider == "zoho":
         from app.services.email.zoho import ZohoProvider
@@ -623,15 +623,15 @@ async def list_unread(
     return out
 
 
-@product_email_router.post("/{product_id}/inbox/drafts/{message_id}/approve")
+@team_email_router.post("/{team_id}/inbox/drafts/{message_id}/approve")
 async def approve_draft(
-    product_id: str,
+    team_id: str,
     message_id: str,
     data: Optional[DraftAction] = None,
     session: AsyncSession = Depends(get_session),
 ):
     msg = await session.get(EmailMessage, message_id)
-    if not msg or msg.product_id != product_id or msg.status != "drafted":
+    if not msg or msg.team_id != team_id or msg.status != "drafted":
         raise HTTPException(404, "Draft not found")
 
     response_text = (data.edited_response if data and data.edited_response else msg.ai_response) or ""
@@ -668,29 +668,29 @@ async def approve_draft(
     return {"status": "approved", "message_id": message_id}
 
 
-@product_email_router.post("/{product_id}/inbox/drafts/{message_id}/reject")
+@team_email_router.post("/{team_id}/inbox/drafts/{message_id}/reject")
 async def reject_draft(
-    product_id: str,
+    team_id: str,
     message_id: str,
     session: AsyncSession = Depends(get_session),
 ):
     msg = await session.get(EmailMessage, message_id)
-    if not msg or msg.product_id != product_id or msg.status != "drafted":
+    if not msg or msg.team_id != team_id or msg.status != "drafted":
         raise HTTPException(404, "Draft not found")
     msg.status = "rejected"
     await session.flush()
     return {"status": "rejected", "message_id": message_id}
 
 
-@product_email_router.patch("/{product_id}/inbox/drafts/{message_id}")
+@team_email_router.patch("/{team_id}/inbox/drafts/{message_id}")
 async def edit_draft(
-    product_id: str,
+    team_id: str,
     message_id: str,
     data: DraftAction,
     session: AsyncSession = Depends(get_session),
 ):
     msg = await session.get(EmailMessage, message_id)
-    if not msg or msg.product_id != product_id or msg.status != "drafted":
+    if not msg or msg.team_id != team_id or msg.status != "drafted":
         raise HTTPException(404, "Draft not found")
     if data.edited_response is not None:
         msg.ai_response = data.edited_response
@@ -701,16 +701,16 @@ async def edit_draft(
 # ── Message log ───────────────────────────────────────────────────────
 
 
-@product_email_router.get("/{product_id}/inbox/messages", response_model=list[MessageResponse])
+@team_email_router.get("/{team_id}/inbox/messages", response_model=list[MessageResponse])
 async def list_messages(
-    product_id: str,
+    team_id: str,
     limit: int = 50,
     offset: int = 0,
     session: AsyncSession = Depends(get_session),
 ):
     result = await session.execute(
         select(EmailMessage)
-        .where(EmailMessage.product_id == product_id)
+        .where(EmailMessage.team_id == team_id)
         .order_by(EmailMessage.received_at.desc())
         .limit(limit)
         .offset(offset)

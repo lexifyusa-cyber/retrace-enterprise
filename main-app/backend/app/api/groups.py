@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 import structlog
 
+from app.core.security import get_current_user, CurrentUser, get_tenant_team_ids
 from app.db.database import get_session
 from app.models.pod import Pod
 from app.models.folder_group import FolderGroup, FolderPath
@@ -62,23 +63,27 @@ class FolderGroupResponse(BaseModel):
 @router.get("", response_model=list[FolderGroupResponse])
 async def list_groups(
     pod_id: Optional[str] = None,
+    current_user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session)
 ):
     """List all folder groups, optionally filtered by POD."""
+    tenant_teams = await get_tenant_team_ids(current_user, session)
     query = select(FolderGroup).options(selectinload(FolderGroup.folder_paths))
-    
+    query = query.where(FolderGroup.team_id.in_(tenant_teams))
+
     if pod_id:
         query = query.where(FolderGroup.pod_id == pod_id)
-    
+
     result = await session.execute(query)
     groups = result.scalars().all()
-    
+
     return [FolderGroupResponse(**group.to_dict()) for group in groups]
 
 
 @router.post("", response_model=FolderGroupResponse, status_code=status.HTTP_201_CREATED)
 async def create_group(
     group_data: FolderGroupCreate,
+    current_user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session)
 ):
     """Create a new folder group."""
@@ -152,22 +157,25 @@ async def create_group(
 @router.get("/{group_id}", response_model=FolderGroupResponse)
 async def get_group(
     group_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session)
 ):
     """Get a specific folder group by ID."""
+    tenant_teams = await get_tenant_team_ids(current_user, session)
     result = await session.execute(
         select(FolderGroup)
         .options(selectinload(FolderGroup.folder_paths))
         .where(FolderGroup.group_id == group_id)
+        .where(FolderGroup.team_id.in_(tenant_teams))
     )
     group = result.scalar_one_or_none()
-    
+
     if not group:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Folder group {group_id} not found"
         )
-    
+
     return FolderGroupResponse(**group.to_dict())
 
 
@@ -175,16 +183,19 @@ async def get_group(
 async def update_group(
     group_id: str,
     group_data: FolderGroupUpdate,
+    current_user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session)
 ):
     """Update a folder group."""
+    tenant_teams = await get_tenant_team_ids(current_user, session)
     result = await session.execute(
         select(FolderGroup)
         .options(selectinload(FolderGroup.folder_paths))
         .where(FolderGroup.group_id == group_id)
+        .where(FolderGroup.team_id.in_(tenant_teams))
     )
     group = result.scalar_one_or_none()
-    
+
     if not group:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

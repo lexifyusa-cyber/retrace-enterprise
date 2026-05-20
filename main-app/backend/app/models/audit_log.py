@@ -22,10 +22,10 @@ class AuditLog(Base):
     actor_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     action: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
     # login, login_failed, logout, role_changed, access_granted, access_revoked,
-    # user_invited, user_deactivated, product_created, product_deleted,
+    # user_invited, user_deactivated, team_created, team_deleted,
     # tenant_config_changed, auth_config_changed
     target_type: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
-    # user, product, tenant, auth_config, session
+    # user, team, tenant, auth_config, session
     target_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
     details: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     ip_address: Mapped[Optional[str]] = mapped_column(String(45), nullable=True)

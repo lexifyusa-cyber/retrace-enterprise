@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "servicenow-mcp-server"
+version = "0.1.0"
+description = "ServiceNow MCP server for ReTrace — exposes incident management and Table API tools via MCP stdio transport."
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=1.0.0",
+    "httpx>=0.27",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/servicenow_mcp"]
+
+[project.scripts]
+servicenow-mcp-server = "servicenow_mcp.server:main"

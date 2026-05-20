@@ -1,15 +1,21 @@
 """
 Local filesystem browse API.
 
-Browse the backend server's local filesystem for adding training data.
+In trial mode, browsing is disabled — trial users cannot see the host filesystem.
+They can only use POD agents or pre-seeded data.
 """
 
 import os
 import platform
 from datetime import datetime
 from pathlib import Path
+import concurrent.futures
 
-from fastapi import APIRouter, HTTPException, status
+import structlog
+from fastapi import APIRouter, Depends, HTTPException, status
+from app.core.security import get_current_user, CurrentUser
+
+logger = structlog.get_logger()
 
 router = APIRouter()
 
@@ -37,9 +43,11 @@ def _is_path_allowed(path_str: str) -> tuple[bool, Path | None]:
     if not path_str:
         return False, None
     try:
-        path = Path(path_str)
+        if path_str.startswith("~/") or path_str.startswith("~\\"):
+            path = Path.home() / path_str[2:]
+        else:
+            path = Path(path_str)
         if not path.is_absolute():
-            # Resolve relative to cwd
             path = path.resolve()
         resolved = path.resolve()
         for root in _allowed_roots():
@@ -54,19 +62,20 @@ def _is_path_allowed(path_str: str) -> tuple[bool, Path | None]:
 
 
 def _resolve_browse_path(path: str) -> Path:
-    """Resolve the path for browsing. '/' or '~' or '' means the parent of home (e.g. /Users, C:\\Users)."""
+    """Resolve the path for browsing. '/' or '~' or '' means the parent of home."""
     if path in ("/", "~", ""):
-        return Path.home().parent  # e.g. /Users (macOS) or /home (Linux) or C:\Users (Windows)
+        return Path.home().parent
+    if path.startswith("~/") or path.startswith("~\\"):
+        return Path.home() / path[2:]
     return Path(path)
 
 
-@router.get("/browse")
-async def browse_local_filesystem(path: str = "/"):
-    """Browse the local filesystem on the backend server.
+def _browse_host(path: str) -> dict:
+    """List a directory on the host filesystem (the backend's own machine).
 
-    Returns a DirectoryListing structure compatible with pod browse.
-    Path '/' or '~' means the directory containing home (e.g. /Users, /home, C:\\Users).
-    Other paths must be under allowed roots.
+    Used for zero_admin browsing and for callers that pass `host=true` — e.g.
+    the MCP Builder destination picker, since generated MCP servers are built
+    on the host, not inside the sandbox container.
     """
     resolved = _resolve_browse_path(path)
     if path not in ("/", "~", ""):
@@ -84,7 +93,6 @@ async def browse_local_filesystem(path: str = "/"):
             detail="Path is not a directory",
         )
 
-    # Ensure path is under an allowed root (home always is)
     allowed, _ = _is_path_allowed(str(resolved))
     if not allowed:
         raise HTTPException(
@@ -100,18 +108,15 @@ async def browse_local_filesystem(path: str = "/"):
                 try:
                     stat = entry.stat()
                     name = entry.name
-                    entry_path = str(resolved / name)
-                    rel_path = name
                     is_dir = entry.is_dir()
                     size = stat.st_size if not is_dir else 0
                     if not is_dir:
                         total_size += size
-                    modified = stat.st_mtime
-                    modified_iso = datetime.utcfromtimestamp(modified).isoformat() + "Z"
+                    modified_iso = datetime.utcfromtimestamp(stat.st_mtime).isoformat() + "Z"
                     files.append({
                         "name": name,
-                        "path": entry_path,
-                        "rel_path": rel_path,
+                        "path": str(resolved / name),
+                        "rel_path": name,
                         "type": "directory" if is_dir else "file",
                         "size": size,
                         "modified": modified_iso,
@@ -124,8 +129,53 @@ async def browse_local_filesystem(path: str = "/"):
             detail=f"Cannot read directory: {e!s}",
         )
 
-    return {
-        "files": files,
-        "total_count": len(files),
-        "total_size": total_size,
-    }
+    return {"files": files, "total_count": len(files), "total_size": total_size}
+
+
+@router.get("/browse")
+async def browse_local_filesystem(
+    path: str = "/",
+    host: bool = False,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Browse the local filesystem on the backend server.
+
+    `host=true` forces a host-filesystem browse — used by the MCP Builder
+    destination picker, since generated MCP servers are built on the host,
+    not inside the sandbox container. zero_admin always browses the host.
+    """
+    if host or current_user.role == "zero_admin":
+        return _browse_host(path)
+
+    # Otherwise (non-admin, host not requested): prefer the sandbox container,
+    # falling back to the host filesystem when the sandbox is unavailable.
+    if current_user.role != "zero_admin":
+        try:
+            from app.services.sandbox_manager import get_or_create_session
+            import json as _json
+
+            session = None
+            try:
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    future = pool.submit(get_or_create_session, current_user.user_id)
+                    session = future.result(timeout=30)
+                    if session:
+                        logger.info("sandbox_session_ready_for_browse", user_id=current_user.user_id)
+            except concurrent.futures.TimeoutError:
+                logger.warning("sandbox_session_creation_timeout_during_browse", user_id=current_user.user_id)
+                session = None
+
+            if session:
+                browse_path = path if path not in ("/", "~", "") else "/workspace"
+                if not browse_path.startswith("/workspace"):
+                    browse_path = "/workspace"
+                result = session.execute_command(f"python3 -c \"\nimport os, json, datetime\ntarget = '{browse_path}'\nif not os.path.isdir(target):\n    print(json.dumps({{'files':[],'total_count':0,'total_size':0}}))\nelse:\n    files = []\n    total_size = 0\n    for e in os.scandir(target):\n        try:\n            s = e.stat()\n            is_dir = e.is_dir()\n            sz = s.st_size if not is_dir else 0\n            if not is_dir: total_size += sz\n            files.append({{'name':e.name,'path':os.path.join(target,e.name),'rel_path':e.name,'type':'directory' if is_dir else 'file','size':sz,'modified':datetime.datetime.utcfromtimestamp(s.st_mtime).isoformat()+'Z'}})\n        except: pass\n    print(json.dumps({{'files':files,'total_count':len(files),'total_size':total_size}}))\n\"")
+                stdout = (result.stdout or "").strip()
+                if stdout:
+                    return _json.loads(stdout)
+        except Exception as e:
+            logger.warning("sandbox_browse_error", user_id=current_user.user_id, error=str(e))
+
+        # Sandbox unavailable — fall back to direct filesystem browsing
+        logger.info("sandbox_unavailable_browse_fallback", user_id=current_user.user_id)
+        return _browse_host(path)

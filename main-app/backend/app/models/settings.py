@@ -5,7 +5,7 @@ Settings database model.
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, Integer, String, DateTime, Text
+from sqlalchemy import Boolean, Float, Integer, String, DateTime, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.database import Base
@@ -33,10 +33,43 @@ class LLMSettingsModel(Base):
     screenops_mouse_timeout: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=30)
     # ScreenOps screenshot scale 25–100: percentage of original size sent to vision model (reduces tokens)
     screenops_image_scale: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=100)
+    # Central delay (ms) before every screenshot capture — lets dynamic content settle before screenshot
+    screenshot_delay_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=2000)
     
     # Web Search — Serper API key for enhanced web search
     serper_api_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    # OpenCode agent — small model for title generation, summaries, etc.
+    small_model_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # OpenCode agent — separate model for plan agent (defaults to model_name if not set)
+    plan_model_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # OpenCode agent — reasoning/extended thinking toggle
+    use_reasoning: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True, default=True)
+    # OpenCode agent — custom system prompts
+    build_system_prompt: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    plan_system_prompt: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # OpenCode agent — LLM parameters
+    temperature: Mapped[Optional[float]] = mapped_column(nullable=True, default=0.0)
+    top_p: Mapped[Optional[float]] = mapped_column(nullable=True, default=1.0)
+    max_steps: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=50)
+    # OpenCode agent — compaction settings
+    compaction_auto: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True, default=False)
+    compaction_tail_turns: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=4)
+    # OpenCode agent — tool output truncation
+    tool_output_max_lines: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=200)
+    tool_output_max_bytes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=50000)
+    # OpenCode agent — bash shell
+    bash_shell: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    # OpenCode agent — snapshot toggle
+    snapshot_enabled: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True, default=False)
+    # OpenCode agent — disabled tools (JSON list)
+    disabled_tools: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # OpenCode agent — permission config (JSON {"edit": "allow", "bash": "allow"})
+    permission_config: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # OpenCode agent — custom agents (JSON list of {name, model, prompt, permission})
+    custom_agents: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # OpenCode agent — custom commands (JSON list of {name, prompt, agent})
+    custom_commands: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # Agent tools — JSON {"disabled": ["screenops", "web_search"]} for user-enabled/disabled tools
     agent_tools_config: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # Agent max tool-use iterations per task (1–50, default 10)
@@ -63,7 +96,26 @@ class LLMSettingsModel(Base):
             "screenops_model": self.screenops_model,
             "screenops_mouse_timeout": self.screenops_mouse_timeout if self.screenops_mouse_timeout is not None else 30,
             "screenops_image_scale": self.screenops_image_scale if self.screenops_image_scale is not None else 100,
+            "screenshot_delay_ms": self.screenshot_delay_ms if self.screenshot_delay_ms is not None else 2000,
             "serper_api_key": self.serper_api_key,
+            "small_model_name": self.small_model_name,
+            "plan_model_name": self.plan_model_name,
+            "use_reasoning": bool(self.use_reasoning) if self.use_reasoning is not None else True,
+            "build_system_prompt": self.build_system_prompt,
+            "plan_system_prompt": self.plan_system_prompt,
+            "temperature": self.temperature if self.temperature is not None else 0.0,
+            "top_p": self.top_p if self.top_p is not None else 1.0,
+            "max_steps": self.max_steps if self.max_steps is not None else 50,
+            "compaction_auto": bool(self.compaction_auto) if self.compaction_auto is not None else False,
+            "compaction_tail_turns": self.compaction_tail_turns if self.compaction_tail_turns is not None else 4,
+            "tool_output_max_lines": self.tool_output_max_lines if self.tool_output_max_lines is not None else 200,
+            "tool_output_max_bytes": self.tool_output_max_bytes if self.tool_output_max_bytes is not None else 50000,
+            "bash_shell": self.bash_shell,
+            "snapshot_enabled": bool(self.snapshot_enabled) if self.snapshot_enabled is not None else False,
+            "disabled_tools": self.disabled_tools,
+            "permission_config": self.permission_config,
+            "custom_agents": self.custom_agents,
+            "custom_commands": self.custom_commands,
             "agent_tools_config": self.agent_tools_config,
             "agent_max_iterations": self.agent_max_iterations if self.agent_max_iterations is not None else 10,
             "debug_logging": bool(self.debug_logging) if self.debug_logging is not None else False,

@@ -28,13 +28,16 @@ class Tenant(Base):
     azure_ad_config: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     google_config: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
+    # JIT provisioning — when False, SSO/LDAP users must be pre-created in Retrace
+    auto_provision_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+
     # Policies
     mfa_required: Mapped[bool] = mapped_column(Boolean, default=False)
     session_timeout_minutes: Mapped[int] = mapped_column(Integer, default=480)
     password_policy: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     ip_allowlist: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     ip_denylist: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
-    max_products_per_user_admin: Mapped[int] = mapped_column(Integer, default=10)
+    max_teams_per_user_admin: Mapped[int] = mapped_column(Integer, default=10)
     max_managed_users_per_user_admin: Mapped[int] = mapped_column(Integer, default=50)  # default max users a user_admin can create
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -48,9 +51,10 @@ class Tenant(Base):
             "status": self.status,
             "auth_method": self.auth_method,
             "ldap_require_ssl": getattr(self, "ldap_require_ssl", False),
+            "auto_provision_enabled": getattr(self, "auto_provision_enabled", False),
             "mfa_required": self.mfa_required,
             "session_timeout_minutes": self.session_timeout_minutes,
-            "max_products_per_user_admin": self.max_products_per_user_admin,
+            "max_teams_per_user_admin": self.max_teams_per_user_admin,
             "max_managed_users_per_user_admin": getattr(self, "max_managed_users_per_user_admin", 50),
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }

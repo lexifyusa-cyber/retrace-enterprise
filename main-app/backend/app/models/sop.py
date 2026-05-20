@@ -20,9 +20,9 @@ class SOP(Base):
     sop_id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=lambda: str(uuid4())
     )
-    product_id: Mapped[Optional[str]] = mapped_column(
+    team_id: Mapped[Optional[str]] = mapped_column(
         String(36),
-        ForeignKey("products.product_id", ondelete="CASCADE"),
+        ForeignKey("teams.team_id", ondelete="CASCADE"),
         nullable=True,
         index=True,
     )
@@ -52,7 +52,7 @@ class SOP(Base):
     def to_dict(self) -> dict:
         return {
             "sop_id": self.sop_id,
-            "product_id": self.product_id,
+            "team_id": self.team_id,
             "title": self.title,
             "goal": self.goal,
             "sop_json": self.sop_json,

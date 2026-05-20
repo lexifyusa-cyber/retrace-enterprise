@@ -225,9 +225,8 @@ class ChunkRecord(Base):
     chunk_id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=lambda: str(uuid4())
     )
-    product_id: Mapped[str] = mapped_column(
+    team_id: Mapped[str] = mapped_column(
         String(36),
-        ForeignKey("products.product_id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
@@ -241,7 +240,7 @@ class ChunkRecord(Base):
     )
 
     __table_args__ = (
-        Index("ix_chunk_product_type", "product_id", "processing_type"),
+        Index("ix_chunk_team_type", "team_id", "processing_type"),
     )
 
     def to_chunk(self) -> Chunk:
@@ -255,7 +254,7 @@ class ChunkRecord(Base):
 
 
 class KnowledgeBase(Base):
-    """Compressed + encrypted knowledge base blob per product.
+    """Compressed + encrypted knowledge base blob per team.
 
     Stores the full extracted text AND the LLM project analysis as a
     single gzip-compressed, AES-256-GCM encrypted blob.
@@ -266,9 +265,8 @@ class KnowledgeBase(Base):
     kb_id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=lambda: str(uuid4())
     )
-    product_id: Mapped[str] = mapped_column(
+    team_id: Mapped[str] = mapped_column(
         String(36),
-        ForeignKey("products.product_id", ondelete="CASCADE"),
         nullable=False,
         unique=True,
         index=True,

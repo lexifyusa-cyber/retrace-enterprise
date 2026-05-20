@@ -1,5 +1,5 @@
 import axios from 'axios'
-import { Pod, FolderGroup, Product, TrainingJob, QueryResponse, DirectoryListing, AgentSession, AgentTool, Conversation } from '@/types'
+import { Pod, FolderGroup, Team, TrainingJob, QueryResponse, DirectoryListing, AgentSession, AgentTool, Conversation } from '@/types'
 
 const api = axios.create({
   baseURL: '/api/v1',
@@ -16,7 +16,7 @@ api.interceptors.request.use((config) => {
   return config
 })
 
-/** Backend `product_id` query value for agent docs/SOPs not tied to a product. */
+/** Backend `team_id` query value for agent docs/SOPs not tied to a team. */
 export const AGENT_GENERAL_SCOPE = '__none__'
 
 api.interceptors.response.use(
@@ -68,7 +68,7 @@ export const podApi = {
     return response.data
   },
   
-  browse: async (podId: string, path: string = '/', recursive: boolean = false): Promise<DirectoryListing> => {
+  browse: async (podId: string, path: string = '.', recursive: boolean = false): Promise<DirectoryListing> => {
     const response = await api.post(`/pods/${podId}/browse`, null, {
       params: { path, recursive }
     })
@@ -79,30 +79,46 @@ export const podApi = {
     const response = await api.get(`/pods/${podId}/status`)
     return response.data
   },
+
+  /**
+   * Mint a short-lived signed URL for downloading the pod installer.
+   *
+   * The signed URL embeds a 60s JWT in a query parameter, so the actual
+   * download can be triggered with a plain `<a href download>` click —
+   * no Authorization header needed. This is the only pattern that works
+   * inside the cross-origin iframe at retrace.me/try, where the
+   * "fetch + blob + synthetic click" pattern is silently blocked by
+   * Chrome's iframe download intervention after the fetch's await
+   * consumes the iframe's transient user activation.
+   */
+  getDownloadUrl: async (podId: string): Promise<string> => {
+    const response = await api.post(`/pods/${podId}/download-token`)
+    return response.data.url
+  },
 }
 
 // Local filesystem browse (backend server)
 export const localFilesApi = {
-  browse: async (path: string = '/'): Promise<DirectoryListing> => {
-    const response = await api.get('/files/browse', { params: { path } })
+  browse: async (path: string = '/', host: boolean = false): Promise<DirectoryListing> => {
+    const response = await api.get('/files/browse', { params: { path, host } })
     return response.data
   },
 }
 
-// Product APIs
-export const productApi = {
-  list: async (): Promise<Product[]> => {
-    const response = await api.get('/products')
+// Team APIs
+export const teamApi = {
+  list: async (): Promise<Team[]> => {
+    const response = await api.get('/teams')
     return response.data
   },
   
-  get: async (productId: string): Promise<Product> => {
-    const response = await api.get(`/products/${productId}`)
+  get: async (teamId: string): Promise<Team> => {
+    const response = await api.get(`/teams/${teamId}`)
     return response.data
   },
   
   create: async (data: {
-    product_name: string
+    team_name: string
     description?: string
     auto_generate_description?: boolean
     folder_groups?: Array<{
@@ -115,25 +131,25 @@ export const productApi = {
         file_filters?: { include: string[]; exclude: string[] }
       }>
     }>
-  }): Promise<Product> => {
-    const response = await api.post('/products', data)
+  }): Promise<Team> => {
+    const response = await api.post('/teams', data)
     return response.data
   },
   
-  update: async (productId: string, data: Partial<{
-    product_name: string
+  update: async (teamId: string, data: Partial<{
+    team_name: string
     description: string
-  }>): Promise<Product> => {
-    const response = await api.put(`/products/${productId}`, data)
+  }>): Promise<Team> => {
+    const response = await api.put(`/teams/${teamId}`, data)
     return response.data
   },
   
-  delete: async (productId: string) => {
-    const response = await api.delete(`/products/${productId}`)
+  delete: async (teamId: string) => {
+    const response = await api.delete(`/teams/${teamId}`)
     return response.data
   },
   
-  addFolderGroup: async (productId: string, data: {
+  addFolderGroup: async (teamId: string, data: {
     pod_id: string
     group_name: string
     group_type: string
@@ -143,49 +159,49 @@ export const productApi = {
       file_filters?: { include: string[]; exclude: string[] }
     }>
   }): Promise<FolderGroup> => {
-    const response = await api.post(`/products/${productId}/groups`, data)
+    const response = await api.post(`/teams/${teamId}/groups`, data)
     return response.data
   },
   
-  removeFolderGroup: async (productId: string, groupId: string) => {
-    const response = await api.delete(`/products/${productId}/groups/${groupId}`)
+  removeFolderGroup: async (teamId: string, groupId: string) => {
+    const response = await api.delete(`/teams/${teamId}/groups/${groupId}`)
     return response.data
   },
   
-  trainAll: async (productId: string) => {
-    const response = await api.post(`/products/${productId}/train`)
+  trainAll: async (teamId: string) => {
+    const response = await api.post(`/teams/${teamId}/train`)
     return response.data
   },
   
-  getTrainingStatus: async (productId: string) => {
-    const response = await api.get(`/products/${productId}/training-status`)
+  getTrainingStatus: async (teamId: string) => {
+    const response = await api.get(`/teams/${teamId}/training-status`)
     return response.data
   },
   
-  stopTraining: async (productId: string) => {
-    const response = await api.post(`/products/${productId}/stop-training`)
+  stopTraining: async (teamId: string) => {
+    const response = await api.post(`/teams/${teamId}/stop-training`)
     return response.data
   },
 
-  syncQA: async (productId: string, qaPairs: { question: string; answer: string }[]) => {
-    const response = await api.post(`/products/${productId}/sync-qa`, { qa_pairs: qaPairs })
+  syncQA: async (teamId: string, qaPairs: { question: string; answer: string }[]) => {
+    const response = await api.post(`/teams/${teamId}/sync-qa`, { qa_pairs: qaPairs })
     return response.data
   },
 
-  getTrainingTree: async (productId: string) => {
-    const response = await api.get(`/products/${productId}/training-tree`)
+  getTrainingTree: async (teamId: string) => {
+    const response = await api.get(`/teams/${teamId}/training-tree`)
     return response.data
   },
 
-  generatePod: async (productId: string, targetOs: string, agentName?: string) => {
-    const response = await api.post(`/products/${productId}/generate-pod`, null, {
+  generatePod: async (teamId: string, targetOs: string, agentName?: string) => {
+    const response = await api.post(`/teams/${teamId}/generate-pod`, null, {
       params: { target_os: targetOs, agent_name: agentName }
     })
     return response.data
   },
 
-  listPods: async (productId: string) => {
-    const response = await api.get(`/products/${productId}/pods`)
+  listPods: async (teamId: string) => {
+    const response = await api.get(`/teams/${teamId}/pods`)
     return response.data
   },
 
@@ -225,8 +241,8 @@ export const trainingApi = {
 
 // Query APIs
 export const queryApi = {
-  ask: async (question: string, productIds: string[]): Promise<QueryResponse> => {
-    const response = await api.post('/query', { question, product_ids: productIds })
+  ask: async (question: string, teamIds: string[]): Promise<QueryResponse> => {
+    const response = await api.post('/query', { question, team_ids: teamIds })
     return response.data
   },
   
@@ -243,11 +259,14 @@ export const queryApi = {
 
 // Agent APIs
 export const agentApi = {
-  /** Returns the SSE endpoint URL (caller uses fetch + EventSource pattern) */
-  getExecuteUrl: () => '/api/v1/agent/execute',
 
-  listSessions: async (productId?: string): Promise<AgentSession[]> => {
-    const response = await api.get('/agent/sessions', { params: { product_id: productId } })
+  /** Pre-start MCP extensions in the background (fire-and-forget). */
+  warmupMcp: async (): Promise<void> => {
+    await api.post('/agent/warmup-mcp').catch(() => {})
+  },
+
+  listSessions: async (teamId?: string): Promise<AgentSession[]> => {
+    const response = await api.get('/agent/sessions', { params: { team_id: teamId } })
     return response.data
   },
 
@@ -261,20 +280,16 @@ export const agentApi = {
     return response.data
   },
 
-  updateAgentTools: async (disabledTools: string[]) => {
-    const response = await api.patch('/settings/agent-tools', { disabled_tools: disabledTools })
-    return response.data
-  },
 
   // Conversations
-  listConversations: async (productId: string): Promise<Conversation[]> => {
-    const response = await api.get('/agent/conversations', { params: { product_id: productId || '__none__' } })
+  listConversations: async (teamId: string): Promise<Conversation[]> => {
+    const response = await api.get('/agent/conversations', { params: { team_id: teamId || '__none__' } })
     return response.data
   },
 
-  createConversation: async (productId: string, title?: string): Promise<Conversation> => {
+  createConversation: async (teamId: string, title?: string): Promise<Conversation> => {
     const response = await api.post('/agent/conversations', {
-      product_id: productId || null,
+      team_id: teamId || null,
       title: title || 'New conversation',
     })
     return response.data
@@ -295,8 +310,8 @@ export const agentApi = {
     return response.data
   },
 
-  deleteAllConversations: async (productId: string) => {
-    const response = await api.delete(`/agent/conversations`, { params: { product_id: productId } })
+  deleteAllConversations: async (teamId: string) => {
+    const response = await api.delete(`/agent/conversations`, { params: { team_id: teamId } })
     return response.data
   },
 
@@ -308,14 +323,14 @@ export const agentApi = {
   },
 
   // Learn This — train Q&A as expert knowledge
-  learnThis: async (productId: string, question: string, answer: string) => {
-    const response = await api.post('/agent/learn', { product_id: productId, question, answer })
+  learnThis: async (teamId: string, question: string, answer: string) => {
+    const response = await api.post('/agent/learn', { team_id: teamId, question, answer })
     return response.data
   },
 
   // SOPs (Automations)
-  listSOPs: async (productId: string) => {
-    const response = await api.get('/agent/sops', { params: { product_id: productId } })
+  listSOPs: async (teamId: string) => {
+    const response = await api.get('/agent/sops', { params: { team_id: teamId } })
     return response.data
   },
 
@@ -351,8 +366,8 @@ export const agentApi = {
   },
 
   // Documentation
-  listDocs: async (productId: string) => {
-    const response = await api.get('/agent/docs', { params: { product_id: productId } })
+  listDocs: async (teamId: string) => {
+    const response = await api.get('/agent/docs', { params: { team_id: teamId } })
     return response.data
   },
 
@@ -371,6 +386,218 @@ export const agentApi = {
     const response = await api.get('/agent/dashboard-stats')
     return response.data
   },
+
+  // LLM Logs (developer mode)
+  listLlmLogConversations: async (): Promise<LlmLogConversation[]> => {
+    const response = await api.get('/agent/llm-logs/conversations')
+    return response.data
+  },
+  getLlmLogs: async (conversationId: string): Promise<LlmLog[]> => {
+    const response = await api.get('/agent/llm-logs', { params: { conversation_id: conversationId } })
+    return response.data
+  },
+
+  // OpenCode proxy
+  opencode: {
+    getStatus: async (): Promise<{ running: boolean; healthy: boolean; port: number | null; external?: boolean }> => {
+      const response = await api.get('/agent/opencode/status')
+      return response.data
+    },
+    start: async (teamId?: string): Promise<{ status: string; port: number }> => {
+      const response = await api.post('/agent/opencode/start', null, { params: { team_id: teamId } })
+      return response.data
+    },
+    stop: async (): Promise<{ status: string }> => {
+      const response = await api.post('/agent/opencode/stop')
+      return response.data
+    },
+    createSession: async (teamId?: string, conversationId?: string, agent?: string): Promise<{ opencode_session_id: string; port: number }> => {
+      const response = await api.post('/agent/opencode/session', { team_id: teamId, conversation_id: conversationId, agent })
+      return response.data
+    },
+    getSession: async (sessionId: string) => {
+      const response = await api.get(`/agent/opencode/session/${sessionId}`)
+      return response.data
+    },
+    getMessageUrl: (sessionId: string) => `/api/v1/agent/opencode/session/${sessionId}/message`,
+    getMessages: async (sessionId: string) => {
+      const response = await api.get(`/agent/opencode/session/${sessionId}/message`)
+      return response.data
+    },
+    /** Revert to before a specific message (or before the last user message
+     * if `messageId` is omitted). Removes that message and everything after. */
+    revert: async (sessionId: string, messageId?: string) => {
+      const body = messageId ? { messageID: messageId } : undefined
+      const response = await api.post(`/agent/opencode/session/${sessionId}/revert`, body)
+      return response.data
+    },
+    unrevert: async (sessionId: string) => {
+      const response = await api.post(`/agent/opencode/session/${sessionId}/unrevert`)
+      return response.data
+    },
+    /** Get the agent's TODO list for the session. */
+    getTodos: async (sessionId: string) => {
+      const response = await api.get(`/agent/opencode/session/${sessionId}/todo`)
+      return response.data as Array<{ id?: string; content?: string; status?: string }>
+    },
+    getDiff: async (sessionId: string) => {
+      const response = await api.get(`/agent/opencode/session/${sessionId}/diff`)
+      return response.data
+    },
+    regenerateConfig: async (teamId?: string) => {
+      const params: Record<string, string> = {}
+      if (teamId) params.team_id = teamId
+      const response = await api.post('/agent/opencode/regenerate-config', null, { params })
+      return response.data
+    },
+    getCost: async (sessionId: string) => {
+      const response = await api.get(`/agent/opencode/session/${sessionId}/cost`)
+      return response.data
+    },
+    getConfig: async () => {
+      const response = await api.get('/agent/opencode/config')
+      return response.data
+    },
+    forkSession: async (sessionId: string, messageId?: string) => {
+      const body = messageId ? { messageID: messageId } : undefined
+      const response = await api.post(`/agent/opencode/session/${sessionId}/fork`, body)
+      return response.data
+    },
+    /** List MCP servers + their connection status (connected / failed / disabled). */
+    listMcpServers: async () => {
+      const response = await api.get('/agent/opencode/mcp')
+      return response.data as Record<string, { status: string; [k: string]: unknown }>
+    },
+    /** Reconnect a specific MCP server (e.g. one that's in failed status). */
+    mcpConnect: async (serverName: string) => {
+      const response = await api.post(`/agent/opencode/mcp/${encodeURIComponent(serverName)}/connect`)
+      return response.data
+    },
+    /**
+     * Live agent tool-toggle. Persists the new disabled list to settings AND
+     * applies it to every open OC session (PATCH session permission for
+     * native tools; MCP connect/disconnect for MCP-provided tools). No config
+     * file rewrite, no watcher fire, no instance dispose. Other open
+     * conversations are kept in sync because the backend fans the PATCH out.
+     */
+    setTools: async (disabledTools: string[]) => {
+      const response = await api.patch('/agent/opencode/tools', { disabled_tools: disabledTools })
+      return response.data
+    },
+    /** Disconnect a specific MCP server. Mostly for completeness / testing. */
+    mcpDisconnect: async (serverName: string) => {
+      const response = await api.post(`/agent/opencode/mcp/${encodeURIComponent(serverName)}/disconnect`)
+      return response.data
+    },
+    /** List sessions forked from this one — enriched with our conversation_id
+     * (when linked) so the UI can navigate directly. */
+    sessionChildren: async (sessionId: string) => {
+      const response = await api.get(`/agent/opencode/session/${sessionId}/children`)
+      return response.data as Array<{
+        id: string
+        title?: string
+        slug?: string
+        time?: { created?: number; updated?: number }
+        parentID?: string
+        model?: { id?: string; providerID?: string }
+        agent?: string
+        conversation_id?: string | null
+      }>
+    },
+    compactSession: async (sessionId: string) => {
+      const response = await api.post(`/agent/opencode/session/${sessionId}/compact`)
+      return response.data
+    },
+    respondPermission: async (sessionId: string, permissionId: string, response: 'once' | 'always' | 'reject') => {
+      const resp = await api.post(`/agent/opencode/session/${sessionId}/permissions/${permissionId}`, { response })
+      return resp.data
+    },
+    /** Submit answers for a pending OpenCode `question` tool request. */
+    replyToQuestion: async (requestId: string, answers: string[][]) => {
+      const resp = await api.post(`/agent/opencode/question/${requestId}/reply`, { answers })
+      return resp.data
+    },
+    /** Dismiss a pending question — agent will see a tool error. */
+    rejectQuestion: async (requestId: string) => {
+      const resp = await api.post(`/agent/opencode/question/${requestId}/reject`)
+      return resp.data
+    },
+    /** List currently-pending questions for the authed user. */
+    listPendingQuestions: async () => {
+      const resp = await api.get('/agent/opencode/questions')
+      return resp.data as Array<{
+        id: string
+        sessionID: string
+        questions: Array<{
+          question: string
+          header?: string
+          options?: Array<{ label: string; description?: string }>
+          multiple?: boolean
+          custom?: boolean
+        }>
+        tool?: { messageID?: string; callID?: string }
+      }>
+    },
+    /** Abort an in-flight prompt for the given OpenCode session. Returns
+     * { aborted: boolean }. Safe to call when nothing is actively generating. */
+    abort: async (sessionId: string): Promise<{ aborted: boolean }> => {
+      const resp = await api.post(`/agent/opencode/session/${sessionId}/abort`)
+      return resp.data
+    },
+    /** Generate a public share URL for the session. Returns OC's response,
+     * typically including a `url` field. */
+    shareSession: async (sessionId: string) => {
+      const resp = await api.post(`/agent/opencode/session/${sessionId}/share`)
+      return resp.data as { url?: string; [k: string]: any }
+    },
+    /** Revoke an existing share. */
+    unshareSession: async (sessionId: string) => {
+      const resp = await api.delete(`/agent/opencode/session/${sessionId}/share`)
+      return resp.data as { unshared: boolean }
+    },
+    /** Generate a session digest. Distinct from compact (which trims context
+     * for ongoing use). */
+    summarizeSession: async (sessionId: string) => {
+      const resp = await api.post(`/agent/opencode/session/${sessionId}/summarize`)
+      return resp.data
+    },
+    /** List the OpenCode-side slash commands available in the current
+     * project. Used by the frontend command palette. */
+    listCommands: async () => {
+      const resp = await api.get(`/agent/opencode/commands`)
+      return resp.data as Array<{ name: string; description?: string; agent?: string }>
+    },
+  },
+}
+
+export interface LlmLogConversation {
+  conversation_id: string
+  title: string
+  team_id: string | null
+  updated_at: string | null
+  log_count: number
+}
+
+export interface LlmLog {
+  log_id: string
+  user_id: string | null
+  conversation_id: string | null
+  iteration: number
+  request_messages: string | null  // JSON string
+  response_content: string | null
+  tokens: {
+    input: number
+    output: number
+    total: number
+    cache_read: number
+    cache_creation: number
+    reasoning: number
+  }
+  model_provider: string | null
+  model_name: string | null
+  latency_ms: number
+  error: string | null
+  created_at: string | null
 }
 
 // Email API
@@ -422,60 +649,60 @@ export const emailApi = {
     return response.data
   },
 
-  // Inboxes (per product)
-  getInbox: async (productId: string) => {
-    const response = await api.get(`/products/${productId}/inbox`)
+  // Inboxes (per team)
+  getInbox: async (teamId: string) => {
+    const response = await api.get(`/teams/${teamId}/inbox`)
     return response.data
   },
-  createInbox: async (productId: string, data: {
+  createInbox: async (teamId: string, data: {
     connection_id: string
     display_name?: string
     action_config?: Record<string, any>
   }) => {
-    const response = await api.post(`/products/${productId}/inbox`, data)
+    const response = await api.post(`/teams/${teamId}/inbox`, data)
     return response.data
   },
-  updateInbox: async (productId: string, data: {
+  updateInbox: async (teamId: string, data: {
     is_active?: boolean
     action_config?: Record<string, any>
   }) => {
-    const response = await api.patch(`/products/${productId}/inbox`, data)
+    const response = await api.patch(`/teams/${teamId}/inbox`, data)
     return response.data
   },
-  deleteInbox: async (productId: string) => {
-    const response = await api.delete(`/products/${productId}/inbox`)
+  deleteInbox: async (teamId: string) => {
+    const response = await api.delete(`/teams/${teamId}/inbox`)
     return response.data
   },
 
   // Drafts
-  listDrafts: async (productId: string) => {
-    const response = await api.get(`/products/${productId}/inbox/drafts`)
+  listDrafts: async (teamId: string) => {
+    const response = await api.get(`/teams/${teamId}/inbox/drafts`)
     return response.data
   },
-  listUnread: async (productId: string) => {
-    const response = await api.get(`/products/${productId}/inbox/unread`)
+  listUnread: async (teamId: string) => {
+    const response = await api.get(`/teams/${teamId}/inbox/unread`)
     return response.data
   },
-  approveDraft: async (productId: string, messageId: string, editedResponse?: string) => {
-    const response = await api.post(`/products/${productId}/inbox/drafts/${messageId}/approve`, {
+  approveDraft: async (teamId: string, messageId: string, editedResponse?: string) => {
+    const response = await api.post(`/teams/${teamId}/inbox/drafts/${messageId}/approve`, {
       edited_response: editedResponse,
     })
     return response.data
   },
-  rejectDraft: async (productId: string, messageId: string) => {
-    const response = await api.post(`/products/${productId}/inbox/drafts/${messageId}/reject`)
+  rejectDraft: async (teamId: string, messageId: string) => {
+    const response = await api.post(`/teams/${teamId}/inbox/drafts/${messageId}/reject`)
     return response.data
   },
-  editDraft: async (productId: string, messageId: string, editedResponse: string) => {
-    const response = await api.patch(`/products/${productId}/inbox/drafts/${messageId}`, {
+  editDraft: async (teamId: string, messageId: string, editedResponse: string) => {
+    const response = await api.patch(`/teams/${teamId}/inbox/drafts/${messageId}`, {
       edited_response: editedResponse,
     })
     return response.data
   },
 
   // Message log
-  listMessages: async (productId: string, limit = 50, offset = 0) => {
-    const response = await api.get(`/products/${productId}/inbox/messages`, {
+  listMessages: async (teamId: string, limit = 50, offset = 0) => {
+    const response = await api.get(`/teams/${teamId}/inbox/messages`, {
       params: { limit, offset },
     })
     return response.data
@@ -484,19 +711,18 @@ export const emailApi = {
 
 // Channel API (Slack / Teams)
 export const channelApi = {
-  listConnections: async (productId?: string) => {
+  listConnections: async (teamId?: string) => {
     const response = await api.get('/channels/connections', {
-      params: productId ? { product_id: productId } : {},
+      params: teamId ? { team_id: teamId } : {},
     })
     return response.data
   },
   createConnection: async (data: {
-    product_id: string
+    team_id: string
     platform: string
     channel_name: string
     channel_id: string
     bot_token: string
-    team_id?: string
     auto_respond?: boolean
     ingest_history?: boolean
   }) => {
@@ -526,6 +752,77 @@ export const channelApi = {
   previewMessages: async (connectionId: string) => {
     const response = await api.get(`/channels/${connectionId}/preview`)
     return response.data
+  },
+}
+
+
+// ─────────────────────────────────────────────────────────────────────
+// Source-data Connections API (SFTP / SMB / S3 / Azure Blob)
+// ─────────────────────────────────────────────────────────────────────
+
+export interface SourceConnection {
+  connection_id: string
+  tenant_id: string | null
+  name: string
+  source_type: 'sftp' | 'smb' | 's3' | 'azure_blob'
+  last_tested_at: string | null
+  last_test_status: 'ok' | 'error' | null
+  last_test_error: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface SourceSchemaField {
+  name: string
+  label: string
+  type: 'string' | 'int' | 'password'
+  required: boolean
+  secret: boolean
+  default?: string | number
+}
+
+export interface SourceDirEntry {
+  name: string
+  path: string
+  is_dir: boolean
+  size: number
+}
+
+export const connectionsApi = {
+  list: async (): Promise<SourceConnection[]> => {
+    const r = await api.get('/connections/')
+    return r.data
+  },
+  schema: async (sourceType: string): Promise<{ source_type: string; fields: SourceSchemaField[] }> => {
+    const r = await api.get(`/connections/schema/${sourceType}`)
+    return r.data
+  },
+  create: async (data: { name: string; source_type: string; config: Record<string, any> }): Promise<SourceConnection> => {
+    const r = await api.post('/connections/', data)
+    return r.data
+  },
+  get: async (id: string) => {
+    const r = await api.get(`/connections/${id}`)
+    return r.data
+  },
+  update: async (id: string, data: { name?: string; config?: Record<string, any> }) => {
+    const r = await api.patch(`/connections/${id}`, data)
+    return r.data
+  },
+  delete: async (id: string) => {
+    await api.delete(`/connections/${id}`)
+  },
+  test: async (id: string): Promise<{ ok: boolean; message: string }> => {
+    const r = await api.post(`/connections/${id}/test`)
+    return r.data
+  },
+  listDir: async (id: string, path: string = '/'): Promise<{ path: string; entries: SourceDirEntry[] }> => {
+    const r = await api.get(`/connections/${id}/list`, { params: { path } })
+    return r.data
+  },
+  oauthInit: async (provider: string, name: string): Promise<{ auth_url: string }> => {
+    const r = await api.get(`/connections/oauth/init/${provider}`, { params: { name } })
+    return r.data
   },
 }
 

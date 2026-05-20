@@ -26,7 +26,7 @@ class AutomationRun(Base):
         nullable=False,
         index=True,
     )
-    product_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    team_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
     trigger: Mapped[str] = mapped_column(
         String(20), nullable=False, default="scheduled"
     )  # scheduled, manual
@@ -45,7 +45,7 @@ class AutomationRun(Base):
         return {
             "run_id": self.run_id,
             "sop_id": self.sop_id,
-            "product_id": self.product_id,
+            "team_id": self.team_id,
             "trigger": self.trigger,
             "status": self.status,
             "steps_total": self.steps_total,

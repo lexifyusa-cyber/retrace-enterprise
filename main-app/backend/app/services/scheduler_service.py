@@ -65,7 +65,7 @@ class AutomationScheduler:
                 for sop in sops:
                     self.add_automation_job(
                         sop_id=sop.sop_id,
-                        product_id=sop.product_id,
+                        team_id=sop.team_id,
                         schedule_type=sop.schedule_type,
                         schedule_config=sop.schedule_config or {},
                     )
@@ -76,7 +76,7 @@ class AutomationScheduler:
     def add_automation_job(
         self,
         sop_id: str,
-        product_id: str,
+        team_id: str,
         schedule_type: str,
         schedule_config: dict,
     ):
@@ -97,7 +97,7 @@ class AutomationScheduler:
             self._execute_automation,
             trigger=trigger,
             id=job_id,
-            args=[sop_id, product_id],
+            args=[sop_id, team_id],
             replace_existing=True,
             misfire_grace_time=300,
         )
@@ -164,11 +164,12 @@ class AutomationScheduler:
 
         return None
 
-    async def _execute_automation(self, sop_id: str, product_id: str):
+    async def _execute_automation(self, sop_id: str, team_id: str, user_id: str | None = None):
         """Execute an automation's steps using the agent tools."""
         from app.db.database import async_session_maker
         from app.models.sop import SOP
         from app.models.automation_run import AutomationRun
+        from app.models.team import Team
         from sqlalchemy import select
 
         run_id = str(uuid4())
@@ -185,14 +186,22 @@ class AutomationScheduler:
                     logger.warning("automation_sop_not_found", sop_id=sop_id)
                     return
 
-                steps = sop.sop_json.get("steps", [])
+                sop_data = sop.sop_json if isinstance(sop.sop_json, dict) else json.loads(sop.sop_json)
+                steps = sop_data.get("steps", [])
                 total_steps = len(steps)
+
+                # Get team owner for sandbox session
+                team_result = await session.execute(
+                    select(Team).where(Team.team_id == team_id)
+                )
+                team = team_result.scalar_one_or_none()
+                owner_id = team.created_by if team else None
 
                 # Create run record
                 run = AutomationRun(
                     run_id=run_id,
                     sop_id=sop_id,
-                    product_id=product_id,
+                    team_id=team_id,
                     trigger="scheduled",
                     status="running",
                     steps_total=total_steps,
@@ -202,10 +211,25 @@ class AutomationScheduler:
                 session.add(run)
                 await session.commit()
 
+            # Get or create sandbox session for file operations.
+            # Prefer the triggering user (manual run) over the team owner (scheduled run).
+            sandbox_user_id = user_id or owner_id
+            sandbox_session = None
+            if sandbox_user_id:
+                try:
+                    from app.services.sandbox_manager import get_or_create_session
+                    sandbox_session = await asyncio.get_event_loop().run_in_executor(
+                        None, get_or_create_session, sandbox_user_id
+                    )
+                    logger.info("automation_sandbox_ready", run_id=run_id, user_id=sandbox_user_id)
+                except Exception as sandbox_exc:
+                    logger.warning("automation_sandbox_unavailable", run_id=run_id, error=str(sandbox_exc))
+
             logger.info("automation_run_started", run_id=run_id, sop_id=sop_id, steps=total_steps)
 
-            # Execute each step
+            # Execute each step, chaining outputs so write_file can use prior results
             completed = 0
+            step_outputs: list[str] = []
             for step in steps:
                 step_num = step.get("number", completed + 1)
                 tool = step.get("tool", "terminal")
@@ -216,9 +240,15 @@ class AutomationScheduler:
                 log_parts.append(f"Tool: {tool}")
                 log_parts.append(f"Command: {command}")
 
+                # For write_file: if no explicit text/content, inject accumulated
+                # output from previous steps so the file contains real data.
+                if tool == "write_file" and not step.get("text") and not step.get("content"):
+                    step = {**step, "content": "\n\n".join(step_outputs)}
+
                 try:
-                    output = await self._run_step(tool, command, product_id, step=step)
+                    output = await self._run_step(tool, command, team_id, step=step, sandbox_session=sandbox_session)
                     log_parts.append(f"Output: {output[:2000]}")
+                    step_outputs.append(output)
                     # Treat non-zero exit code (e.g. from terminal) as step failure
                     if "[exit code:" in output and "[exit code: 0]" not in output:
                         break
@@ -281,15 +311,75 @@ class AutomationScheduler:
             except Exception:
                 pass
 
-    async def _run_step(self, tool: str, command: str, product_id: str, step: dict | None = None) -> str:
+    async def _run_step(self, tool: str, command: str, team_id: str, step: dict | None = None, sandbox_session=None) -> str:
         """Execute a single automation step using the appropriate tool.
 
         For tools that take a single argument (e.g. terminal, read_file), `command` is passed as-is.
         For write_file, the step must provide content via step["text"] or step["content"]; command is the path.
+        For search_knowledge_base / knowledge_base, `command` is the search query.
+
+        When a sandbox_session is available, read_file, write_file, and terminal
+        are routed through the sandbox container instead of the host filesystem.
         """
         from app.tools import get_tool_by_name
 
         step = step or {}
+
+        # Special handling for knowledge base search — needs team_id + LLM settings
+        if tool in ("search_knowledge_base", "knowledge_base"):
+            try:
+                from app.tools.knowledge_base import search_knowledge_base
+                from app.api.settings import get_active_llm_settings
+                from app.db.database import async_session_maker
+
+                async with async_session_maker() as session:
+                    llm = await get_active_llm_settings(session)
+
+                result = search_knowledge_base(
+                    query=command,
+                    team_id=team_id,
+                    api_key=llm.get("api_key", ""),
+                    model=llm.get("model_name", ""),
+                    base_url=llm.get("api_url") or None,
+                    top_k=step.get("top_k", 10),
+                    agent_keywords=step.get("keywords"),
+                )
+                return str(result) if result else "(no results)"
+            except Exception as exc:
+                raise RuntimeError(f"KB search failed: {exc}")
+
+        # Use sandboxed tools when a sandbox session is available
+        if sandbox_session and tool in ("read_file", "write_file", "terminal"):
+            from app.tools.sandboxed import (
+                make_sandboxed_read_file,
+                make_sandboxed_write_file,
+                make_sandboxed_terminal,
+            )
+            try:
+                if tool == "write_file":
+                    sandboxed_write = make_sandboxed_write_file(sandbox_session)
+                    path = command
+                    text = step.get("text") or step.get("content") or ""
+                    result = await asyncio.get_event_loop().run_in_executor(
+                        None, sandboxed_write, path, text
+                    )
+                    return str(result) if result else "(no output)"
+                elif tool == "read_file":
+                    sandboxed_read = make_sandboxed_read_file(sandbox_session)
+                    result = await asyncio.get_event_loop().run_in_executor(
+                        None, sandboxed_read, command
+                    )
+                    return str(result) if result else "(no output)"
+                elif tool == "terminal":
+                    sandboxed_term = make_sandboxed_terminal(sandbox_session)
+                    result = await asyncio.get_event_loop().run_in_executor(
+                        None, sandboxed_term, command
+                    )
+                    return str(result) if result else "(no output)"
+            except Exception as exc:
+                logger.warning("sandboxed_step_failed_fallback_to_host", tool=tool, error=str(exc))
+                # Fall through to host execution as fallback
+
         tool_func = get_tool_by_name(tool)
         if tool_func is None:
             # Fallback: use terminal for unknown tools
@@ -315,10 +405,9 @@ class AutomationScheduler:
         except Exception as exc:
             raise RuntimeError(f"Step failed ({tool}): {exc}")
 
-    async def run_now(self, sop_id: str, product_id: str) -> str:
+    async def run_now(self, sop_id: str, team_id: str, user_id: str | None = None) -> str:
         """Trigger an immediate manual run. Returns the run_id."""
         from app.db.database import async_session_maker
-        from app.models.automation_run import AutomationRun
         from app.models.sop import SOP
         from sqlalchemy import select
 
@@ -329,8 +418,8 @@ class AutomationScheduler:
             if not sop:
                 raise ValueError("Automation not found")
 
-        # Run in background
-        asyncio.create_task(self._execute_automation(sop_id, product_id))
+        # Run in background, passing the triggering user's ID for sandbox routing
+        asyncio.create_task(self._execute_automation(sop_id, team_id, user_id=user_id))
         return sop_id
 
 

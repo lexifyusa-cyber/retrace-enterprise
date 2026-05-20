@@ -24,7 +24,7 @@ export interface FolderPath {
 
 export interface FolderGroup {
   group_id: string
-  product_id: string
+  team_id: string
   pod_id: string
   group_name: string
   group_type: 'code' | 'documentation' | 'diagrams' | 'configuration' | 'tickets' | 'other'
@@ -36,9 +36,9 @@ export interface FolderGroup {
   metadata: Record<string, unknown>
 }
 
-export interface Product {
-  product_id: string
-  product_name: string
+export interface Team {
+  team_id: string
+  team_name: string
   description: string | null
   auto_generate_description?: boolean
   created_at: string | null
@@ -110,7 +110,7 @@ export interface DirectoryListing {
 
 export interface AgentSession {
   session_id: string
-  product_id: string
+  team_id: string
   task: string
   status: 'running' | 'completed' | 'failed' | 'stopped'
   iterations: number
@@ -145,7 +145,7 @@ export interface FileEntry {
 export interface ConversationMessage {
   message_id: string
   conversation_id: string
-  type: 'user' | 'status' | 'tools' | 'code' | 'output' | 'answer' | 'error' | 'done' | 'sop' | 'doc'
+  type: 'user' | 'status' | 'tools' | 'code' | 'output' | 'answer' | 'error' | 'done' | 'sop' | 'doc' | 'thinking'
   content: string
   iteration?: number
   meta?: Record<string, any>
@@ -155,7 +155,9 @@ export interface ConversationMessage {
 
 export interface Conversation {
   conversation_id: string
-  product_id: string
+  team_id: string
+  user_id?: string | null
+  opencode_session_id?: string | null
   title: string
   created_at: string | null
   updated_at: string | null

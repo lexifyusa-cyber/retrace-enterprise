@@ -3,8 +3,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Send, Loader2, FileCode, FileText, Image, AlertTriangle, ChevronDown, ChevronUp, Package, Check, X, Clock, Search, Database } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import ReactMarkdown from 'react-markdown'
-import { productApi, queryApi } from '@/utils/api'
-import { SourceReference, Product, StepTimings } from '@/types'
+import { teamApi, queryApi } from '@/utils/api'
+import { SourceReference, Team, StepTimings } from '@/types'
 
 // ---------------------------------------------------------------------------
 // Types for the streaming pipeline
@@ -38,50 +38,50 @@ const INITIAL_STREAM: StreamState = {
 
 export default function Query() {
   const [question, setQuestion] = useState('')
-  const [selectedProductIds, setSelectedProductIds] = useState<string[]>([])
-  const [showProductPicker, setShowProductPicker] = useState(false)
+  const [selectedTeamIds, setSelectedTeamIds] = useState<string[]>([])
+  const [showTeamPicker, setShowTeamPicker] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const [stream, setStream] = useState<StreamState>(INITIAL_STREAM)
   const [autoSelected, setAutoSelected] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
   const queryClient = useQueryClient()
 
-  const { data: products = [] } = useQuery({
-    queryKey: ['products'],
-    queryFn: () => productApi.list(),
+  const { data: teams = [] } = useQuery({
+    queryKey: ['teams'],
+    queryFn: () => teamApi.list(),
   })
 
-  const trainedProducts = products.filter(p =>
+  const trainedTeams = teams.filter(p =>
     p.folder_groups.some(g => g.training_status === 'completed')
   )
 
-  // Auto-select first trained product on load
+  // Auto-select first trained team on load
   useEffect(() => {
-    if (!autoSelected && trainedProducts.length > 0 && selectedProductIds.length === 0) {
-      setSelectedProductIds([trainedProducts[0].product_id])
+    if (!autoSelected && trainedTeams.length > 0 && selectedTeamIds.length === 0) {
+      setSelectedTeamIds([trainedTeams[0].team_id])
       setAutoSelected(true)
     }
-  }, [trainedProducts, autoSelected, selectedProductIds.length])
+  }, [trainedTeams, autoSelected, selectedTeamIds.length])
 
   const { data: history = [] } = useQuery({
     queryKey: ['query-history'],
     queryFn: () => queryApi.getHistory(10),
   })
 
-  const toggleProduct = (productId: string) => {
-    setSelectedProductIds(prev =>
-      prev.includes(productId)
-        ? prev.filter(id => id !== productId)
-        : [...prev, productId]
+  const toggleTeam = (teamId: string) => {
+    setSelectedTeamIds(prev =>
+      prev.includes(teamId)
+        ? prev.filter(id => id !== teamId)
+        : [...prev, teamId]
     )
   }
 
   const selectAll = () => {
-    setSelectedProductIds(trainedProducts.map(p => p.product_id))
+    setSelectedTeamIds(trainedTeams.map(p => p.team_id))
   }
 
   const clearAll = () => {
-    setSelectedProductIds([])
+    setSelectedTeamIds([])
   }
 
   // ── Streaming query handler ────────────────────────────────────────
@@ -100,7 +100,7 @@ export default function Query() {
       const response = await fetch('/api/v1/query/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question: q, product_ids: pids }),
+        body: JSON.stringify({ question: q, team_ids: pids }),
         signal: controller.signal,
       })
 
@@ -226,8 +226,8 @@ export default function Query() {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    if (!question.trim() || stream.status === 'streaming' || selectedProductIds.length === 0) return
-    handleAsk(question, selectedProductIds)
+    if (!question.trim() || stream.status === 'streaming' || selectedTeamIds.length === 0) return
+    handleAsk(question, selectedTeamIds)
   }
 
   const handleHistoryClick = (q: string) => {
@@ -235,9 +235,9 @@ export default function Query() {
     setShowHistory(false)
   }
 
-  const selectedNames = trainedProducts
-    .filter(p => selectedProductIds.includes(p.product_id))
-    .map(p => p.product_name)
+  const selectedNames = trainedTeams
+    .filter(p => selectedTeamIds.includes(p.team_id))
+    .map(p => p.team_name)
 
   const isStreaming = stream.status === 'streaming'
   const hasResult = stream.status === 'done' || (stream.status === 'streaming' && stream.answer.length > 0)
@@ -252,38 +252,38 @@ export default function Query() {
         </p>
       </div>
 
-      {/* Product selector bar */}
+      {/* Team selector bar */}
       <div className="px-8 py-3 border-b border-rt-border bg-rt-bg-light">
         <div className="flex items-center gap-3">
           <span className="text-sm font-medium text-rt-text-muted whitespace-nowrap">
             Search in:
           </span>
 
-          {trainedProducts.length === 0 ? (
+          {trainedTeams.length === 0 ? (
             <span className="text-sm text-rt-text-muted italic">
-              No trained products yet. Train a product first.
+              No trained teams yet. Train a team first.
             </span>
           ) : (
             <div className="relative flex-1">
               <button
                 type="button"
-                onClick={() => setShowProductPicker(!showProductPicker)}
+                onClick={() => setShowTeamPicker(!showTeamPicker)}
                 className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-rt-border hover:border-rt-text-muted transition-colors text-sm w-full max-w-lg"
               >
                 <Package className="w-4 h-4 text-rt-primary flex-shrink-0" />
                 <span className="flex-1 text-left truncate">
-                  {selectedProductIds.length === 0
-                    ? 'Select products…'
-                    : selectedProductIds.length === trainedProducts.length
-                    ? 'All products'
+                  {selectedTeamIds.length === 0
+                    ? 'Select teams…'
+                    : selectedTeamIds.length === trainedTeams.length
+                    ? 'All teams'
                     : selectedNames.join(', ')}
                 </span>
-                <span className="badge badge-info text-xs">{selectedProductIds.length}</span>
-                <ChevronDown className={`w-4 h-4 text-rt-text-muted transition-transform ${showProductPicker ? 'rotate-180' : ''}`} />
+                <span className="badge badge-info text-xs">{selectedTeamIds.length}</span>
+                <ChevronDown className={`w-4 h-4 text-rt-text-muted transition-transform ${showTeamPicker ? 'rotate-180' : ''}`} />
               </button>
 
               <AnimatePresence>
-                {showProductPicker && (
+                {showTeamPicker && (
                   <motion.div
                     initial={{ opacity: 0, y: -4 }}
                     animate={{ opacity: 1, y: 0 }}
@@ -291,7 +291,7 @@ export default function Query() {
                     className="absolute top-full left-0 mt-1 w-full max-w-lg bg-rt-bg-light border border-rt-border rounded-lg shadow-xl z-50 overflow-hidden"
                   >
                     <div className="flex items-center justify-between px-3 py-2 border-b border-rt-border bg-rt-surface/50">
-                      <span className="text-xs text-rt-text-muted">{trainedProducts.length} trained products</span>
+                      <span className="text-xs text-rt-text-muted">{trainedTeams.length} trained teams</span>
                       <div className="flex gap-2">
                         <button type="button" onClick={selectAll} className="text-xs text-rt-primary hover:underline">Select all</button>
                         <button type="button" onClick={clearAll} className="text-xs text-rt-text-muted hover:underline">Clear</button>
@@ -299,16 +299,16 @@ export default function Query() {
                     </div>
 
                     <div className="max-h-60 overflow-y-auto divide-y divide-rt-border">
-                      {trainedProducts.map((product) => {
-                        const isSelected = selectedProductIds.includes(product.product_id)
-                        const stats = product.folder_groups.find(g => g.metadata?.chunks_indexed)?.metadata as Record<string, any> | undefined
+                      {trainedTeams.map((team) => {
+                        const isSelected = selectedTeamIds.includes(team.team_id)
+                        const stats = team.folder_groups.find(g => g.metadata?.chunks_indexed)?.metadata as Record<string, any> | undefined
                         const chunksIndexed = stats?.chunks_indexed || 0
 
                         return (
                           <button
-                            key={product.product_id}
+                            key={team.team_id}
                             type="button"
-                            onClick={() => toggleProduct(product.product_id)}
+                            onClick={() => toggleTeam(team.team_id)}
                             className={`w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-rt-surface transition-colors ${
                               isSelected ? 'bg-rt-primary/5' : ''
                             }`}
@@ -319,9 +319,9 @@ export default function Query() {
                               {isSelected && <Check className="w-3.5 h-3.5 text-white" />}
                             </div>
                             <div className="flex-1 min-w-0">
-                              <p className="text-sm font-medium truncate">{product.product_name}</p>
+                              <p className="text-sm font-medium truncate">{team.team_name}</p>
                               <p className="text-xs text-rt-text-muted">
-                                {product.folder_groups.length} groups · {chunksIndexed.toLocaleString()} datasets
+                                {team.folder_groups.length} groups · {chunksIndexed.toLocaleString()} datasets
                               </p>
                             </div>
                           </button>
@@ -330,7 +330,7 @@ export default function Query() {
                     </div>
 
                     <div className="px-3 py-2 border-t border-rt-border">
-                      <button type="button" onClick={() => setShowProductPicker(false)} className="btn-primary text-xs w-full py-1.5">
+                      <button type="button" onClick={() => setShowTeamPicker(false)} className="btn-primary text-xs w-full py-1.5">
                         Done
                       </button>
                     </div>
@@ -340,8 +340,8 @@ export default function Query() {
             </div>
           )}
 
-          {/* Selected product pills */}
-          {selectedProductIds.length > 0 && selectedProductIds.length <= 3 && (
+          {/* Selected team pills */}
+          {selectedTeamIds.length > 0 && selectedTeamIds.length <= 3 && (
             <div className="hidden lg:flex items-center gap-1.5">
               {selectedNames.map((name, i) => (
                 <span
@@ -349,7 +349,7 @@ export default function Query() {
                   className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rt-primary/10 text-rt-primary text-xs"
                 >
                   {name}
-                  <button type="button" onClick={() => toggleProduct(selectedProductIds[i])} className="hover:text-rt-accent">
+                  <button type="button" onClick={() => toggleTeam(selectedTeamIds[i])} className="hover:text-rt-accent">
                     <X className="w-3 h-3" />
                   </button>
                 </span>
@@ -454,12 +454,12 @@ export default function Query() {
                 onFocus={() => setShowHistory(true)}
                 onBlur={() => setTimeout(() => setShowHistory(false), 200)}
                 placeholder={
-                  selectedProductIds.length === 0
-                    ? 'Select products above first…'
+                  selectedTeamIds.length === 0
+                    ? 'Select teams above first…'
                     : 'Ask anything about your systems...'
                 }
                 className="input pr-12"
-                disabled={isStreaming || selectedProductIds.length === 0}
+                disabled={isStreaming || selectedTeamIds.length === 0}
               />
               {history.length > 0 && (
                 <button
@@ -473,7 +473,7 @@ export default function Query() {
             </div>
             <button
               type="submit"
-              disabled={!question.trim() || isStreaming || selectedProductIds.length === 0}
+              disabled={!question.trim() || isStreaming || selectedTeamIds.length === 0}
               className="btn-primary flex items-center gap-2"
             >
               {isStreaming ? (
@@ -485,9 +485,9 @@ export default function Query() {
             </button>
           </div>
 
-          {selectedProductIds.length === 0 && trainedProducts.length > 0 && (
+          {selectedTeamIds.length === 0 && trainedTeams.length > 0 && (
             <p className="text-xs text-rt-warning mt-2">
-              Select at least one product to search
+              Select at least one team to search
             </p>
           )}
         </form>

@@ -13,7 +13,7 @@ Two-step LLM evaluation:
            (description, component, role, relationships, importance).
 
 The LLM never sees file contents — only names, paths, extensions, sizes,
-dates, and Phase 1 tags plus the product description.
+dates, and Phase 1 tags plus the team description.
 
 ALL analysis data is stored permanently in the knowledge base.
 """
@@ -100,7 +100,7 @@ EXCLUDE these folder types:
 
 KEEP folders that contain actual source code, documentation, configuration,
 scripts, architecture docs, API specs, database schemas, deployment configs,
-CI/CD pipelines, or any content that helps understand the product.
+CI/CD pipelines, or any content that helps understand the team.
 
 This applies to ANY kind of project: Java, .NET, C#, COBOL, Python, React,
 Angular, SAP, FICO, financial products, installed desktop apps, documentation
@@ -172,7 +172,7 @@ EXCLUDE files that are:
   • Lock files (package-lock.json, yarn.lock, Gemfile.lock, etc.)
   • Auto-generated files (*.min.js, *.min.css, sourcemaps)
   • Compiled output accidentally present
-  • Files unlikely to answer any question about how the product works
+  • Files unlikely to answer any question about how the team works
 
 All paths are RELATIVE (the selected root folder is "/").
 Use the SAME relative paths in your response keys.
@@ -219,8 +219,8 @@ class FileFilterService:
     async def analyse_and_filter(
         self,
         trees: list[TreeNode],
-        product_name: str,
-        product_description: str,
+        team_name: str,
+        team_description: str,
         on_progress=None,
         on_debug_prompt: Optional[Callable[[str, str, str, Optional[int], Optional[int]], None]] = None,
     ) -> ProjectAnalysis:
@@ -238,7 +238,7 @@ class FileFilterService:
         self._build_path_mappings(trees)
         folder_summary_text = self._serialize_folder_summary(trees)
         project_analysis = await self._step1_folders(
-            folder_summary_text, product_name, product_description, on_progress,
+            folder_summary_text, team_name, team_description, on_progress,
             on_debug_prompt=on_debug_prompt,
         )
 
@@ -261,8 +261,8 @@ class FileFilterService:
 
         if surviving_files:
             await self._step2_files(
-                surviving_files, project_analysis, product_name,
-                product_description, on_progress,
+                surviving_files, project_analysis, team_name,
+                team_description, on_progress,
                 on_debug_prompt=on_debug_prompt,
             )
 
@@ -275,16 +275,16 @@ class FileFilterService:
     async def _step1_folders(
         self,
         tree_text: str,
-        product_name: str,
-        product_description: str,
+        team_name: str,
+        team_description: str,
         on_progress=None,
         on_debug_prompt: Optional[Callable[[str, str, str, Optional[int], Optional[int]], None]] = None,
     ) -> ProjectAnalysis:
         """Send tree to LLM for folder decisions + project analysis."""
         user_msg = (
-            f"=== PRODUCT ===\n"
-            f"Name: {product_name}\n"
-            f"Description: {product_description or '(none provided)'}\n\n"
+            f"=== TEAM ===\n"
+            f"Name: {team_name}\n"
+            f"Description: {team_description or '(none provided)'}\n\n"
             f"=== COMPLETE DIRECTORY TREE ===\n"
             f"{tree_text}\n"
         )
@@ -419,8 +419,8 @@ class FileFilterService:
         self,
         files: list[TreeNode],
         project_analysis: ProjectAnalysis,
-        product_name: str,
-        product_description: str,
+        team_name: str,
+        team_description: str,
         on_progress=None,
         on_debug_prompt: Optional[Callable[[str, str, str, Optional[int], Optional[int]], None]] = None,
     ):
@@ -438,7 +438,7 @@ class FileFilterService:
                 )
 
             await self._evaluate_file_batch(
-                batch, project_analysis, product_name, product_description,
+                batch, project_analysis, team_name, team_description,
                 on_debug_prompt=on_debug_prompt,
                 batch_idx=batch_idx,
                 total_batches=total_batches,
@@ -456,8 +456,8 @@ class FileFilterService:
         self,
         files: list[TreeNode],
         project_analysis: ProjectAnalysis,
-        product_name: str,
-        product_description: str,
+        team_name: str,
+        team_description: str,
         on_debug_prompt: Optional[Callable[[str, str, str, Optional[int], Optional[int]], None]] = None,
         batch_idx: Optional[int] = None,
         total_batches: Optional[int] = None,
@@ -490,8 +490,8 @@ class FileFilterService:
 
         context = (
             f"=== PROJECT CONTEXT ===\n"
-            f"Product: {product_name}\n"
-            f"Description: {product_description or '(none)'}\n"
+            f"Team: {team_name}\n"
+            f"Description: {team_description or '(none)'}\n"
             f"Project summary: {project_analysis.summary}\n"
             f"Technologies: {', '.join(project_analysis.technologies)}\n"
             f"Architecture: {project_analysis.architecture_style}\n\n"

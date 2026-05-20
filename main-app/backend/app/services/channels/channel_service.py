@@ -1,6 +1,6 @@
 """
 Channel service — orchestrates reading from Slack/Teams channels,
-ingesting history into the product RAG knowledge base, and
+ingesting history into the team RAG knowledge base, and
 auto-responding to questions in channels.
 """
 
@@ -83,7 +83,7 @@ class ChannelService:
                 adapter = self._get_teams_adapter(conn)
                 await adapter.test_auth()
                 messages = await adapter.fetch_history(
-                    conn.team_id or "", conn.channel_id, limit=3
+                    conn.ms_team_id or "", conn.channel_id, limit=3
                 )
                 return {
                     "success": True,
@@ -110,7 +110,7 @@ class ChannelService:
         elif conn.platform == "teams":
             adapter = self._get_teams_adapter(conn)
             messages = await adapter.fetch_history(
-                conn.team_id or "", conn.channel_id, limit=limit
+                conn.ms_team_id or "", conn.channel_id, limit=limit
             )
             return [
                 {
@@ -127,7 +127,7 @@ class ChannelService:
     async def sync_history(
         self, conn: ChannelConnection, session: AsyncSession
     ) -> dict:
-        """Fetch messages since last sync and ingest into the product's
+        """Fetch messages since last sync and ingest into the team's
         knowledge base as training data."""
         since = conn.last_synced_at
 
@@ -139,7 +139,7 @@ class ChannelService:
         elif conn.platform == "teams":
             adapter = self._get_teams_adapter(conn)
             messages = await adapter.fetch_history(
-                conn.team_id or "", conn.channel_id, since=since, limit=200
+                conn.ms_team_id or "", conn.channel_id, since=since, limit=200
             )
         else:
             return {"synced": 0, "error": f"Unknown platform: {conn.platform}"}
@@ -179,7 +179,7 @@ class ChannelService:
                 try:
                     result = await query_service.process_query(
                         question=q.text,
-                        product_ids=[conn.product_id],
+                        team_ids=[conn.team_id],
                         session=session,
                     )
                     answer = result.get("answer", "")
@@ -198,7 +198,7 @@ class ChannelService:
         elif conn.platform == "teams":
             adapter = self._get_teams_adapter(conn)
             messages = await adapter.fetch_history(
-                conn.team_id or "", conn.channel_id, since=since, limit=50
+                conn.ms_team_id or "", conn.channel_id, since=since, limit=50
             )
             questions = [m for m in messages if _looks_like_question(m.text)]
 
@@ -207,13 +207,13 @@ class ChannelService:
                 try:
                     result = await query_service.process_query(
                         question=q.text,
-                        product_ids=[conn.product_id],
+                        team_ids=[conn.team_id],
                         session=session,
                     )
                     answer = result.get("answer", "")
                     if answer and result.get("confidence_score", 0) > 0.3:
                         await adapter.post_message(
-                            conn.team_id or "", conn.channel_id, answer
+                            conn.ms_team_id or "", conn.channel_id, answer
                         )
                         responded += 1
                 except Exception as exc:

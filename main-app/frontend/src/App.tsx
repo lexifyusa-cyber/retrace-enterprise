@@ -6,7 +6,7 @@ import LayoutCommandCenter from './components/LayoutCommandCenter'
 import Dashboard from './pages/Dashboard'
 import Pods from './pages/Pods'
 import PodDetail from './pages/PodDetail'
-import Products from './pages/Products'
+import Teams from './pages/Teams'
 import Agent from './pages/Agent'
 import SOPs from './pages/SOPs'
 import Documentation from './pages/Documentation'
@@ -18,9 +18,14 @@ import FirstLoginSetup from './pages/FirstLoginSetup'
 import ResetPassword from './pages/ResetPassword'
 import SetupPage from './pages/SetupPage'
 import UserManagement from './pages/UserManagement'
+import McpBuilder from './pages/McpBuilder'
+import McpExtensions from './pages/McpExtensions'
+import LlmLogs from './pages/LlmLogs'
+import Connections from './pages/Connections'
 import { Loader2 } from 'lucide-react'
+import { hasRole } from './utils/roles'
 
-function ProtectedRoute({ children }: { children: React.ReactNode }) {
+function ProtectedRoute({ children, minRole }: { children: React.ReactNode; minRole?: string }) {
   const { isAuthenticated, isLoading, user } = useAuth()
   if (isLoading) {
     return (
@@ -31,6 +36,7 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   }
   if (!isAuthenticated) return <Navigate to="/login" replace />
   if (user?.force_password_change) return <Navigate to="/setup" replace />
+  if (minRole && !hasRole(user?.role, minRole)) return <Navigate to="/dashboard" replace />
   return <>{children}</>
 }
 
@@ -57,13 +63,18 @@ function App() {
         <Route path="dashboard" element={<Dashboard />} />
         <Route path="pods" element={<Pods />} />
         <Route path="pods/:podId" element={<PodDetail />} />
-        <Route path="groups" element={<Navigate to="/products" replace />} />
-        <Route path="products" element={<Products />} />
+        <Route path="groups" element={<Navigate to="/teams" replace />} />
+        <Route path="products" element={<Navigate to="/teams" replace />} />
+        <Route path="teams" element={<Teams />} />
         <Route path="agent" element={<Agent />} />
         <Route path="sops" element={<SOPs />} />
         <Route path="docs" element={<Documentation />} />
-        <Route path="settings" element={<Settings />} />
-        <Route path="users" element={<UserManagement />} />
+        <Route path="settings" element={<ProtectedRoute minRole="user_admin"><Settings /></ProtectedRoute>} />
+        <Route path="connections" element={<ProtectedRoute minRole="user_admin"><Connections /></ProtectedRoute>} />
+        <Route path="users" element={<ProtectedRoute minRole="user_admin"><UserManagement /></ProtectedRoute>} />
+        <Route path="llm-logs" element={<LlmLogs />} />
+        <Route path="mcp-builder" element={<McpBuilder />} />
+        <Route path="extensions" element={<McpExtensions />} />
       </Route>
     </Routes>
   )

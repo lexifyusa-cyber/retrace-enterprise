@@ -67,7 +67,12 @@ async def authenticate_ldap(
         logger.error("ldap_service_bind_failed", error=str(exc))
         return None
 
-    search_filter = user_filter.replace("{username}", ldap3.utils.conv.escape_filter_chars(username))
+    # OR filter: match by configured attribute (uid/sAMAccountName) OR by mail
+    # So both username ("john.admin") and email ("john.admin@example.com") work
+    escaped = ldap3.utils.conv.escape_filter_chars(username)
+    primary_filter = user_filter.replace("{username}", escaped)
+    mail_filter = f"({email_attr}={escaped})"
+    search_filter = f"(|{primary_filter}{mail_filter})"
     svc_conn.search(
         search_base=base_dn,
         search_filter=search_filter,
@@ -176,7 +181,12 @@ async def lookup_ldap_user(username: str, ldap_config: dict) -> Optional[LDAPAut
         logger.error("ldap_service_bind_failed", error=str(exc))
         return None
 
-    search_filter = user_filter.replace("{username}", ldap3.utils.conv.escape_filter_chars(username))
+    # OR filter: match by configured attribute (uid/sAMAccountName) OR by mail
+    # So both username ("john.admin") and email ("john.admin@example.com") work
+    escaped = ldap3.utils.conv.escape_filter_chars(username)
+    primary_filter = user_filter.replace("{username}", escaped)
+    mail_filter = f"({email_attr}={escaped})"
+    search_filter = f"(|{primary_filter}{mail_filter})"
     svc_conn.search(
         search_base=base_dn,
         search_filter=search_filter,

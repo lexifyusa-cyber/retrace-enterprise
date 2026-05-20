@@ -1,7 +1,7 @@
 """
 Email processing pipeline — the core orchestrator.
 
-Resolves inbound email → product, runs the query through the existing
+Resolves inbound email → team, runs the query through the existing
 QueryService, then fires all enabled action modes in parallel.
 """
 
@@ -81,7 +81,7 @@ class EmailProcessingPipeline:
     ) -> Optional[EmailMessage]:
         """Resolve, query, execute actions, and persist the message record."""
 
-        # 1. Resolve recipient → inbox → product
+        # 1. Resolve recipient → inbox → team
         inbox = inbox_override or await self._resolve_inbox(email.to_address, session)
         if not inbox:
             logger.warning("email_no_inbox_match", to=email.to_address)
@@ -92,7 +92,7 @@ class EmailProcessingPipeline:
             return None
 
         config: dict = inbox.action_config or {}
-        product_id = inbox.product_id
+        team_id = inbox.team_id
 
         # 2. Parse body
         body_text = email.body_text
@@ -104,11 +104,11 @@ class EmailProcessingPipeline:
             logger.info("email_empty_body", inbox_id=inbox.inbox_id)
             return None
 
-        # 3. Query the product knowledge base
+        # 3. Query the team knowledge base
         try:
             result = await query_service.process_query(
                 question=question,
-                product_ids=[product_id],
+                team_ids=[team_id],
                 session=session,
             )
         except Exception as exc:
@@ -126,7 +126,7 @@ class EmailProcessingPipeline:
         # Persist the message record
         msg = EmailMessage(
             inbox_id=inbox.inbox_id,
-            product_id=product_id,
+            team_id=team_id,
             from_address=email.from_address,
             subject=email.subject,
             body_text=body_text,
@@ -263,7 +263,7 @@ class EmailProcessingPipeline:
                 f"*AI Draft Answer:*\n{ai_answer[:1000]}"
             ),
             fields=[
-                {"label": "Product", "value": msg.product_id},
+                {"label": "Team", "value": msg.team_id},
                 {"label": "Confidence", "value": f"{confidence:.0%}"},
             ],
         )
@@ -342,7 +342,7 @@ class EmailProcessingPipeline:
                 ),
                 fields=[
                     {"label": "Category", "value": category},
-                    {"label": "Product", "value": msg.product_id},
+                    {"label": "Team", "value": msg.team_id},
                 ],
             )
             routed = await notifier.send(target_channel, config, payload)
@@ -373,7 +373,7 @@ class EmailProcessingPipeline:
                 f"*Suggested Response:*\n{suggested[:500]}"
             ),
             fields=[
-                {"label": "Product", "value": msg.product_id},
+                {"label": "Team", "value": msg.team_id},
                 {"label": "Confidence", "value": f"{msg.confidence_score:.0%}" if msg.confidence_score else "N/A"},
             ],
         )

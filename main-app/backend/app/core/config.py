@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     HOST: str = "0.0.0.0"
     PORT: int = 8000
     WEBSOCKET_PORT: int = 8001
+    WEBSOCKET_EXTERNAL_HOST: str = ""
     
     # LLM Providers
     OPENAI_API_KEY: str = ""
@@ -61,7 +62,22 @@ class Settings(BaseSettings):
     GATEWAY_PROVIDER: str = "direct"  # direct | zuplo | kong | aws
     GATEWAY_BASE_URL: str = ""        # e.g. https://llm.lumenatech.ai
     GATEWAY_ADMIN_KEY: str = ""       # admin key for creating consumers
-    
+
+    # Dropbox OAuth (training-data source)
+    DROPBOX_CLIENT_ID: str = ""
+    DROPBOX_CLIENT_SECRET: str = ""
+    DROPBOX_REDIRECT_URI: str = ""
+
+    # Google Drive OAuth (training-data source — separate from Google sign-in)
+    GOOGLE_DRIVE_CLIENT_ID: str = ""
+    GOOGLE_DRIVE_CLIENT_SECRET: str = ""
+    GOOGLE_DRIVE_REDIRECT_URI: str = ""
+
+    # Box OAuth (training-data source)
+    BOX_CLIENT_ID: str = ""
+    BOX_CLIENT_SECRET: str = ""
+    BOX_REDIRECT_URI: str = ""
+
     # Logging
     LOG_LEVEL: str = "DEBUG"
     LOG_FORMAT: Literal["json", "console"] = "json"

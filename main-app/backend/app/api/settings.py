@@ -12,8 +12,10 @@ from sqlalchemy import select
 import structlog
 
 from app.core.config import settings as app_settings
+from app.core.security import get_current_user, CurrentUser
 from app.db.database import get_session, async_session_maker
 from app.models.settings import LLMSettingsModel
+from app.models.mcp_tool_config import McpToolConfig
 
 logger = structlog.get_logger()
 router = APIRouter()
@@ -33,8 +35,43 @@ class LLMSettings(BaseModel):
     screenops_mouse_timeout: Optional[int] = None
     # ScreenOps image scale 25–100: percentage of screenshot size sent to model (reduces tokens)
     screenops_image_scale: Optional[int] = Field(None, ge=25, le=100)
+    # Central delay (ms) before every screenshot capture (0–30000, default 2000)
+    screenshot_delay_ms: Optional[int] = Field(None, ge=0, le=30000)
     # Web Search — Serper API key for enhanced web search
     serper_api_key: Optional[str] = None
+    # OpenCode agent — small model for title generation, summaries
+    small_model_name: Optional[str] = None
+    # OpenCode agent — plan agent model (defaults to model_name)
+    plan_model_name: Optional[str] = None
+    # OpenCode agent — reasoning/extended thinking toggle
+    use_reasoning: Optional[bool] = None
+    # OpenCode agent — custom system prompts
+    build_system_prompt: Optional[str] = None
+    plan_system_prompt: Optional[str] = None
+    # OpenCode agent — LLM parameters
+    temperature: Optional[float] = Field(None, ge=0.0, le=2.0)
+    top_p: Optional[float] = Field(None, ge=0.0, le=1.0)
+    max_steps: Optional[int] = Field(None, ge=1, le=200)
+    # OpenCode agent — compaction
+    compaction_auto: Optional[bool] = None
+    compaction_tail_turns: Optional[int] = Field(None, ge=1, le=50)
+    # OpenCode agent — tool output truncation
+    tool_output_max_lines: Optional[int] = Field(None, ge=1, le=5000)
+    tool_output_max_bytes: Optional[int] = Field(None, ge=1000, le=500000)
+    # OpenCode agent — bash shell
+    bash_shell: Optional[str] = None
+    # OpenCode agent — snapshot
+    snapshot_enabled: Optional[bool] = None
+    # OpenCode agent — disabled tools (JSON list)
+    disabled_tools: Optional[str] = None
+    # OpenCode agent — permission config (JSON)
+    permission_config: Optional[str] = None
+    # OpenCode agent — custom agents (JSON)
+    custom_agents: Optional[str] = None
+    # OpenCode agent — custom commands (JSON)
+    custom_commands: Optional[str] = None
+    # Agent max iterations (1–50, default 10)
+    agent_max_iterations: Optional[int] = Field(None, ge=1, le=50)
     # Training: when True, pipeline logs included/excluded folders and files
     debug_logging: Optional[bool] = None
     # Training Phase 3: max files to extract in parallel (1–32, default 1)
@@ -53,10 +90,30 @@ class LLMSettingsResponse(BaseModel):
     api_key_set: bool
     screenops_api_key_set: bool = False
     serper_api_key_set: bool = False
+    small_model_name: Optional[str] = None
+    plan_model_name: Optional[str] = None
+    use_reasoning: bool = True
+    build_system_prompt: Optional[str] = None
+    plan_system_prompt: Optional[str] = None
+    temperature: float = 0.0
+    top_p: float = 1.0
+    max_steps: int = 50
+    compaction_auto: bool = False
+    compaction_tail_turns: int = 4
+    tool_output_max_lines: int = 200
+    tool_output_max_bytes: int = 50000
+    bash_shell: Optional[str] = None
+    snapshot_enabled: bool = False
+    disabled_tools: Optional[str] = None
+    permission_config: Optional[str] = None
+    custom_agents: Optional[str] = None
+    custom_commands: Optional[str] = None
     screenops_api_url: Optional[str] = None
     screenops_model: Optional[str] = None
     screenops_mouse_timeout: int = 30
     screenops_image_scale: int = 100
+    screenshot_delay_ms: int = 2000
+    agent_max_iterations: int = 10
     debug_logging: bool = False
     max_parallel_files: int = 1
 
@@ -121,7 +178,7 @@ async def test_settings_endpoint():
 
 
 @router.post("/llm", response_model=LLMSettingsResponse)
-async def update_llm_settings(settings_data: LLMSettings):
+async def update_llm_settings(settings_data: LLMSettings, current_user: CurrentUser = Depends(get_current_user)):
     """Update LLM settings."""
     import asyncio
     import sys
@@ -165,9 +222,49 @@ async def update_llm_settings(settings_data: LLMSettings):
                     db_settings.screenops_mouse_timeout = max(5, min(120, int(settings_data.screenops_mouse_timeout)))
                 if settings_data.screenops_image_scale is not None:
                     db_settings.screenops_image_scale = max(25, min(100, int(settings_data.screenops_image_scale)))
+                if settings_data.screenshot_delay_ms is not None:
+                    db_settings.screenshot_delay_ms = max(0, min(30000, int(settings_data.screenshot_delay_ms)))
                 # Serper API key for web search
                 if settings_data.serper_api_key is not None:
                     db_settings.serper_api_key = settings_data.serper_api_key if settings_data.serper_api_key else None
+                if settings_data.small_model_name is not None:
+                    db_settings.small_model_name = (settings_data.small_model_name or "").strip() or None
+                if settings_data.plan_model_name is not None:
+                    db_settings.plan_model_name = (settings_data.plan_model_name or "").strip() or None
+                if settings_data.use_reasoning is not None:
+                    db_settings.use_reasoning = bool(settings_data.use_reasoning)
+                if settings_data.build_system_prompt is not None:
+                    db_settings.build_system_prompt = (settings_data.build_system_prompt or "").strip() or None
+                if settings_data.plan_system_prompt is not None:
+                    db_settings.plan_system_prompt = (settings_data.plan_system_prompt or "").strip() or None
+                if settings_data.temperature is not None:
+                    db_settings.temperature = max(0.0, min(2.0, float(settings_data.temperature)))
+                if settings_data.top_p is not None:
+                    db_settings.top_p = max(0.0, min(1.0, float(settings_data.top_p)))
+                if settings_data.max_steps is not None:
+                    db_settings.max_steps = max(1, min(200, int(settings_data.max_steps)))
+                if settings_data.compaction_auto is not None:
+                    db_settings.compaction_auto = bool(settings_data.compaction_auto)
+                if settings_data.compaction_tail_turns is not None:
+                    db_settings.compaction_tail_turns = max(1, min(50, int(settings_data.compaction_tail_turns)))
+                if settings_data.tool_output_max_lines is not None:
+                    db_settings.tool_output_max_lines = max(1, min(5000, int(settings_data.tool_output_max_lines)))
+                if settings_data.tool_output_max_bytes is not None:
+                    db_settings.tool_output_max_bytes = max(1000, min(500000, int(settings_data.tool_output_max_bytes)))
+                if settings_data.bash_shell is not None:
+                    db_settings.bash_shell = (settings_data.bash_shell or "").strip() or None
+                if settings_data.snapshot_enabled is not None:
+                    db_settings.snapshot_enabled = bool(settings_data.snapshot_enabled)
+                if settings_data.disabled_tools is not None:
+                    db_settings.disabled_tools = settings_data.disabled_tools or None
+                if settings_data.permission_config is not None:
+                    db_settings.permission_config = settings_data.permission_config or None
+                if settings_data.custom_agents is not None:
+                    db_settings.custom_agents = settings_data.custom_agents or None
+                if settings_data.custom_commands is not None:
+                    db_settings.custom_commands = settings_data.custom_commands or None
+                if settings_data.agent_max_iterations is not None:
+                    db_settings.agent_max_iterations = max(1, min(50, int(settings_data.agent_max_iterations)))
                 if settings_data.debug_logging is not None:
                     db_settings.debug_logging = bool(settings_data.debug_logging)
                 if settings_data.max_parallel_files is not None:
@@ -231,10 +328,30 @@ async def update_llm_settings(settings_data: LLMSettings):
                 api_key_set=bool(db_settings.api_key),
                 screenops_api_key_set=bool(db_settings.screenops_api_key),
                 serper_api_key_set=bool(getattr(db_settings, "serper_api_key", None)),
+                small_model_name=getattr(db_settings, "small_model_name", None),
+                plan_model_name=getattr(db_settings, "plan_model_name", None),
+                use_reasoning=bool(getattr(db_settings, "use_reasoning", True)),
+                build_system_prompt=getattr(db_settings, "build_system_prompt", None),
+                plan_system_prompt=getattr(db_settings, "plan_system_prompt", None),
+                temperature=float(getattr(db_settings, "temperature", 0.0) or 0.0),
+                top_p=float(getattr(db_settings, "top_p", 1.0) or 1.0),
+                max_steps=int(getattr(db_settings, "max_steps", 50) or 50),
+                compaction_auto=bool(getattr(db_settings, "compaction_auto", False)),
+                compaction_tail_turns=int(getattr(db_settings, "compaction_tail_turns", 4) or 4),
+                tool_output_max_lines=int(getattr(db_settings, "tool_output_max_lines", 200) or 200),
+                tool_output_max_bytes=int(getattr(db_settings, "tool_output_max_bytes", 50000) or 50000),
+                bash_shell=getattr(db_settings, "bash_shell", None),
+                snapshot_enabled=bool(getattr(db_settings, "snapshot_enabled", False)),
+                disabled_tools=getattr(db_settings, "disabled_tools", None),
+                permission_config=getattr(db_settings, "permission_config", None),
+                custom_agents=getattr(db_settings, "custom_agents", None),
+                custom_commands=getattr(db_settings, "custom_commands", None),
                 screenops_api_url=getattr(db_settings, "screenops_api_url", None),
                 screenops_model=db_settings.screenops_model,
                 screenops_mouse_timeout=int(getattr(db_settings, "screenops_mouse_timeout", 30) or 30),
                 screenops_image_scale=max(25, min(100, int(getattr(db_settings, "screenops_image_scale", 100) or 100))),
+                screenshot_delay_ms=max(0, min(30000, int(getattr(db_settings, "screenshot_delay_ms", 2000) or 2000))),
+                agent_max_iterations=int(getattr(db_settings, "agent_max_iterations", 10) or 10),
                 debug_logging=bool(getattr(db_settings, "debug_logging", False)),
                 max_parallel_files=int(getattr(db_settings, "max_parallel_files", 1) or 1),
             )
@@ -252,7 +369,7 @@ async def update_llm_settings(settings_data: LLMSettings):
 
 
 @router.get("/llm", response_model=LLMSettingsResponse)
-async def get_llm_settings(session: AsyncSession = Depends(get_session)):
+async def get_llm_settings(session: AsyncSession = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
     """Get current LLM settings."""
     print("[GET_SETTINGS] Loading settings from database...", flush=True)
     db_settings = await get_or_create_settings(session)
@@ -266,20 +383,40 @@ async def get_llm_settings(session: AsyncSession = Depends(get_session)):
         api_key_set=bool(db_settings.api_key or app_settings.OPENAI_API_KEY),
         screenops_api_key_set=bool(db_settings.screenops_api_key),
         serper_api_key_set=bool(getattr(db_settings, "serper_api_key", None)),
+        small_model_name=getattr(db_settings, "small_model_name", None),
+        plan_model_name=getattr(db_settings, "plan_model_name", None),
+        use_reasoning=bool(getattr(db_settings, "use_reasoning", True)),
+        build_system_prompt=getattr(db_settings, "build_system_prompt", None),
+        plan_system_prompt=getattr(db_settings, "plan_system_prompt", None),
+        temperature=float(getattr(db_settings, "temperature", 0.0) or 0.0),
+        top_p=float(getattr(db_settings, "top_p", 1.0) or 1.0),
+        max_steps=int(getattr(db_settings, "max_steps", 50) or 50),
+        compaction_auto=bool(getattr(db_settings, "compaction_auto", False)),
+        compaction_tail_turns=int(getattr(db_settings, "compaction_tail_turns", 4) or 4),
+        tool_output_max_lines=int(getattr(db_settings, "tool_output_max_lines", 200) or 200),
+        tool_output_max_bytes=int(getattr(db_settings, "tool_output_max_bytes", 50000) or 50000),
+        bash_shell=getattr(db_settings, "bash_shell", None),
+        snapshot_enabled=bool(getattr(db_settings, "snapshot_enabled", False)),
+        disabled_tools=getattr(db_settings, "disabled_tools", None),
+        permission_config=getattr(db_settings, "permission_config", None),
+        custom_agents=getattr(db_settings, "custom_agents", None),
+        custom_commands=getattr(db_settings, "custom_commands", None),
         screenops_api_url=getattr(db_settings, "screenops_api_url", None),
         screenops_model=db_settings.screenops_model,
         screenops_mouse_timeout=int(getattr(db_settings, "screenops_mouse_timeout", 30) or 30),
         screenops_image_scale=max(25, min(100, int(getattr(db_settings, "screenops_image_scale", 100) or 100))),
+        screenshot_delay_ms=max(0, min(30000, int(getattr(db_settings, "screenshot_delay_ms", 2000) or 2000))),
+        agent_max_iterations=int(getattr(db_settings, "agent_max_iterations", 10) or 10),
         debug_logging=bool(getattr(db_settings, "debug_logging", False)),
         max_parallel_files=int(getattr(db_settings, "max_parallel_files", 1) or 1),
     )
-    
+
     print(f"[GET_SETTINGS] Returning: provider={response.provider}, model={response.model_name}, api_url={response.api_url}", flush=True)
     return response
 
 
 @router.post("/llm/test", response_model=TestConnectionResponse)
-async def test_llm_connection(settings_data: LLMSettings, session: AsyncSession = Depends(get_session)):
+async def test_llm_connection(settings_data: LLMSettings, session: AsyncSession = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
     """Test connectivity to Chat and ScreenOps APIs."""
     import time
     from openai import AsyncOpenAI
@@ -419,6 +556,7 @@ _LEGACY_KB_TOOL_NAMES = {"search_knowledge_base", "list_kb_entries", "read_kb_fi
 async def update_agent_tools(
     data: AgentToolsUpdate,
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """Update which agent tools are enabled/disabled. Pass disabled_tools list."""
     # Normalize: legacy KB tool names → knowledge_base
@@ -441,7 +579,7 @@ async def update_agent_tools(
 
 
 @router.get("/llm/api-key")
-async def get_api_key(session: AsyncSession = Depends(get_session)):
+async def get_api_key(session: AsyncSession = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
     """Get the current API key (for internal use)."""
     db_settings = await get_or_create_settings(session)
     return {
@@ -450,7 +588,7 @@ async def get_api_key(session: AsyncSession = Depends(get_session)):
 
 
 @router.get("/llm/model")
-async def get_model_name(session: AsyncSession = Depends(get_session)):
+async def get_model_name(session: AsyncSession = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
     """Get the current model name (for internal use)."""
     db_settings = await get_or_create_settings(session)
     return {
@@ -494,8 +632,170 @@ async def get_active_llm_settings(session: AsyncSession, consumer_key: str | Non
         "screenops_model": getattr(db_settings, "screenops_model", None),
         "screenops_mouse_timeout": max(5, min(120, int(getattr(db_settings, "screenops_mouse_timeout", 30) or 30))),
         "screenops_image_scale": max(25, min(100, int(getattr(db_settings, "screenops_image_scale", 100) or 100))),
+        "screenshot_delay_ms": max(0, min(30000, int(getattr(db_settings, "screenshot_delay_ms", 2000) or 2000))),
         "serper_api_key": getattr(db_settings, "serper_api_key", None),
+        "small_model_name": getattr(db_settings, "small_model_name", None),
+        "plan_model_name": getattr(db_settings, "plan_model_name", None),
+        "use_reasoning": bool(getattr(db_settings, "use_reasoning", True)),
+        "build_system_prompt": getattr(db_settings, "build_system_prompt", None),
+        "plan_system_prompt": getattr(db_settings, "plan_system_prompt", None),
+        "temperature": float(getattr(db_settings, "temperature", 0.0) or 0.0),
+        "top_p": float(getattr(db_settings, "top_p", 1.0) or 1.0),
+        "max_steps": max(1, min(200, int(getattr(db_settings, "max_steps", 50) or 50))),
+        "compaction_auto": bool(getattr(db_settings, "compaction_auto", False)),
+        "compaction_tail_turns": max(1, min(50, int(getattr(db_settings, "compaction_tail_turns", 4) or 4))),
+        "tool_output_max_lines": max(1, min(5000, int(getattr(db_settings, "tool_output_max_lines", 200) or 200))),
+        "tool_output_max_bytes": max(1000, min(500000, int(getattr(db_settings, "tool_output_max_bytes", 50000) or 50000))),
+        "bash_shell": getattr(db_settings, "bash_shell", None),
+        "snapshot_enabled": bool(getattr(db_settings, "snapshot_enabled", False)),
+        "disabled_tools": getattr(db_settings, "disabled_tools", None),
+        "permission_config": getattr(db_settings, "permission_config", None),
+        "custom_agents": getattr(db_settings, "custom_agents", None),
+        "custom_commands": getattr(db_settings, "custom_commands", None),
         "agent_tools_config": agent_tools_config,
+        "agent_max_iterations": max(1, min(50, int(getattr(db_settings, "agent_max_iterations", 10) or 10))),
         "debug_logging": bool(getattr(db_settings, "debug_logging", False)),
         "max_parallel_files": max(1, min(32, int(getattr(db_settings, "max_parallel_files", 1) or 1))),
     }
+
+
+# ── MCP Tool Configs CRUD ──────────────────────────────────────
+
+
+class McpToolConfigCreate(BaseModel):
+    """Schema for creating MCP tool config(s). Accepts raw mcpServers JSON."""
+    name: Optional[str] = None
+    config_json: Optional[dict] = None
+    # Bulk import: paste full mcpServers block
+    mcp_servers: Optional[dict] = None
+    enabled: bool = True
+
+
+class McpToolConfigUpdate(BaseModel):
+    """Schema for updating an MCP tool config."""
+    name: Optional[str] = None
+    config_json: Optional[dict] = None
+    enabled: Optional[bool] = None
+
+
+@router.get("/mcp-tools")
+async def list_mcp_tool_configs(session: AsyncSession = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
+    """List all configured MCP tool servers."""
+    result = await session.execute(
+        select(McpToolConfig).order_by(McpToolConfig.created_at.desc())
+    )
+    configs = result.scalars().all()
+    return [c.to_dict() for c in configs]
+
+
+@router.post("/mcp-tools")
+async def create_mcp_tool_config(
+    data: McpToolConfigCreate,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Add MCP server(s) as tool sources.
+
+    Accepts either:
+    - Single server: {name, config_json}
+    - Bulk import: {mcp_servers: {"github": {...}, "slack": {...}}}
+    """
+    created = []
+
+    # Bulk import from mcpServers JSON
+    if data.mcp_servers:
+        for server_name, server_config in data.mcp_servers.items():
+            config = McpToolConfig(
+                name=server_name,
+                config_json=server_config,
+                enabled=data.enabled,
+            )
+            session.add(config)
+            created.append(config)
+        await session.flush()
+        for c in created:
+            await session.refresh(c)
+        return [c.to_dict() for c in created]
+
+    # Single server
+    if not data.name:
+        raise HTTPException(status_code=400, detail="name is required")
+    if not data.config_json:
+        raise HTTPException(status_code=400, detail="config_json is required")
+
+    config = McpToolConfig(
+        name=data.name,
+        config_json=data.config_json,
+        enabled=data.enabled,
+    )
+    session.add(config)
+    await session.flush()
+    await session.refresh(config)
+    return config.to_dict()
+
+
+@router.put("/mcp-tools/{config_id}")
+async def update_mcp_tool_config(
+    config_id: str,
+    data: McpToolConfigUpdate,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Update an existing MCP tool config."""
+    result = await session.execute(
+        select(McpToolConfig).where(McpToolConfig.config_id == config_id)
+    )
+    config = result.scalar_one_or_none()
+    if not config:
+        raise HTTPException(status_code=404, detail="MCP tool config not found")
+
+    from datetime import datetime
+    if data.name is not None:
+        config.name = data.name
+    if data.config_json is not None:
+        config.config_json = data.config_json
+    if data.enabled is not None:
+        config.enabled = data.enabled
+    config.updated_at = datetime.utcnow()
+    await session.flush()
+    return config.to_dict()
+
+
+@router.delete("/mcp-tools/{config_id}")
+async def delete_mcp_tool_config(
+    config_id: str,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Delete an MCP tool config."""
+    result = await session.execute(
+        select(McpToolConfig).where(McpToolConfig.config_id == config_id)
+    )
+    config = result.scalar_one_or_none()
+    if not config:
+        raise HTTPException(status_code=404, detail="MCP tool config not found")
+
+    await session.delete(config)
+    await session.flush()
+    return {"ok": True}
+
+
+@router.post("/mcp-tools/{config_id}/toggle")
+async def toggle_mcp_tool_config(
+    config_id: str,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Toggle enabled/disabled for an MCP tool config."""
+    result = await session.execute(
+        select(McpToolConfig).where(McpToolConfig.config_id == config_id)
+    )
+    config = result.scalar_one_or_none()
+    if not config:
+        raise HTTPException(status_code=404, detail="MCP tool config not found")
+
+    from datetime import datetime
+    config.enabled = not config.enabled
+    config.updated_at = datetime.utcnow()
+    await session.flush()
+    return config.to_dict()

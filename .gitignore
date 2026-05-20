@@ -1,10 +1,12 @@
+# Claude Code
+.claude/
+
 # Python
 __pycache__/
 *.pyc
 *.pyo
 venv/
 .build-venv/
-.env
 .chunk_key
 *.db
 *.db-wal

@@ -3,6 +3,11 @@
 
 set -e
 
+# Ensure Homebrew is in PATH (macOS)
+if [ -f "/opt/homebrew/bin/brew" ]; then
+    eval "$(/opt/homebrew/bin/brew shellenv)"
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
@@ -77,8 +82,127 @@ check_python() {
 }
 
 check_python
-check_command node
+install_node() {
+    if ! command -v node &> /dev/null; then
+        echo "📦 Node.js is not installed. Installing via Homebrew..."
+        if ! command -v brew &> /dev/null; then
+            echo "❌ Homebrew is required to install Node.js. Installing Homebrew first..."
+            /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+            if [ -f "/opt/homebrew/bin/brew" ]; then
+                eval "$(/opt/homebrew/bin/brew shellenv)"
+            fi
+        fi
+        brew install node
+        echo "✅ Node.js installed successfully"
+    fi
+}
+
+install_node
+
+# Install uv (required for MCP Builder dependency management)
+if ! command -v uv &> /dev/null && [ ! -f "$HOME/.local/bin/uv" ]; then
+    echo "📦 Installing uv (Python package manager for MCP Builder)..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    echo "✅ uv installed successfully"
+fi
+
 install_go
+
+# Install and setup Podman (for sandbox container isolation)
+setup_podman() {
+    echo ""
+    echo "🐳 Setting up Podman (sandbox container runtime)..."
+
+    # Install Podman if not present
+    if ! command -v podman &> /dev/null; then
+        echo "📦 Installing Podman..."
+        if ! command -v brew &> /dev/null; then
+            echo "❌ Homebrew is required. Installing Homebrew first..."
+            /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+            if [ -f "/opt/homebrew/bin/brew" ]; then
+                eval "$(/opt/homebrew/bin/brew shellenv)"
+            fi
+        fi
+        brew install podman
+        echo "✅ Podman installed"
+    else
+        echo "✅ Podman already installed ($(podman --version))"
+    fi
+
+    # Detect chip type for optimal VM provider
+    ARCH=$(uname -m)
+    if [ "$ARCH" = "arm64" ]; then
+        VM_PROVIDER="libkrun"   # Apple Silicon — no SSH, stable
+        # Install krunkit if needed (required for libkrun)
+        if ! command -v krunkit &> /dev/null; then
+            echo "📦 Installing krunkit (required for libkrun)..."
+            brew tap slp/krunkit
+            brew install krunkit
+            echo "✅ krunkit installed"
+        fi
+        export CONTAINERS_MACHINE_PROVIDER=libkrun
+    else
+        VM_PROVIDER="applehv"   # Intel — SSH-based, needs keep-alive
+    fi
+
+    # Initialize Podman machine if not exists
+    if ! podman machine inspect podman-machine-default &> /dev/null; then
+        echo "📦 Initializing Podman machine (Linux VM, provider: $VM_PROVIDER)..."
+        podman machine init
+        echo "✅ Podman machine initialized"
+    fi
+
+    # Ensure machine is running and responsive
+    echo "🔄 Ensuring Podman machine is ready..."
+    MACHINE_STATE=$(podman machine info --format "{{.Host.MachineState}}" 2>/dev/null || echo "Unknown")
+    if [ "$MACHINE_STATE" = "Running" ]; then
+        # Verify connection actually works
+        if podman info --format "{{.Host.RemoteSocket.Exists}}" &> /dev/null; then
+            echo "✅ Podman machine running and responsive"
+        else
+            echo "⚠️  Podman machine connection stale. Restarting..."
+            podman machine stop 2>/dev/null || true
+            podman machine start
+            echo "✅ Podman machine restarted"
+        fi
+    else
+        echo "🔄 Starting Podman machine..."
+        podman machine start
+        echo "✅ Podman machine started"
+    fi
+
+    # Set correct SSH key for Podman machine (prevents auth failures)
+    export CONTAINER_SSHKEY=~/.local/share/containers/podman/machine/machine
+
+    # Configure SSH keep-alive to prevent Podman connection drops (all Macs)
+    if ! grep -q "ServerAliveInterval" ~/.ssh/config 2>/dev/null; then
+        echo "🔧 Configuring SSH keep-alive for Podman stability..."
+        mkdir -p ~/.ssh
+        echo "" >> ~/.ssh/config
+        echo "# Podman machine keep-alive (prevents SSH drops)" >> ~/.ssh/config
+        echo "Host *" >> ~/.ssh/config
+        echo "    ServerAliveInterval 30" >> ~/.ssh/config
+        echo "    ServerAliveCountMax 5" >> ~/.ssh/config
+        chmod 600 ~/.ssh/config
+        echo "✅ SSH keep-alive configured"
+    fi
+
+    # Build sandbox image if not exists
+    SANDBOX_DIR="$PROJECT_ROOT/main-app/sandbox"
+    if [ -f "$SANDBOX_DIR/Dockerfile" ]; then
+        if ! podman image exists retrace-sandbox:latest 2>/dev/null; then
+            echo "🔨 Building sandbox container image (first time, may take 2-3 minutes)..."
+            podman build -t retrace-sandbox:latest "$SANDBOX_DIR"
+            echo "✅ Sandbox image built"
+        else
+            echo "✅ Sandbox image already exists"
+        fi
+    fi
+
+    echo "✅ Podman sandbox ready"
+}
+
+setup_podman
 
 # Build POD agents (pre-build for faster POD generation)
 if command -v go &> /dev/null; then
@@ -148,6 +272,10 @@ pip install --upgrade pip setuptools wheel
 # Install requirements
 echo "Installing Python dependencies..."
 pip install -q -r requirements.txt
+
+# Install local ServiceNow MCP server package
+echo "Installing ServiceNow MCP server..."
+pip install -q -e "$PROJECT_ROOT/servicenow-mcp-server/"
 
 if [ ! -f ".env" ]; then
     cp .env.example .env

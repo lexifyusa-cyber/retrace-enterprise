@@ -2,8 +2,8 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Database, Package, FileCode, FileText, Image, TicketIcon, Search, ChevronDown, ChevronUp, Filter } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { productApi } from '@/utils/api'
-import { Product } from '@/types'
+import { teamApi } from '@/utils/api'
+import { Team } from '@/types'
 
 interface Chunk {
   chunk_id: string
@@ -15,8 +15,8 @@ interface Chunk {
 }
 
 interface ChunksResponse {
-  product_id: string
-  product_name: string
+  team_id: string
+  team_name: string
   total: number
   limit: number
   offset: number
@@ -26,25 +26,25 @@ interface ChunksResponse {
 export default function Training() {
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedType, setSelectedType] = useState<string>('all')
-  const [expandedProducts, setExpandedProducts] = useState<Set<string>>(new Set())
+  const [expandedTeams, setExpandedTeams] = useState<Set<string>>(new Set())
 
-  const { data: products = [], isLoading: productsLoading } = useQuery({
-    queryKey: ['products'],
-    queryFn: () => productApi.list(),
+  const { data: teams = [], isLoading: teamsLoading } = useQuery({
+    queryKey: ['teams'],
+    queryFn: () => teamApi.list(),
   })
 
-  // Only show trained products
-  const trainedProducts = products.filter(p =>
+  // Only show trained teams
+  const trainedTeams = teams.filter(p =>
     p.folder_groups.some(g => g.training_status === 'completed')
   )
 
-  const toggleProduct = (productId: string) => {
-    setExpandedProducts(prev => {
+  const toggleTeam = (teamId: string) => {
+    setExpandedTeams(prev => {
       const next = new Set(prev)
-      if (next.has(productId)) {
-        next.delete(productId)
+      if (next.has(teamId)) {
+        next.delete(teamId)
       } else {
-        next.add(productId)
+        next.add(teamId)
       }
       return next
     })
@@ -58,7 +58,7 @@ export default function Training() {
       <div className="mb-8">
         <h1 className="text-3xl font-display font-bold mb-2">Training Data</h1>
         <p className="text-rt-text-muted">
-          Browse all indexed knowledge datasets by product
+          Browse all indexed knowledge datasets by team
         </p>
       </div>
 
@@ -91,8 +91,8 @@ export default function Training() {
         </div>
       </div>
 
-      {/* Products List */}
-      {productsLoading ? (
+      {/* Teams List */}
+      {teamsLoading ? (
         <div className="space-y-4">
           {[...Array(3)].map((_, i) => (
             <div key={i} className="card animate-pulse">
@@ -101,32 +101,32 @@ export default function Training() {
             </div>
           ))}
         </div>
-      ) : trainedProducts.length === 0 ? (
+      ) : trainedTeams.length === 0 ? (
         <motion.div
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
           className="card text-center py-16"
         >
           <Database className="w-16 h-16 mx-auto text-rt-text-muted mb-4" />
-          <h3 className="text-xl font-display font-semibold mb-2">No Trained Products</h3>
+          <h3 className="text-xl font-display font-semibold mb-2">No Trained Teams</h3>
           <p className="text-rt-text-muted mb-6 max-w-md mx-auto">
-            Train a product first to see indexed datasets here.
+            Train a team first to see indexed datasets here.
           </p>
         </motion.div>
       ) : (
         <div className="space-y-4">
-          {trainedProducts.map((product) => {
-            const stats = product.folder_groups.find(g => g.metadata?.chunks_indexed)?.metadata as Record<string, any> | undefined
+          {trainedTeams.map((team) => {
+            const stats = team.folder_groups.find(g => g.metadata?.chunks_indexed)?.metadata as Record<string, any> | undefined
             const chunksIndexed = stats?.chunks_indexed || 0
-            const isExpanded = expandedProducts.has(product.product_id)
+            const isExpanded = expandedTeams.has(team.team_id)
 
             return (
-              <ProductChunksCard
-                key={product.product_id}
-                product={product}
+              <TeamChunksCard
+                key={team.team_id}
+                team={team}
                 chunksIndexed={chunksIndexed}
                 isExpanded={isExpanded}
-                onToggle={() => toggleProduct(product.product_id)}
+                onToggle={() => toggleTeam(team.team_id)}
                 searchQuery={searchQuery}
                 selectedType={selectedType}
               />
@@ -138,15 +138,15 @@ export default function Training() {
   )
 }
 
-function ProductChunksCard({
-  product,
+function TeamChunksCard({
+  team,
   chunksIndexed,
   isExpanded,
   onToggle,
   searchQuery,
   selectedType,
 }: {
-  product: Product
+  team: Team
   chunksIndexed: number
   isExpanded: boolean
   onToggle: () => void
@@ -154,14 +154,14 @@ function ProductChunksCard({
   selectedType: string
 }) {
   const { data: chunksData, isLoading } = useQuery<ChunksResponse>({
-    queryKey: ['product-chunks', product.product_id, selectedType],
+    queryKey: ['team-chunks', team.team_id, selectedType],
     queryFn: async () => {
       const params: Record<string, string> = { limit: '100', offset: '0' }
       if (selectedType !== 'all') {
         params.processing_type = selectedType
       }
       const response = await fetch(
-        `/api/v1/products/${product.product_id}/chunks?${new URLSearchParams(params)}`
+        `/api/v1/teams/${team.team_id}/chunks?${new URLSearchParams(params)}`
       )
       if (!response.ok) throw new Error('Failed to load datasets')
       return response.json()
@@ -180,11 +180,11 @@ function ProductChunksCard({
     return true
   })
 
-  const breakdown = product.folder_groups.find(g => g.metadata?.classification_breakdown)?.metadata?.classification_breakdown as Record<string, number> | undefined
+  const breakdown = team.folder_groups.find(g => g.metadata?.classification_breakdown)?.metadata?.classification_breakdown as Record<string, number> | undefined
 
   return (
     <div className="card">
-      {/* Product Header */}
+      {/* Team Header */}
       <button
         onClick={onToggle}
         className="w-full flex items-center justify-between text-left"
@@ -194,7 +194,7 @@ function ProductChunksCard({
             <Package className="w-5 h-5 text-rt-primary" />
           </div>
           <div className="flex-1">
-            <h2 className="text-lg font-display font-semibold">{product.product_name}</h2>
+            <h2 className="text-lg font-display font-semibold">{team.team_name}</h2>
             <div className="flex items-center gap-4 mt-1 text-sm text-rt-text-muted">
               <span>{chunksIndexed.toLocaleString()} datasets indexed</span>
               {breakdown && (

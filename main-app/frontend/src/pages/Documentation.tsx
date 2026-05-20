@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   FileText, Loader2, Trash2,
   Package, ChevronDown, ChevronRight, Send,
@@ -8,25 +8,26 @@ import {
 import { motion, AnimatePresence } from 'framer-motion'
 import ReactMarkdown from 'react-markdown'
 import toast from 'react-hot-toast'
-import { productApi, agentApi, AGENT_GENERAL_SCOPE } from '@/utils/api'
-import { Product } from '@/types'
+import { teamApi, agentApi, AGENT_GENERAL_SCOPE } from '@/utils/api'
+import { Team } from '@/types'
 
 export default function Documentation() {
-  const [docsByProduct, setDocsByProduct] = useState<Record<string, any[]>>({})
+  const queryClient = useQueryClient()
+  const [docsByTeam, setDocsByTeam] = useState<Record<string, any[]>>({})
   const [isLoading, setIsLoading] = useState(false)
-  const [expandedProducts, setExpandedProducts] = useState<Set<string>>(new Set())
+  const [expandedTeams, setExpandedTeams] = useState<Set<string>>(new Set())
   const [expandedDocId, setExpandedDocId] = useState<string | null>(null)
   const [streamingDoc, setStreamingDoc] = useState<string | null>(null)
   const [editingDocId, setEditingDocId] = useState<string | null>(null)
   const [editInstructions, setEditInstructions] = useState('')
   const [isEditing, setIsEditing] = useState(false)
 
-  const { data: products = [] } = useQuery({
-    queryKey: ['products'],
-    queryFn: () => productApi.list(),
+  const { data: teams = [] } = useQuery({
+    queryKey: ['teams'],
+    queryFn: () => teamApi.list(),
   })
 
-  const trainedProducts = products.filter((p: Product) =>
+  const trainedTeams = teams.filter((p: Team) =>
     p.folder_groups?.some(g => g.training_status === 'completed') === true
   )
 
@@ -41,54 +42,56 @@ export default function Documentation() {
         results[AGENT_GENERAL_SCOPE] = []
       }
       await Promise.all(
-        trainedProducts.map(async (p: Product) => {
+        trainedTeams.map(async (p: Team) => {
           try {
-            const docs = await agentApi.listDocs(p.product_id)
-            results[p.product_id] = Array.isArray(docs) ? docs : []
+            const docs = await agentApi.listDocs(p.team_id)
+            results[p.team_id] = Array.isArray(docs) ? docs : []
           } catch {
-            results[p.product_id] = []
+            results[p.team_id] = []
           }
         })
       )
-      setDocsByProduct(results)
+      setDocsByTeam(results)
     } catch {
       toast.error('Failed to load documentation')
     } finally {
       setIsLoading(false)
     }
-  }, [trainedProducts.map(p => p.product_id).join(',')])
+  }, [trainedTeams.map(p => p.team_id).join(',')])
 
   useEffect(() => {
     loadAllDocs()
   }, [loadAllDocs])
 
-  const handleDelete = useCallback(async (docId: string, productId: string) => {
+  const handleDelete = useCallback(async (docId: string, teamId: string) => {
     try {
       await agentApi.deleteDoc(docId)
-      setDocsByProduct(prev => ({
+      setDocsByTeam(prev => ({
         ...prev,
-        [productId]: (prev[productId] || []).filter(d => d.doc_id !== docId),
+        [teamId]: (prev[teamId] || []).filter(d => d.doc_id !== docId),
       }))
+      queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] })
       toast.success('Documentation deleted')
     } catch {
       toast.error('Failed to delete documentation')
     }
-  }, [])
+  }, [queryClient])
 
-  const handleApproveDoc = useCallback(async (docId: string, productId: string) => {
+  const handleApproveDoc = useCallback(async (docId: string, teamId: string) => {
     try {
       const updated = await agentApi.approveDoc(docId)
-      setDocsByProduct(prev => ({
+      setDocsByTeam(prev => ({
         ...prev,
-        [productId]: (prev[productId] || []).map(d => d.doc_id === docId ? { ...d, status: updated.status } : d),
+        [teamId]: (prev[teamId] || []).map(d => d.doc_id === docId ? { ...d, status: updated.status } : d),
       }))
+      queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] })
       toast.success('Documentation approved')
     } catch {
       toast.error('Failed to approve documentation')
     }
   }, [])
 
-  const handleEditDoc = useCallback(async (docId: string, productId: string) => {
+  const handleEditDoc = useCallback(async (docId: string, teamId: string) => {
     if (!editInstructions.trim()) return
     setIsEditing(true)
     try {
@@ -129,9 +132,9 @@ export default function Documentation() {
           }
         }
       }
-      setDocsByProduct(prev => ({
+      setDocsByTeam(prev => ({
         ...prev,
-        [productId]: (prev[productId] || []).map(d =>
+        [teamId]: (prev[teamId] || []).map(d =>
           d.doc_id === docId ? { ...d, doc_markdown: editResult.doc_markdown, title: editResult.title } : d
         ),
       }))
@@ -146,26 +149,26 @@ export default function Documentation() {
     }
   }, [editInstructions])
 
-  const generalDocsList = docsByProduct[AGENT_GENERAL_SCOPE] || []
+  const generalDocsList = docsByTeam[AGENT_GENERAL_SCOPE] || []
   const displayDocSections: { sectionId: string; sectionName: string; isGeneral: boolean }[] = []
   if (generalDocsList.length > 0) {
     displayDocSections.push({ sectionId: AGENT_GENERAL_SCOPE, sectionName: 'General', isGeneral: true })
   }
-  for (const p of trainedProducts) {
-    if ((docsByProduct[p.product_id] || []).length > 0) {
-      displayDocSections.push({ sectionId: p.product_id, sectionName: p.product_name, isGeneral: false })
+  for (const p of trainedTeams) {
+    if ((docsByTeam[p.team_id] || []).length > 0) {
+      displayDocSections.push({ sectionId: p.team_id, sectionName: p.team_name, isGeneral: false })
     }
   }
   const totalDocs =
     generalDocsList.length +
-    trainedProducts.reduce((sum, p) => sum + (docsByProduct[p.product_id] || []).length, 0)
-  const sectionCount = (generalDocsList.length > 0 ? 1 : 0) + trainedProducts.filter((p: Product) => (docsByProduct[p.product_id] || []).length > 0).length
+    trainedTeams.reduce((sum, p) => sum + (docsByTeam[p.team_id] || []).length, 0)
+  const sectionCount = (generalDocsList.length > 0 ? 1 : 0) + trainedTeams.filter((p: Team) => (docsByTeam[p.team_id] || []).length > 0).length
 
-  const toggleProduct = (productId: string) => {
-    setExpandedProducts(prev => {
+  const toggleTeam = (teamId: string) => {
+    setExpandedTeams(prev => {
       const next = new Set(prev)
-      if (next.has(productId)) next.delete(productId)
-      else next.add(productId)
+      if (next.has(teamId)) next.delete(teamId)
+      else next.add(teamId)
       return next
     })
   }
@@ -179,7 +182,12 @@ export default function Documentation() {
   return (
     <div className="h-full flex flex-col">
       {/* Header */}
-      <div className="p-8 pb-4 border-b border-rt-border">
+      <motion.div
+        initial={{ opacity: 0, y: -20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4 }}
+        className="p-8 pb-4 border-b border-rt-border"
+      >
         <div className="flex items-center gap-3 mb-2">
           <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-blue-500/20 to-indigo-500/20 flex items-center justify-center">
             <FileText className="w-5 h-5 text-blue-400" />
@@ -189,18 +197,28 @@ export default function Documentation() {
             <p className="text-rt-text-muted text-sm">Knowledge articles generated from agent conversations</p>
           </div>
         </div>
-      </div>
+      </motion.div>
 
       {/* Sub-header */}
-      <div className="px-8 py-3 border-b border-rt-border bg-rt-bg-light flex items-center gap-4">
+      <motion.div
+        initial={{ opacity: 0, y: -10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4, delay: 0.05 }}
+        className="px-8 py-3 border-b border-rt-border bg-rt-bg-light flex items-center gap-4"
+      >
         <span className="text-xs text-rt-text-muted">
           {totalDocs} article{totalDocs !== 1 ? 's' : ''}
           {sectionCount > 0 ? ` · ${sectionCount} section${sectionCount !== 1 ? 's' : ''}` : ''}
         </span>
-      </div>
+      </motion.div>
 
       {/* Grouped documentation list */}
-      <div className="flex-1 overflow-auto p-8">
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4, delay: 0.1 }}
+        className="flex-1 overflow-auto p-8"
+      >
         {isLoading ? (
           <div className="flex items-center justify-center gap-2 text-rt-text-muted py-16">
             <Loader2 className="w-5 h-5 animate-spin" /> Loading documentation...
@@ -209,20 +227,20 @@ export default function Documentation() {
           <div className="text-center py-16">
             <FileText className="w-12 h-12 mx-auto mb-4 text-rt-text-muted/30" />
             <p className="text-rt-text-muted max-w-md mx-auto">
-              No documentation yet. In the Agent, get an answer then use <strong>Build Documentation</strong> — with a product selected or under <strong>General</strong> when no product is selected.
+              No documentation yet. In the Agent, get an answer then use <strong>Build Documentation</strong> — with a team selected or under <strong>General</strong> when no team is selected.
             </p>
           </div>
         ) : (
           <div className="max-w-6xl mx-auto space-y-6">
             {displayDocSections.map((section) => {
-              const productDocs = docsByProduct[section.sectionId] || []
-              const isExpanded = expandedProducts.has(section.sectionId)
+              const teamDocs = docsByTeam[section.sectionId] || []
+              const isExpanded = expandedTeams.has(section.sectionId)
               return (
                 <div key={section.sectionId}>
-                  {/* Product group header */}
+                  {/* Team group header */}
                   <button
                     type="button"
-                    onClick={() => toggleProduct(section.sectionId)}
+                    onClick={() => toggleTeam(section.sectionId)}
                     className="w-full flex items-center gap-3 px-4 py-2.5 rounded-lg hover:bg-rt-surface/50 transition-colors mb-2"
                   >
                     <ChevronDown className={`w-4 h-4 text-rt-text-muted transition-transform ${isExpanded ? '' : '-rotate-90'}`} />
@@ -233,11 +251,11 @@ export default function Documentation() {
                     )}
                     <span className="text-sm font-semibold">{section.sectionName}</span>
                     <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-rt-surface text-rt-text-muted">
-                      {productDocs.length}
+                      {teamDocs.length}
                     </span>
                   </button>
 
-                  {/* Product items */}
+                  {/* Team items */}
                   <AnimatePresence>
                     {isExpanded && (
                       <motion.div
@@ -247,7 +265,7 @@ export default function Documentation() {
                         className="overflow-hidden"
                       >
                         <div className="pl-4 space-y-3">
-                          {productDocs.map(doc => (
+                          {teamDocs.map(doc => (
                             <div key={doc.doc_id} className="rounded-xl border border-rt-border bg-rt-surface/20 overflow-hidden hover:border-rt-border/80 transition-colors">
                               <div
                                 className="flex items-center gap-4 px-5 py-3.5 cursor-pointer hover:bg-rt-surface/30 transition-colors"
@@ -391,7 +409,7 @@ export default function Documentation() {
             })}
           </div>
         )}
-      </div>
+      </motion.div>
     </div>
   )
 }

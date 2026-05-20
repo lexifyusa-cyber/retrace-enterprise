@@ -1,11 +1,13 @@
-import React, { useState } from 'react'
+import React, { useState, useRef, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Settings as SettingsIcon, Zap, CheckCircle, XCircle, Loader2, Info, Monitor, LayoutPanelLeft, Command, Palette, Sun, Moon, Sparkles, ChevronDown, ChevronRight, Mail, Trash2, Plus, MessageSquare, RefreshCw } from 'lucide-react'
+import { Settings as SettingsIcon, Zap, CheckCircle, XCircle, Loader2, Info, Monitor, LayoutPanelLeft, Command, Palette, Sun, Moon, Sparkles, ChevronDown, ChevronRight, Mail, Trash2, Plus, MessageSquare, RefreshCw, Plug, Power, PowerOff, Edit2 } from 'lucide-react'
 import { motion } from 'framer-motion'
 import toast from 'react-hot-toast'
 import axios from 'axios'
+import { emailApi } from '@/utils/api'
 import { useLayout } from '@/context/LayoutContext'
 import { useAuth } from '@/context/AuthContext'
+import { ConnectionsManager } from '@/pages/Connections'
 
 interface LLMSettings {
   api_url: string | null
@@ -17,7 +19,26 @@ interface LLMSettings {
   screenops_model?: string | null
   screenops_mouse_timeout?: number | null
   screenops_image_scale?: number | null
+  screenshot_delay_ms?: number | null
   serper_api_key?: string | null
+  small_model_name?: string | null
+  plan_model_name?: string | null
+  use_reasoning?: boolean | null
+  build_system_prompt?: string | null
+  plan_system_prompt?: string | null
+  temperature?: number | null
+  top_p?: number | null
+  max_steps?: number | null
+  compaction_auto?: boolean | null
+  compaction_tail_turns?: number | null
+  tool_output_max_lines?: number | null
+  tool_output_max_bytes?: number | null
+  bash_shell?: string | null
+  snapshot_enabled?: boolean | null
+  disabled_tools?: string | null
+  permission_config?: string | null
+  custom_agents?: string | null
+  custom_commands?: string | null
   debug_logging?: boolean | null
   max_parallel_files?: number | null
   agent_max_iterations?: number | null
@@ -34,6 +55,25 @@ interface LLMSettingsResponse {
   screenops_model?: string | null
   screenops_mouse_timeout?: number
   screenops_image_scale?: number
+  screenshot_delay_ms?: number
+  small_model_name?: string | null
+  plan_model_name?: string | null
+  use_reasoning?: boolean
+  build_system_prompt?: string | null
+  plan_system_prompt?: string | null
+  temperature?: number
+  top_p?: number
+  max_steps?: number
+  compaction_auto?: boolean
+  compaction_tail_turns?: number
+  tool_output_max_lines?: number
+  tool_output_max_bytes?: number
+  bash_shell?: string | null
+  snapshot_enabled?: boolean
+  disabled_tools?: string | null
+  permission_config?: string | null
+  custom_agents?: string | null
+  custom_commands?: string | null
   debug_logging?: boolean
   max_parallel_files?: number
   agent_max_iterations?: number
@@ -60,16 +100,72 @@ export default function Settings() {
   const [screenopsModel, setScreenopsModel] = useState('gpt-4o-mini')
   const [screenopsMouseTimeout, setScreenopsMouseTimeout] = useState(30)
   const [screenopsImageScale, setScreenopsImageScale] = useState(100)
+  const [screenshotDelayMs, setScreenshotDelayMs] = useState(2000)
   const [serperKey, setSerperKey] = useState('')
   const [debugLogging, setDebugLogging] = useState(false)
   const [maxParallelFiles, setMaxParallelFiles] = useState(1)
   const [agentMaxIterations, setAgentMaxIterations] = useState(10)
+  const [smallModelName, setSmallModelName] = useState('')
+  const [planModelName, setPlanModelName] = useState('')
+  const [sameModelForAll, setSameModelForAll] = useState(false)
+  const [useReasoning, setUseReasoning] = useState(true)
+  const [buildSystemPrompt, setBuildSystemPrompt] = useState('')
+  const [planSystemPrompt, setPlanSystemPrompt] = useState('')
+  const [temperature, setTemperature] = useState(0.0)
+  const [topP, setTopP] = useState(1.0)
+  const [maxSteps, setMaxSteps] = useState(50)
+  const [compactionAuto, setCompactionAuto] = useState(false)
+  const [compactionTailTurns, setCompactionTailTurns] = useState(4)
+  const [toolOutputMaxLines, setToolOutputMaxLines] = useState(200)
+  const [toolOutputMaxBytes, setToolOutputMaxBytes] = useState(50000)
+  const [bashShell, setBashShell] = useState('')
+  const [snapshotEnabled, setSnapshotEnabled] = useState(false)
+  const [disabledToolsJson, setDisabledToolsJson] = useState('')
+  const [permissionConfigJson, setPermissionConfigJson] = useState('')
+  const [customAgentsJson, setCustomAgentsJson] = useState('')
+  const [customCommandsJson, setCustomCommandsJson] = useState('')
+  const [mcpAddName, setMcpAddName] = useState('')
+  const [mcpAddCommand, setMcpAddCommand] = useState('')
+  const [mcpAddUrl, setMcpAddUrl] = useState('')
+  const [mcpAddEnv, setMcpAddEnv] = useState('')
+  const [advancedExpanded, setAdvancedExpanded] = useState(false)
   const [testResult, setTestResult] = useState<{ success: boolean; message: string; latency_ms?: number } | null>(null)
   const [layoutThemeExpanded, setLayoutThemeExpanded] = useState(false)
   const [llmExpanded, setLlmExpanded] = useState(false)
+
+  // Developer mode — 10 clicks on Intelligence Engine icon → password input → unlock LLM config
+  const [devMode, setDevMode] = useState(() => localStorage.getItem('rt-dev-mode') === 'true')
+  const [showDevPasswordInput, setShowDevPasswordInput] = useState(false)
+  const [devPasswordValue, setDevPasswordValue] = useState('')
+  const devClickCount = useRef(0)
+  const devClickTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const handleDevClick = useCallback(() => {
+    devClickCount.current += 1
+    if (devClickTimer.current) clearTimeout(devClickTimer.current)
+    devClickTimer.current = setTimeout(() => { devClickCount.current = 0 }, 3000)
+    if (devClickCount.current >= 10) {
+      devClickCount.current = 0
+      if (devMode) {
+        setDevMode(false)
+        setLlmExpanded(false)
+        localStorage.removeItem('rt-dev-mode')
+        return
+      }
+      setShowDevPasswordInput(true)
+      setDevPasswordValue('')
+    }
+  }, [devMode])
+  const handleDevPasswordSubmit = useCallback(() => {
+    if (devPasswordValue === 'DqwertyA1!') {
+      setDevMode(true)
+      localStorage.setItem('rt-dev-mode', 'true')
+    }
+    setShowDevPasswordInput(false)
+    setDevPasswordValue('')
+  }, [devPasswordValue])
   const [emailExpanded, setEmailExpanded] = useState(false)
   const [orgExpanded, setOrgExpanded] = useState(false)
-  const [maxProductsPerUserAdmin, setMaxProductsPerUserAdmin] = useState(10)
+  const [maxTeamsPerUserAdmin, setMaxTeamsPerUserAdmin] = useState(10)
   const [emailProvider, setEmailProvider] = useState<'microsoft' | 'google' | 'zoho'>('microsoft')
   const [emailTenantName, setEmailTenantName] = useState('')
   const [emailClientId, setEmailClientId] = useState('')
@@ -79,13 +175,20 @@ export default function Settings() {
   const [emailRedirectUri, setEmailRedirectUri] = useState('')
   const [globalSlackWebhook, setGlobalSlackWebhook] = useState('')
   const [globalTeamsWebhook, setGlobalTeamsWebhook] = useState('')
+  const [mcpExpanded, setMcpExpanded] = useState(false)
+  const [mcpJsonInput, setMcpJsonInput] = useState('')
+  const [mcpEditId, setMcpEditId] = useState<string | null>(null)
+  const [mcpEditName, setMcpEditName] = useState('')
   const [channelsExpanded, setChannelsExpanded] = useState(false)
+  const [dataConnectionsExpanded, setDataConnectionsExpanded] = useState(false)
   const [channelPlatform, setChannelPlatform] = useState<'slack' | 'teams'>('slack')
   const [channelBotToken, setChannelBotToken] = useState('')
   const [channelName, setChannelName] = useState('')
   const [channelId, setChannelId] = useState('')
   const [channelTeamId, setChannelTeamId] = useState('')
-  const [channelProductId, setChannelProductId] = useState('')
+  // MS Teams platform team ID (only relevant when platform === 'teams').
+  // No UI input currently binds this; kept as placeholder state.
+  const [channelMsTeamId, setChannelMsTeamId] = useState('')
   const [channelAutoRespond, setChannelAutoRespond] = useState(false)
   const [channelIngestHistory, setChannelIngestHistory] = useState(true)
   const [authMethod, setAuthMethod] = useState<'email' | 'ldap' | 'azure_ad' | 'google'>('email')
@@ -97,6 +200,14 @@ export default function Settings() {
   const [ldapBindDn, setLdapBindDn] = useState('')
   const [ldapBindPassword, setLdapBindPassword] = useState('')
   const [ldapUserLookup, setLdapUserLookup] = useState<'uid' | 'sAMAccountName'>('uid')
+  const [azureClientId, setAzureClientId] = useState('')
+  const [azureClientSecret, setAzureClientSecret] = useState('')
+  const [azureTenantId, setAzureTenantId] = useState('')
+  const [azureRedirectUri, setAzureRedirectUri] = useState(`${window.location.origin}/auth/callback/azure`)
+  const [azureAdditionalScopes, setAzureAdditionalScopes] = useState('')
+  const [azureTestPending, setAzureTestPending] = useState(false)
+  const [ldapTestPending, setLdapTestPending] = useState(false)
+  const [autoProvisionEnabled, setAutoProvisionEnabled] = useState(false)
   const [authSavePending, setAuthSavePending] = useState(false)
   const [selectedTenantId, setSelectedTenantId] = useState<string | null>(null)
   
@@ -122,6 +233,45 @@ export default function Settings() {
     enabled: !!user && (!!user.tenant_id || isGlobalAdmin),
   })
 
+  // Load MCP tool configs
+  const { data: mcpConfigs = [] } = useQuery<any[]>({
+    queryKey: ['settings', 'mcp-tools'],
+    queryFn: async () => {
+      const r = await api.get('/settings/mcp-tools')
+      return r.data
+    }
+  })
+
+  const mcpSaveMutation = useMutation({
+    mutationFn: async (data: any) => {
+      if (data.config_id) {
+        return api.put(`/settings/mcp-tools/${data.config_id}`, data)
+      }
+      return api.post('/settings/mcp-tools', data)
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['settings', 'mcp-tools'] })
+      setMcpJsonInput(''); setMcpEditId(null); setMcpEditName('')
+      toast.success('MCP server saved')
+    },
+    onError: () => toast.error('Failed to save MCP server'),
+  })
+
+  const mcpDeleteMutation = useMutation({
+    mutationFn: async (id: string) => api.delete(`/settings/mcp-tools/${id}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['settings', 'mcp-tools'] })
+      toast.success('MCP server removed')
+    },
+  })
+
+  const mcpToggleMutation = useMutation({
+    mutationFn: async (id: string) => api.post(`/settings/mcp-tools/${id}/toggle`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['settings', 'mcp-tools'] })
+    },
+  })
+
   // Load tenant auth config
   const { data: tenantAuth } = useQuery({
     queryKey: ['auth', 'tenant', selectedTenantId || user?.tenant_id],
@@ -137,7 +287,8 @@ export default function Settings() {
     if (tenantAuth) {
       setAuthMethod(tenantAuth.auth_method || 'email')
       setTenantDomain(tenantAuth.domain || '')
-      setMaxProductsPerUserAdmin(tenantAuth.max_products_per_user_admin ?? 10)
+      setMaxTeamsPerUserAdmin(tenantAuth.max_teams_per_user_admin ?? 10)
+      setAutoProvisionEnabled(!!tenantAuth.auto_provision_enabled)
       const lc = tenantAuth.ldap_config
       if (lc) {
         setLdapHost(lc.host || '')
@@ -148,6 +299,14 @@ export default function Settings() {
         setLdapBindPassword(lc.bind_password === '********' ? '' : (lc.bind_password || ''))
         const f = lc.user_search_filter || '(uid={username})'
         setLdapUserLookup(f.includes('sAMAccountName') ? 'sAMAccountName' : 'uid')
+      }
+      const ac = tenantAuth.azure_ad_config
+      if (ac) {
+        setAzureClientId(ac.client_id || '')
+        setAzureClientSecret(ac.client_secret === '********' ? '' : (ac.client_secret || ''))
+        setAzureTenantId(ac.tenant_id || '')
+        setAzureRedirectUri(ac.redirect_uri || `${window.location.origin}/auth/callback/azure`)
+        setAzureAdditionalScopes(ac.additional_scopes || '')
       }
     }
   }, [tenantAuth, isGlobalAdmin])
@@ -167,9 +326,32 @@ export default function Settings() {
       setScreenopsModel(currentSettings.screenops_model || 'gpt-4o-mini')
       setScreenopsMouseTimeout(Math.max(5, Math.min(120, currentSettings.screenops_mouse_timeout ?? 30)))
       setScreenopsImageScale(Math.max(25, Math.min(100, currentSettings.screenops_image_scale ?? 100)))
+      setScreenshotDelayMs(Math.max(0, Math.min(30000, currentSettings.screenshot_delay_ms ?? 2000)))
       setDebugLogging(currentSettings.debug_logging ?? false)
       setMaxParallelFiles(Math.max(1, Math.min(32, currentSettings.max_parallel_files ?? 1)))
       setAgentMaxIterations(Math.max(1, Math.min(50, currentSettings.agent_max_iterations ?? 10)))
+      setSmallModelName(currentSettings.small_model_name || '')
+      setPlanModelName(currentSettings.plan_model_name || '')
+      const mainModel = currentSettings.model_name || 'gpt-4o'
+      const sm = currentSettings.small_model_name || ''
+      const pm = currentSettings.plan_model_name || ''
+      setSameModelForAll((sm === mainModel && pm === mainModel) || (!sm && !pm))
+      setUseReasoning(currentSettings.use_reasoning ?? true)
+      setBuildSystemPrompt(currentSettings.build_system_prompt || '')
+      setPlanSystemPrompt(currentSettings.plan_system_prompt || '')
+      setTemperature(currentSettings.temperature ?? 0.0)
+      setTopP(currentSettings.top_p ?? 1.0)
+      setMaxSteps(currentSettings.max_steps ?? 50)
+      setCompactionAuto(currentSettings.compaction_auto ?? false)
+      setCompactionTailTurns(currentSettings.compaction_tail_turns ?? 4)
+      setToolOutputMaxLines(currentSettings.tool_output_max_lines ?? 200)
+      setToolOutputMaxBytes(currentSettings.tool_output_max_bytes ?? 50000)
+      setBashShell(currentSettings.bash_shell || '')
+      setSnapshotEnabled(currentSettings.snapshot_enabled ?? false)
+      setDisabledToolsJson(currentSettings.disabled_tools || '')
+      setPermissionConfigJson(currentSettings.permission_config || '')
+      setCustomAgentsJson(currentSettings.custom_agents || '')
+      setCustomCommandsJson(currentSettings.custom_commands || '')
       // Note: API keys are not loaded from server for security
     }
   }, [currentSettings])
@@ -200,7 +382,11 @@ export default function Settings() {
       await queryClient.invalidateQueries({ queryKey: ['settings', 'llm'] })
       await queryClient.refetchQueries({ queryKey: ['settings', 'llm'] })
       
-      toast.success('Settings saved successfully')
+      try {
+        await api.post('/opencode/regenerate-config')
+      } catch { /* ignore if OpenCode not running */ }
+      
+      toast.success('Settings saved & agent config updated')
     },
     onError: (error: any) => {
       console.error('Save settings error:', error)
@@ -340,10 +526,10 @@ export default function Settings() {
     },
   })
 
-  const { data: products = [] } = useQuery<any[]>({
-    queryKey: ['products'],
+  const { data: teams = [] } = useQuery<any[]>({
+    queryKey: ['teams'],
     queryFn: async () => {
-      const response = await api.get('/products')
+      const response = await api.get('/teams')
       return response.data
     },
   })
@@ -351,12 +537,12 @@ export default function Settings() {
   const createChannelMutation = useMutation({
     mutationFn: async () => {
       const response = await api.post('/channels/connections', {
-        product_id: channelProductId,
+        team_id: channelTeamId,
         platform: channelPlatform,
         channel_name: channelName.trim(),
         channel_id: channelId.trim(),
         bot_token: channelBotToken.trim(),
-        team_id: channelTeamId.trim() || undefined,
+        ms_team_id: channelMsTeamId.trim() || undefined,
         auto_respond: channelAutoRespond,
         ingest_history: channelIngestHistory,
       })
@@ -368,6 +554,7 @@ export default function Settings() {
       setChannelName('')
       setChannelId('')
       setChannelTeamId('')
+      setChannelMsTeamId('')
       toast.success('Channel connected!')
     },
     onError: (error: any) => {
@@ -455,12 +642,67 @@ export default function Settings() {
     }
     payload.screenops_mouse_timeout = Math.max(5, Math.min(120, screenopsMouseTimeout))
     payload.screenops_image_scale = Math.max(25, Math.min(100, screenopsImageScale))
+    payload.screenshot_delay_ms = Math.max(0, Math.min(30000, screenshotDelayMs))
     if (serperKey.trim()) {
       payload.serper_api_key = serperKey.trim()
     }
     payload.debug_logging = debugLogging
     payload.max_parallel_files = Math.max(1, Math.min(32, maxParallelFiles))
     payload.agent_max_iterations = Math.max(1, Math.min(50, agentMaxIterations))
+    if (smallModelName.trim()) {
+      payload.small_model_name = smallModelName.trim()
+    } else {
+      payload.small_model_name = null
+    }
+    if (planModelName.trim()) {
+      payload.plan_model_name = planModelName.trim()
+    } else {
+      payload.plan_model_name = null
+    }
+    payload.use_reasoning = useReasoning
+    if (buildSystemPrompt.trim()) {
+      payload.build_system_prompt = buildSystemPrompt.trim()
+    } else {
+      payload.build_system_prompt = null
+    }
+    if (planSystemPrompt.trim()) {
+      payload.plan_system_prompt = planSystemPrompt.trim()
+    } else {
+      payload.plan_system_prompt = null
+    }
+    payload.temperature = temperature
+    payload.top_p = topP
+    payload.max_steps = maxSteps
+    payload.compaction_auto = compactionAuto
+    payload.compaction_tail_turns = compactionTailTurns
+    payload.tool_output_max_lines = toolOutputMaxLines
+    payload.tool_output_max_bytes = toolOutputMaxBytes
+    if (bashShell.trim()) {
+      payload.bash_shell = bashShell.trim()
+    } else {
+      payload.bash_shell = null
+    }
+    payload.snapshot_enabled = snapshotEnabled
+    if (disabledToolsJson.trim()) {
+      payload.disabled_tools = disabledToolsJson.trim()
+    } else {
+      payload.disabled_tools = null
+    }
+    if (permissionConfigJson.trim()) {
+      payload.permission_config = permissionConfigJson.trim()
+    } else {
+      payload.permission_config = null
+    }
+    if (customAgentsJson.trim()) {
+      payload.custom_agents = customAgentsJson.trim()
+    } else {
+      payload.custom_agents = null
+    }
+    if (customCommandsJson.trim()) {
+      payload.custom_commands = customCommandsJson.trim()
+    } else {
+      payload.custom_commands = null
+    }
 
     console.log('Saving settings with payload:', {
       ...payload,
@@ -528,14 +770,14 @@ export default function Settings() {
         animate={{ opacity: 1, y: 0 }}
         className="mb-8"
       >
-        <h1 className="text-3xl font-display font-bold mb-2">Settings</h1>
-        <p className="text-rt-text-muted">
-          Configure your <span className="font-extrabold bg-gradient-to-r from-indigo-400 via-purple-400 to-violet-400 bg-clip-text text-transparent">ReTrace</span> system
+        <h1 className="text-4xl font-headline font-bold tracking-tight mb-2">Platform <span className="text-rt-primary-container italic">Settings</span></h1>
+        <p className="text-on-surface-variant text-lg">
+          Configure your <span className="font-extrabold text-rt-primary-container italic">ReTrace</span> system
         </p>
       </motion.div>
 
-      {/* Layout & Theme: expandable */}
-      <motion.div
+      {/* Layout & Theme: expandable — admin only */}
+      {user?.role === 'admin' && <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         className="max-w-4xl mb-6"
@@ -554,7 +796,7 @@ export default function Settings() {
               )}
               <LayoutPanelLeft className="w-4 h-4 text-purple-400" />
               <Palette className="w-4 h-4 text-pink-400" />
-              <span className="text-sm font-display font-semibold">Layout & theme</span>
+              <span className="text-sm font-headline font-semibold">Interface <span className="italic text-rt-primary-container">Identity</span></span>
             </div>
             <span className="text-xs text-rt-text-muted">
               {layoutMode === 'classic' ? 'Classic' : 'Command Center'} · {themeMode === 'dark' ? 'Dark' : themeMode === 'light' ? 'Light' : 'Colorful'}
@@ -566,7 +808,7 @@ export default function Settings() {
               <div>
                 <div className="flex items-center gap-2 mb-3">
                   <LayoutPanelLeft className="w-4 h-4 text-purple-400" />
-                  <h2 className="text-sm font-display font-semibold">Interface Layout</h2>
+                  <h2 className="text-sm font-headline font-semibold">Interface Layout</h2>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
             <button
@@ -646,7 +888,7 @@ export default function Settings() {
               <div>
                 <div className="flex items-center gap-2 mb-3">
                   <Palette className="w-4 h-4 text-pink-400" />
-                  <h2 className="text-sm font-display font-semibold">Color Theme</h2>
+                  <h2 className="text-sm font-headline font-semibold">Color Theme</h2>
                 </div>
                 <div className="grid grid-cols-3 gap-2">
             <button
@@ -741,36 +983,49 @@ export default function Settings() {
             </div>
           )}
         </div>
-      </motion.div>
+      </motion.div>}
 
-      {/* LLM Configuration — collapsible */}
-      <motion.div
+      {/* LLM Configuration — read-only in trial */}
+      {user?.role === 'admin' && <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.15 }}
         className="max-w-4xl"
       >
         <div className="card overflow-hidden">
-          <button
-            type="button"
-            onClick={() => setLlmExpanded((e) => !e)}
-            className="w-full flex items-center justify-between gap-3 p-3 text-left hover:bg-rt-bg-light/50 transition-colors"
+          <div
+            className="flex items-center justify-between gap-3 p-3 cursor-default select-none"
+            onClick={devMode ? () => setLlmExpanded(e => !e) : undefined}
           >
             <div className="flex items-center gap-2">
-              {llmExpanded ? (
-                <ChevronDown className="w-4 h-4 text-rt-text-muted" />
-              ) : (
-                <ChevronRight className="w-4 h-4 text-rt-text-muted" />
-              )}
-              <Zap className="w-4 h-4 text-rt-primary" />
-              <span className="text-sm font-display font-semibold">LLM API Configuration</span>
+              <Zap className="w-4 h-4 text-rt-primary cursor-pointer" onClick={(e) => { e.stopPropagation(); handleDevClick(); }} />
+              <span className="text-sm font-headline font-semibold">Intelligence <span className="italic text-rt-primary-container">Engine</span></span>
+              {devMode && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-500/10 text-purple-400 border border-purple-500/20 font-medium">DEV</span>}
             </div>
             <span className="text-xs text-rt-text-muted">
-              {provider === 'openai' ? 'OpenAI' : provider === 'anthropic' ? 'Anthropic' : 'Custom'} · {modelName || 'not set'}
-              {currentSettings?.api_key_set ? ' · key set' : ''}
+              {devMode ? (
+                <>{provider === 'openai' ? 'OpenAI' : provider === 'anthropic' ? 'Anthropic' : 'Custom'} · {modelName || 'not set'}{currentSettings?.api_key_set ? ' · key set' : ''}</>
+              ) : 'Try ReTrace'}
             </span>
-          </button>
-          {llmExpanded && (
+          </div>
+          {showDevPasswordInput && (
+            <div className="p-4 border-t border-rt-border/50">
+              <div className="flex items-center gap-2">
+                <input
+                  type="password"
+                  className="input flex-1 text-sm"
+                  placeholder="Enter developer password"
+                  value={devPasswordValue}
+                  onChange={(e) => setDevPasswordValue(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleDevPasswordSubmit() }}
+                  autoFocus
+                />
+                <button onClick={handleDevPasswordSubmit} className="btn-primary text-xs px-3 py-2">Unlock</button>
+                <button onClick={() => { setShowDevPasswordInput(false); setDevPasswordValue('') }} className="btn-secondary text-xs px-3 py-2">Cancel</button>
+              </div>
+            </div>
+          )}
+          {devMode && llmExpanded && (
           <div className="p-4 pt-0 border-t border-rt-border/50">
 
           <div className="space-y-4 mt-4">
@@ -828,7 +1083,7 @@ export default function Settings() {
                   'model-name'
                 }
                 value={modelName}
-                onChange={(e) => setModelName(e.target.value)}
+                onChange={(e) => { setModelName(e.target.value); if (sameModelForAll) { setSmallModelName(e.target.value); setPlanModelName(e.target.value) } }}
               />
               <p className="text-xs text-rt-text-muted mt-1">
                 {provider === 'openai' && 'Examples: gpt-4o, gpt-4-turbo, gpt-3.5-turbo'}
@@ -895,24 +1150,273 @@ export default function Settings() {
               </div>
             </div>
 
-            {/* Agent — Max iterations */}
+            {/* Agent Configuration */}
             <div className="border-t border-rt-border pt-4 mt-4">
-              <h4 className="text-xs font-semibold text-rt-text-muted uppercase tracking-wide mb-3">Agent</h4>
-              <div className="flex items-center gap-3">
-                <label htmlFor="agent-max-iterations" className="label whitespace-nowrap">Max iterations</label>
-                <select
-                  id="agent-max-iterations"
-                  value={agentMaxIterations}
-                  onChange={(e) => setAgentMaxIterations(Number(e.target.value))}
-                  className="input w-24"
-                >
-                  {[5, 10, 15, 20, 25, 30, 40, 50].map((n) => (
-                    <option key={n} value={n}>{n}</option>
-                  ))}
-                </select>
-                <p className="text-xs text-rt-text-muted">
-                  Max tool-use steps per agent task (higher = more steps, may hit context limits).
-                </p>
+              <h4 className="text-xs font-semibold text-rt-text-muted uppercase tracking-wide mb-3">Agent Configuration</h4>
+              <div className="space-y-4">
+                {/* Models */}
+                <div className="flex items-start gap-3">
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={sameModelForAll}
+                    onClick={() => {
+                      const next = !sameModelForAll
+                      setSameModelForAll(next)
+                      if (next) {
+                        setSmallModelName(modelName)
+                        setPlanModelName(modelName)
+                      }
+                    }}
+                    className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${sameModelForAll ? 'bg-rt-primary' : 'bg-rt-border'}`}
+                  >
+                    <span className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${sameModelForAll ? 'translate-x-4' : 'translate-x-0'}`} />
+                  </button>
+                  <div>
+                    <label className="label cursor-pointer" onClick={() => {
+                      const next = !sameModelForAll
+                      setSameModelForAll(next)
+                      if (next) {
+                        setSmallModelName(modelName)
+                        setPlanModelName(modelName)
+                      }
+                    }}>
+                      Use same model for all
+                    </label>
+                    <p className="text-xs text-rt-text-muted mt-0.5">
+                      Use the main chat model for title generation, summaries, and the Plan agent.
+                    </p>
+                  </div>
+                </div>
+                {!sameModelForAll && (
+                <>
+                <div>
+                  <label className="label mb-1 block">Small model name</label>
+                  <input
+                    type="text"
+                    className="input"
+                    placeholder="e.g. grok-3-mini-fast (same provider as chat model)"
+                    value={smallModelName}
+                    onChange={(e) => setSmallModelName(e.target.value)}
+                  />
+                  <p className="text-xs text-rt-text-muted mt-1">
+                    Used for title generation, session summaries, and other lightweight tasks.
+                    Same provider and API key as the chat model. Leave empty for OpenCode defaults.
+                  </p>
+                </div>
+                <div>
+                  <label className="label mb-1 block">Plan agent model</label>
+                  <input
+                    type="text"
+                    className="input"
+                    placeholder="e.g. grok-3-mini-fast (leave empty to use chat model)"
+                    value={planModelName}
+                    onChange={(e) => setPlanModelName(e.target.value)}
+                  />
+                  <p className="text-xs text-rt-text-muted mt-1">
+                    Separate model for the Plan agent (read-only analysis). Leave empty to use the main chat model.
+                  </p>
+                </div>
+                </>
+                )}
+
+                {/* System Prompts */}
+                <div>
+                  <label className="label mb-1 block">Build agent system prompt</label>
+                  <textarea
+                    className="input min-h-[80px] font-mono text-xs"
+                    placeholder="Custom system prompt for the Build agent. Leave empty for default ReTrace prompt."
+                    value={buildSystemPrompt}
+                    onChange={(e) => setBuildSystemPrompt(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="label mb-1 block">Plan agent system prompt</label>
+                  <textarea
+                    className="input min-h-[80px] font-mono text-xs"
+                    placeholder="Custom system prompt for the Plan agent. Leave empty for default ReTrace prompt."
+                    value={planSystemPrompt}
+                    onChange={(e) => setPlanSystemPrompt(e.target.value)}
+                  />
+                </div>
+
+                {/* Reasoning toggle */}
+                <div className="flex items-start gap-3">
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={useReasoning}
+                    onClick={() => setUseReasoning(!useReasoning)}
+                    className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${useReasoning ? 'bg-rt-primary' : 'bg-rt-border'}`}
+                  >
+                    <span className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${useReasoning ? 'translate-x-4' : 'translate-x-0'}`} />
+                  </button>
+                  <div>
+                    <label className="label cursor-pointer" onClick={() => setUseReasoning(!useReasoning)}>
+                      Extended reasoning
+                    </label>
+                    <p className="text-xs text-rt-text-muted mt-0.5">
+                      Enable extended thinking / reasoning mode. Works with reasoning-capable models.
+                    </p>
+                  </div>
+                </div>
+
+                {/* LLM Parameters */}
+                <div className="grid grid-cols-3 gap-4">
+                  <div>
+                    <label className="label text-xs mb-1 block">Temperature</label>
+                    <input
+                      type="number"
+                      className="input w-full text-center"
+                      min={0}
+                      max={2}
+                      step={0.1}
+                      value={temperature}
+                      onChange={(e) => setTemperature(Math.max(0, Math.min(2, Number(e.target.value) || 0)))}
+                    />
+                  </div>
+                  <div>
+                    <label className="label text-xs mb-1 block">Top P</label>
+                    <input
+                      type="number"
+                      className="input w-full text-center"
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      value={topP}
+                      onChange={(e) => setTopP(Math.max(0, Math.min(1, Number(e.target.value) || 1)))}
+                    />
+                  </div>
+                  <div>
+                    <label className="label text-xs mb-1 block">Max steps</label>
+                    <input
+                      type="number"
+                      className="input w-full text-center"
+                      min={1}
+                      max={200}
+                      value={maxSteps}
+                      onChange={(e) => setMaxSteps(Math.max(1, Math.min(200, Number(e.target.value) || 50)))}
+                    />
+                  </div>
+                </div>
+
+                {/* Compaction */}
+                <div className="border-t border-rt-border/50 pt-3">
+                  <div className="flex items-start gap-3 mb-3">
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={compactionAuto}
+                      onClick={() => setCompactionAuto(!compactionAuto)}
+                      className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${compactionAuto ? 'bg-rt-primary' : 'bg-rt-border'}`}
+                    >
+                      <span className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${compactionAuto ? 'translate-x-4' : 'translate-x-0'}`} />
+                    </button>
+                    <div>
+                      <label className="label cursor-pointer" onClick={() => setCompactionAuto(!compactionAuto)}>
+                        Auto-compaction
+                      </label>
+                      <p className="text-xs text-rt-text-muted mt-0.5">
+                        Automatically compact conversation history when context grows too large.
+                      </p>
+                    </div>
+                  </div>
+                  {compactionAuto && (
+                    <div className="flex items-center gap-3 ml-12">
+                      <label className="label text-xs whitespace-nowrap">Keep last</label>
+                      <input
+                        type="number"
+                        className="input w-20 text-center"
+                        min={1}
+                        max={50}
+                        value={compactionTailTurns}
+                        onChange={(e) => setCompactionTailTurns(Math.max(1, Math.min(50, Number(e.target.value) || 4)))}
+                      />
+                      <span className="text-xs text-rt-text-muted">turns</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Tool Output Truncation */}
+                <div className="border-t border-rt-border/50 pt-3">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="label text-xs mb-1 block">Max output lines</label>
+                      <input
+                        type="number"
+                        className="input w-full text-center"
+                        min={1}
+                        max={5000}
+                        value={toolOutputMaxLines}
+                        onChange={(e) => setToolOutputMaxLines(Math.max(1, Math.min(5000, Number(e.target.value) || 200)))}
+                      />
+                    </div>
+                    <div>
+                      <label className="label text-xs mb-1 block">Max output bytes</label>
+                      <input
+                        type="number"
+                        className="input w-full text-center"
+                        min={1000}
+                        max={500000}
+                        step={1000}
+                        value={toolOutputMaxBytes}
+                        onChange={(e) => setToolOutputMaxBytes(Math.max(1000, Math.min(500000, Number(e.target.value) || 50000)))}
+                      />
+                    </div>
+                  </div>
+                  <p className="text-xs text-rt-text-muted mt-1">
+                    Truncate tool output to prevent context overflow. Lines are truncated first, then bytes.
+                  </p>
+                </div>
+
+                {/* Bash Shell + Snapshot */}
+                <div className="border-t border-rt-border/50 pt-3 grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="label text-xs mb-1 block">Bash shell</label>
+                    <input
+                      type="text"
+                      className="input"
+                      placeholder="/bin/bash (leave empty for default)"
+                      value={bashShell}
+                      onChange={(e) => setBashShell(e.target.value)}
+                    />
+                  </div>
+                  <div className="flex items-start gap-3 pt-5">
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={snapshotEnabled}
+                      onClick={() => setSnapshotEnabled(!snapshotEnabled)}
+                      className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${snapshotEnabled ? 'bg-rt-primary' : 'bg-rt-border'}`}
+                    >
+                      <span className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${snapshotEnabled ? 'translate-x-4' : 'translate-x-0'}`} />
+                    </button>
+                    <div>
+                      <label className="label cursor-pointer" onClick={() => setSnapshotEnabled(!snapshotEnabled)}>
+                        Snapshots
+                      </label>
+                      <p className="text-xs text-rt-text-muted mt-0.5">Auto-snapshot workspace state</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Max iterations (legacy) */}
+                <div className="border-t border-rt-border/50 pt-3 flex items-center gap-3">
+                  <label htmlFor="agent-max-iterations" className="label whitespace-nowrap">Max iterations</label>
+                  <select
+                    id="agent-max-iterations"
+                    value={agentMaxIterations}
+                    onChange={(e) => setAgentMaxIterations(Number(e.target.value))}
+                    className="input w-24"
+                  >
+                    {[5, 10, 15, 20, 25, 30, 40, 50].map((n) => (
+                      <option key={n} value={n}>{n}</option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-rt-text-muted">
+                    Legacy max tool-use iterations (use Max steps for OpenCode agent).
+                  </p>
+                </div>
               </div>
             </div>
 
@@ -996,6 +1500,27 @@ export default function Settings() {
                     <p className="text-xs text-rt-text-muted mt-1">
                       Percentage of screenshot size sent to the model (25–100). Lower = fewer tokens and faster; higher = more detail.
                       Saved screenshots use this scale too.
+                    </p>
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-3">
+                      <label htmlFor="screenshot-delay-ms" className="label text-xs whitespace-nowrap mb-0">Screenshot delay</label>
+                      <input
+                        id="screenshot-delay-ms"
+                        type="number"
+                        className="input w-24 text-center"
+                        min={0}
+                        max={30000}
+                        step={100}
+                        value={screenshotDelayMs}
+                        onChange={(e) => setScreenshotDelayMs(Math.max(0, Math.min(30000, Number(e.target.value) || 0)))}
+                      />
+                      <span className="text-xs text-rt-text-muted">ms (0–30000)</span>
+                    </div>
+                    <p className="text-xs text-rt-text-muted mt-1">
+                      Delay before every browser screenshot is captured. Higher values give dynamic content
+                      (animations, countdown timers, auto-loading UI) time to settle before the agent sees the page.
+                      Increase for slow-loading sites; decrease for speed.
                     </p>
                   </div>
                 </div>
@@ -1082,14 +1607,184 @@ export default function Settings() {
                     Response time: {testResult.latency_ms}ms
                   </p>
                 )}
-                {testResult.model_info && (
+                {(testResult as any).model_info && (
                   <div className="text-xs text-rt-text-muted mt-2 font-mono bg-rt-surface/50 p-2 rounded">
-                    Model: {testResult.model_info.model}
+                    Model: {(testResult as any).model_info.model}
                   </div>
                 )}
               </div>
             </motion.div>
           )}
+
+          {/* MCP Servers */}
+            <div className="border-t border-rt-border pt-4 mt-4">
+              <div className="flex items-center gap-2 mb-3">
+                <Plug className="w-4 h-4 text-green-400" />
+                <h4 className="text-xs font-semibold text-rt-text-muted uppercase tracking-wide">MCP Servers</h4>
+              </div>
+              <div className="space-y-2">
+                {mcpConfigs.length > 0 && mcpConfigs.map((cfg: any) => (
+                  <div key={cfg.config_id} className="flex items-center gap-2 px-3 py-2 rounded-lg bg-rt-surface/30 border border-rt-border/40">
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs font-medium truncate">{cfg.name || 'Unnamed'}</div>
+                      <div className="text-[10px] text-rt-text-muted/60 truncate font-mono">
+                        {cfg.config_json?.command ? `cmd: ${Array.isArray(cfg.config_json.command) ? cfg.config_json.command.join(' ') : cfg.config_json.command}` :
+                         cfg.config_json?.url ? `url: ${cfg.config_json.url}` : 'No config'}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => mcpToggleMutation.mutate(cfg.config_id)}
+                      className={`text-xs px-2 py-0.5 rounded ${cfg.enabled !== false ? 'bg-rt-primary/20 text-rt-primary' : 'bg-rt-surface text-rt-text-muted'}`}
+                    >
+                      {cfg.enabled !== false ? 'On' : 'Off'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => mcpDeleteMutation.mutate(cfg.config_id)}
+                      className="p-1 rounded hover:bg-red-500/20 text-red-400 transition-colors"
+                      title="Remove"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  </div>
+                ))}
+                {mcpConfigs.length === 0 && (
+                  <p className="text-xs text-rt-text-muted/40 italic">No custom MCP servers configured</p>
+                )}
+                <div className="border-t border-rt-border/30 pt-3 mt-3 space-y-2">
+                  <div className="text-[10px] font-semibold text-rt-text-muted/60 uppercase tracking-wide">Add MCP Server</div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <input
+                      type="text"
+                      className="input text-xs"
+                      placeholder="Name (e.g. my-tool)"
+                      value={mcpAddName}
+                      onChange={(e) => setMcpAddName(e.target.value)}
+                    />
+                    <input
+                      type="text"
+                      className="input text-xs"
+                      placeholder="Command (e.g. npx my-mcp-server)"
+                      value={mcpAddCommand}
+                      onChange={(e) => setMcpAddCommand(e.target.value)}
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <input
+                      type="text"
+                      className="input text-xs"
+                      placeholder="URL (for remote/SSE servers)"
+                      value={mcpAddUrl}
+                      onChange={(e) => setMcpAddUrl(e.target.value)}
+                    />
+                    <input
+                      type="text"
+                      className="input text-xs"
+                      placeholder='Env vars JSON (e.g. {"KEY":"val"})'
+                      value={mcpAddEnv}
+                      onChange={(e) => setMcpAddEnv(e.target.value)}
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    disabled={!mcpAddName.trim() || (!mcpAddCommand.trim() && !mcpAddUrl.trim())}
+                    onClick={() => {
+                      const configJson: any = {}
+                      if (mcpAddCommand.trim()) {
+                        configJson.command = mcpAddCommand.trim().split(' ')
+                      }
+                      if (mcpAddUrl.trim()) {
+                        configJson.url = mcpAddUrl.trim()
+                      }
+                      if (mcpAddEnv.trim()) {
+                        try { configJson.environment = JSON.parse(mcpAddEnv) } catch {}
+                      }
+                      mcpSaveMutation.mutate({ name: mcpAddName.trim(), config_json: configJson, enabled: true })
+                      setMcpAddName(''); setMcpAddCommand(''); setMcpAddUrl(''); setMcpAddEnv('')
+                    }}
+                    className="btn-secondary text-xs"
+                  >
+                    <Plus className="w-3 h-3" /> Add Server
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Custom Commands */}
+            <div className="border-t border-rt-border pt-4 mt-4">
+              <div className="flex items-center gap-2 mb-3">
+                <Command className="w-4 h-4 text-blue-400" />
+                <h4 className="text-xs font-semibold text-rt-text-muted uppercase tracking-wide">Custom Commands</h4>
+              </div>
+              <textarea
+                className="input min-h-[80px] font-mono text-xs"
+                placeholder={'JSON array of custom commands:\n[\n  {"name": "review", "prompt": "Review this code for bugs and suggest improvements", "agent": "plan"},\n  {"name": "fix", "prompt": "Fix all lint errors in the project", "agent": "build"}\n]'}
+                value={customCommandsJson}
+                onChange={(e) => setCustomCommandsJson(e.target.value)}
+              />
+              <p className="text-xs text-rt-text-muted mt-1">
+                Custom slash commands for the agent. Each command has a name (used as /name), a prompt, and an optional agent ("build" or "plan").
+              </p>
+            </div>
+
+            {/* Advanced */}
+            <div className="border-t border-rt-border pt-4 mt-4">
+              <button
+                type="button"
+                onClick={() => setAdvancedExpanded(!advancedExpanded)}
+                className="flex items-center gap-2 w-full text-left"
+              >
+                {advancedExpanded ? (
+                  <ChevronDown className="w-3.5 h-3.5 text-rt-text-muted" />
+                ) : (
+                  <ChevronRight className="w-3.5 h-3.5 text-rt-text-muted" />
+                )}
+                <h4 className="text-xs font-semibold text-rt-text-muted uppercase tracking-wide">Advanced</h4>
+              </button>
+              {advancedExpanded && (
+                <div className="space-y-3 mt-3">
+                  <div>
+                    <label className="label text-xs mb-1 block">Disabled tools</label>
+                    <input
+                      type="text"
+                      className="input font-mono text-xs"
+                      placeholder='JSON list, e.g. ["task","todowrite"]'
+                      value={disabledToolsJson}
+                      onChange={(e) => setDisabledToolsJson(e.target.value)}
+                    />
+                    <p className="text-xs text-rt-text-muted mt-1">
+                      JSON array of tool names to disable. The agent will not use these tools.
+                    </p>
+                  </div>
+                  <div>
+                    <label className="label text-xs mb-1 block">Permission config</label>
+                    <input
+                      type="text"
+                      className="input font-mono text-xs"
+                      placeholder='JSON, e.g. {"edit":"allow","bash":"confirm"}'
+                      value={permissionConfigJson}
+                      onChange={(e) => setPermissionConfigJson(e.target.value)}
+                    />
+                    <p className="text-xs text-rt-text-muted mt-1">
+                      Override default agent permissions. Values: "allow", "deny", "confirm".
+                    </p>
+                  </div>
+                  <div>
+                    <label className="label text-xs mb-1 block">Custom agents</label>
+                    <textarea
+                      className="input min-h-[80px] font-mono text-xs"
+                      placeholder={'JSON array of custom agents:\n[\n  {"name": "security", "model": "grok-4-1-fast-reasoning", "prompt": "You are a security auditor...", "permission": {"edit": "deny", "bash": "deny"}}\n]'}
+                      value={customAgentsJson}
+                      onChange={(e) => setCustomAgentsJson(e.target.value)}
+                    />
+                    <p className="text-xs text-rt-text-muted mt-1">
+                      Additional agents beyond Build and Plan. Each gets its own model, prompt, and permissions.
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
 
           {/* Actions */}
           <div className="flex gap-3 justify-end mt-6 pt-6 border-t border-rt-border">
@@ -1131,9 +1826,9 @@ export default function Settings() {
           </div>
           )}
         </div>
-      </motion.div>
+      </motion.div>}
 
-      {/* Organization Settings — collapsible */}
+      {/* Organization Settings — collapsible — visible to all admins */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
@@ -1153,7 +1848,7 @@ export default function Settings() {
                 <ChevronRight className="w-4 h-4 text-rt-text-muted" />
               )}
               <SettingsIcon className="w-4 h-4 text-purple-400" />
-              <span className="text-sm font-display font-semibold">Organization Settings</span>
+              <span className="text-sm font-headline font-semibold">Organization Settings</span>
             </div>
           </button>
           {orgExpanded && (
@@ -1218,23 +1913,142 @@ export default function Settings() {
                         <option value="sAMAccountName">sAMAccountName (Active Directory)</option>
                       </select>
                     </div>
+                    <div className="pt-1">
+                      <button
+                        disabled={ldapTestPending || !ldapHost || !ldapBaseDn || !ldapBindDn}
+                        onClick={async () => {
+                          setLdapTestPending(true)
+                          try {
+                            const payload: any = {
+                              ldap_config: {
+                                host: ldapHost,
+                                port: ldapPort,
+                                use_ssl: ldapUseSsl,
+                                base_dn: ldapBaseDn,
+                                bind_dn: ldapBindDn,
+                                bind_password: ldapBindPassword || '********',
+                                user_lookup_attr: ldapUserLookup,
+                              },
+                            }
+                            if (isGlobalAdmin && selectedTenantId) payload.tenant_id = selectedTenantId
+                            const r = await authApi.post('/tenant/auth/test-ldap', payload)
+                            if (r.data?.success) {
+                              toast.success(r.data.message || 'LDAP connection successful')
+                            } else {
+                              toast.error(r.data?.message || 'LDAP test failed')
+                            }
+                          } catch (e: any) {
+                            toast.error(e.response?.data?.detail || 'LDAP connection test failed')
+                          } finally {
+                            setLdapTestPending(false)
+                          }
+                        }}
+                        className="btn-secondary text-xs"
+                      >
+                        {ldapTestPending ? 'Testing...' : 'Test Connection'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+              {authMethod === 'azure_ad' && (
+                <div className="space-y-3 p-3 rounded-lg bg-rt-surface/30 border border-rt-border">
+                  <p className="text-xs font-medium text-rt-text-muted">Azure AD (Microsoft Entra ID)</p>
+                  <p className="text-[10px] text-rt-text-muted">
+                    Register an app in <span className="font-medium">Azure Portal &gt; App registrations</span>. Copy the Application (Client) ID, Directory (Tenant) ID, and create a Client Secret under Certificates &amp; secrets.
+                  </p>
+                  <div className="space-y-3">
+                    <div>
+                      <label className="label text-[10px]">Application (Client) ID</label>
+                      <input type="text" className="input text-sm w-full" placeholder="e.g. 00000000-0000-0000-0000-000000000000" value={azureClientId} onChange={(e) => setAzureClientId(e.target.value)} />
+                    </div>
+                    <div>
+                      <label className="label text-[10px]">Client Secret</label>
+                      <input type="password" className="input text-sm w-full" placeholder={tenantAuth?.azure_ad_config?.client_secret ? '••••••••' : 'Enter client secret'} value={azureClientSecret} onChange={(e) => setAzureClientSecret(e.target.value)} />
+                    </div>
+                    <div>
+                      <label className="label text-[10px]">Directory (Tenant) ID</label>
+                      <input type="text" className="input text-sm w-full" placeholder="e.g. 00000000-0000-0000-0000-000000000000" value={azureTenantId} onChange={(e) => setAzureTenantId(e.target.value)} />
+                      <p className="text-[10px] text-rt-text-muted mt-0.5">Use "common" for multi-tenant apps.</p>
+                    </div>
+                    <div>
+                      <label className="label text-[10px]">Redirect URI</label>
+                      <input type="text" className="input text-sm w-full" placeholder={`${window.location.origin}/auth/callback/azure`} value={azureRedirectUri} onChange={(e) => setAzureRedirectUri(e.target.value)} />
+                      <p className="text-[10px] text-rt-text-muted mt-0.5">Must match the redirect URI configured in your Azure app registration.</p>
+                    </div>
+                    <div>
+                      <label className="label text-[10px]">Additional OAuth Scopes</label>
+                      <input type="text" className="input text-sm w-full" placeholder="e.g. api://client-id/servicenow.access" value={azureAdditionalScopes} onChange={(e) => setAzureAdditionalScopes(e.target.value)} />
+                      <p className="text-[10px] text-rt-text-muted mt-0.5">Space-separated scopes for external services (ServiceNow, etc.). Added to the login request.</p>
+                    </div>
+                    <button
+                      disabled={azureTestPending || !azureClientId || !azureTenantId}
+                      onClick={async () => {
+                        setAzureTestPending(true)
+                        try {
+                          const payload: any = {
+                            azure_ad_config: {
+                              client_id: azureClientId,
+                              client_secret: azureClientSecret || '********',
+                              tenant_id: azureTenantId,
+                              redirect_uri: azureRedirectUri,
+                            },
+                          }
+                          if (isGlobalAdmin && selectedTenantId) payload.tenant_id = selectedTenantId
+                          const r = await authApi.post('/tenant/auth/test-azure-ad', payload)
+                          if (r.data?.success) {
+                            toast.success(r.data.message || 'Azure AD connection successful')
+                          } else {
+                            toast.error(r.data?.message || 'Azure AD test failed')
+                          }
+                        } catch (e: any) {
+                          toast.error(e.response?.data?.detail || 'Azure AD connection test failed')
+                        } finally {
+                          setAzureTestPending(false)
+                        }
+                      }}
+                      className="btn-secondary text-xs"
+                    >
+                      {azureTestPending ? 'Testing...' : 'Test Connection'}
+                    </button>
                   </div>
                 </div>
               )}
               <div>
-                <label className="label">Max Products per User Admin</label>
+                <label className="label">Max Teams per User Admin</label>
                 <input
                   type="number"
                   min={1}
                   max={1000}
                   className="input w-32"
-                  value={maxProductsPerUserAdmin}
-                  onChange={(e) => setMaxProductsPerUserAdmin(parseInt(e.target.value) || 1)}
+                  value={maxTeamsPerUserAdmin}
+                  onChange={(e) => setMaxTeamsPerUserAdmin(parseInt(e.target.value) || 1)}
                 />
                 <p className="text-[10px] text-rt-text-muted mt-1">
-                  Limits how many products a User Admin can create. Admins are unlimited.
+                  Limits how many teams a User Admin can create. Admins are unlimited.
                 </p>
               </div>
+              {authMethod !== 'email' && (
+              <div className="flex items-start gap-3 mt-2">
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={autoProvisionEnabled}
+                  onClick={() => setAutoProvisionEnabled(!autoProvisionEnabled)}
+                  className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${autoProvisionEnabled ? 'bg-rt-primary' : 'bg-rt-border'}`}
+                >
+                  <span className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${autoProvisionEnabled ? 'translate-x-4' : 'translate-x-0'}`} />
+                </button>
+                <div>
+                  <label className="label cursor-pointer" onClick={() => setAutoProvisionEnabled(!autoProvisionEnabled)}>
+                    Auto-provision new users on SSO/LDAP login
+                  </label>
+                  <p className="text-[10px] text-rt-text-muted mt-0.5">
+                    When enabled, users who authenticate via {authMethod === 'azure_ad' ? 'Azure AD' : authMethod === 'google' ? 'Google' : 'LDAP'} will be automatically created in Retrace with the "User" role. When disabled, users must be pre-created by an admin before they can log in.
+                  </p>
+                </div>
+              </div>
+              )}
               <button
                 disabled={authSavePending || (isGlobalAdmin && !selectedTenantId)}
                 onClick={async () => {
@@ -1242,7 +2056,8 @@ export default function Settings() {
                   try {
                     const payload: any = {
                       auth_method: authMethod,
-                      max_products_per_user_admin: maxProductsPerUserAdmin,
+                      max_teams_per_user_admin: maxTeamsPerUserAdmin,
+                      auto_provision_enabled: autoProvisionEnabled,
                     }
                     if (authMethod === 'ldap') payload.domain = tenantDomain || undefined
                     if (isGlobalAdmin && selectedTenantId) payload.tenant_id = selectedTenantId
@@ -1257,6 +2072,15 @@ export default function Settings() {
                         user_search_filter: ldapUserLookup === 'sAMAccountName' ? '(sAMAccountName={username})' : '(uid={username})',
                         email_attribute: 'mail',
                         display_name_attribute: 'cn',
+                      }
+                    }
+                    if (authMethod === 'azure_ad') {
+                      payload.azure_ad_config = {
+                        client_id: azureClientId,
+                        client_secret: azureClientSecret || (tenantAuth?.azure_ad_config?.client_secret === '********' ? '********' : ''),
+                        tenant_id: azureTenantId,
+                        redirect_uri: azureRedirectUri,
+                        additional_scopes: azureAdditionalScopes || '',
                       }
                     }
                     await authApi.patch('/tenant/auth', payload)
@@ -1280,7 +2104,7 @@ export default function Settings() {
         </div>
       </motion.div>
 
-      {/* Email Provider — collapsible */}
+      {/* Email Provider */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
@@ -1288,576 +2112,72 @@ export default function Settings() {
         className="max-w-4xl mt-6"
       >
         <div className="card overflow-hidden">
-          <button
-            type="button"
-            onClick={() => setEmailExpanded((e) => !e)}
-            className="w-full flex items-center justify-between gap-3 p-3 text-left hover:bg-rt-bg-light/50 transition-colors"
-          >
+          <div className="flex items-center justify-between gap-3 p-3">
             <div className="flex items-center gap-2">
-              {emailExpanded ? (
-                <ChevronDown className="w-4 h-4 text-rt-text-muted" />
-              ) : (
-                <ChevronRight className="w-4 h-4 text-rt-text-muted" />
-              )}
               <Mail className="w-4 h-4 text-blue-400" />
-              <span className="text-sm font-display font-semibold">Email Provider</span>
+              <span className="text-sm font-headline font-semibold">Email Provider</span>
             </div>
-            <span className="text-xs text-rt-text-muted">
-              {emailConnections.length > 0
-                ? `${emailConnections.length} connected`
-                : 'Not configured'}
-            </span>
-          </button>
-          {emailExpanded && (
-            <div className="p-4 pt-0 border-t border-rt-border/50">
-              {/* Existing connections */}
-              {emailConnections.length > 0 && (
-                <div className="space-y-2 mt-4 mb-4">
-                  <label className="label">Active Connections</label>
-                  {emailConnections.map((conn: any) => (
-                    <div
-                      key={conn.connection_id}
-                      className="flex items-center justify-between p-3 rounded-lg border border-rt-border bg-rt-surface/30"
-                    >
-                      <div className="flex items-center gap-2">
-                        <Mail className="w-4 h-4 text-blue-400" />
-                        <span className="text-sm font-medium">{conn.tenant_name}</span>
-                        <span className="text-xs px-2 py-0.5 rounded bg-rt-primary/10 text-rt-primary capitalize">
-                          {conn.provider}
-                        </span>
-                        <span className={`text-xs px-2 py-0.5 rounded ${
-                          conn.status === 'active'
-                            ? 'bg-rt-success/10 text-rt-success'
-                            : 'bg-rt-accent/10 text-rt-accent'
-                        }`}>
-                          {conn.status}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => testEmailConnectionMutation.mutate(conn.connection_id)}
-                          disabled={testEmailConnectionMutation.isPending}
-                          className="text-xs px-2 py-1 rounded border border-rt-border hover:border-rt-primary text-rt-text-muted hover:text-rt-primary transition-all flex items-center gap-1"
-                        >
-                          {testEmailConnectionMutation.isPending ? (
-                            <Loader2 className="w-3 h-3 animate-spin" />
-                          ) : (
-                            <Zap className="w-3 h-3" />
-                          )}
-                          Test
-                        </button>
-                        <button
-                          onClick={() => syncEmailConnectionMutation.mutate(conn.connection_id)}
-                          disabled={syncEmailConnectionMutation.isPending}
-                          className="text-xs px-2 py-1 rounded border border-rt-border hover:border-purple-500 text-rt-text-muted hover:text-purple-400 transition-all flex items-center gap-1"
-                        >
-                          {syncEmailConnectionMutation.isPending ? (
-                            <Loader2 className="w-3 h-3 animate-spin" />
-                          ) : (
-                            <RefreshCw className="w-3 h-3" />
-                          )}
-                          Sync
-                        </button>
-                        <button
-                          onClick={() => {
-                            const code = prompt('Paste a new OAuth authorization code to reconnect.\n\nUse Option B in the instructions below (with access_type=offline) to get one.')
-                            if (code && code.trim()) {
-                              reconnectMutation.mutate({
-                                connectionId: conn.connection_id,
-                                oauthCode: code.trim(),
-                                redirectUri: emailRedirectUri.trim(),
-                              })
-                            }
-                          }}
-                          disabled={reconnectMutation.isPending}
-                          className="text-xs px-2 py-1 rounded border border-rt-border hover:border-amber-500 text-rt-text-muted hover:text-amber-400 transition-all flex items-center gap-1"
-                        >
-                          {reconnectMutation.isPending ? (
-                            <Loader2 className="w-3 h-3 animate-spin" />
-                          ) : (
-                            <RefreshCw className="w-3 h-3" />
-                          )}
-                          Reconnect
-                        </button>
-                        <button
-                          onClick={() => {
-                            if (confirm('Remove this email connection?')) {
-                              deleteEmailConnectionMutation.mutate(conn.connection_id)
-                            }
-                          }}
-                          className="text-rt-text-muted hover:text-rt-accent transition-colors"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {/* Add new connection */}
-              <div className="space-y-4 mt-4">
-                <div>
-                  <label className="label">Provider</label>
-                  <div className="grid grid-cols-3 gap-3">
-                    {[
-                      { value: 'microsoft', label: 'Microsoft 365' },
-                      { value: 'google', label: 'Google Workspace' },
-                      { value: 'zoho', label: 'Zoho Mail' },
-                    ].map((p) => (
-                      <button
-                        key={p.value}
-                        type="button"
-                        onClick={() => setEmailProvider(p.value as any)}
-                        className={`p-3 rounded-lg border text-sm font-medium transition-all ${
-                          emailProvider === p.value
-                            ? 'border-blue-500 bg-blue-500/10 text-blue-400'
-                            : 'border-rt-border hover:border-rt-text-muted'
-                        }`}
-                      >
-                        {p.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div>
-                  <label className="label">Connection Name</label>
-                  <input
-                    type="text"
-                    className="input"
-                    placeholder="e.g. Acme Corp Google"
-                    value={emailTenantName}
-                    onChange={(e) => setEmailTenantName(e.target.value)}
-                  />
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="label">OAuth Client ID</label>
-                    <input
-                      type="text"
-                      className="input font-mono text-xs"
-                      placeholder="Client ID from app registration"
-                      value={emailClientId}
-                      onChange={(e) => setEmailClientId(e.target.value)}
-                    />
-                  </div>
-                  <div>
-                    <label className="label">OAuth Client Secret</label>
-                    <input
-                      type="password"
-                      className="input font-mono text-xs"
-                      placeholder="Client secret"
-                      value={emailClientSecret}
-                      onChange={(e) => setEmailClientSecret(e.target.value)}
-                    />
-                  </div>
-                </div>
-
-                {emailProvider === 'microsoft' && (
-                  <div>
-                    <label className="label">Tenant ID</label>
-                    <input
-                      type="text"
-                      className="input font-mono text-xs"
-                      placeholder="common (or your Azure AD tenant ID)"
-                      value={emailTenantId}
-                      onChange={(e) => setEmailTenantId(e.target.value)}
-                    />
-                  </div>
-                )}
-
-                <div>
-                  <label className="label">Redirect URI</label>
-                  <input
-                    type="text"
-                    className="input font-mono text-xs"
-                    placeholder={
-                      emailProvider === 'microsoft'
-                        ? 'https://login.microsoftonline.com/common/oauth2/nativeclient'
-                        : emailProvider === 'google'
-                        ? 'http://localhost or urn:ietf:wg:oauth:2.0:oob'
-                        : 'https://your-domain.com/callback'
-                    }
-                    value={emailRedirectUri}
-                    onChange={(e) => setEmailRedirectUri(e.target.value)}
-                  />
-                  <p className="text-xs text-rt-text-muted mt-1">
-                    Must match the redirect URI configured in your{' '}
-                    {emailProvider === 'microsoft' ? 'Azure app registration'
-                      : emailProvider === 'google' ? 'Google Cloud Console'
-                      : 'Zoho API Console'}.
-                  </p>
-                </div>
-
-                <div>
-                  <label className="label">OAuth Authorization Code</label>
-                  <input
-                    type="text"
-                    className="input font-mono text-xs"
-                    placeholder="Paste the authorization code from OAuth flow"
-                    value={emailOauthCode}
-                    onChange={(e) => setEmailOauthCode(e.target.value)}
-                  />
-                  {emailProvider === 'zoho' && emailClientId.trim() && (
-                    <div className="mt-2 p-3 rounded-lg bg-blue-500/5 border border-blue-500/20">
-                      <p className="text-xs text-rt-text-muted mb-2">
-                        <strong className="text-blue-400">How to get the code:</strong>
-                      </p>
-                      <p className="text-xs text-rt-text-muted mb-1">
-                        <strong>Option A — Self Client (easiest):</strong> In{' '}
-                        <a href="https://api-console.zoho.com" target="_blank" rel="noopener noreferrer"
-                          className="text-blue-400 hover:underline">api-console.zoho.com</a>
-                        , go to your client → <em>Generate Code</em> tab. Enter scope:{' '}
-                        <code className="text-[10px] bg-rt-surface px-1 py-0.5 rounded">
-                          ZohoMail.accounts.READ,ZohoMail.messages.ALL
-                        </code>
-                        , select a time duration, and click <em>Generate</em>.
-                        <br />
-                        <strong className="text-amber-400">Important:</strong> Self-client codes may not return a refresh token.
-                        Use <strong>Option B</strong> (with <code className="text-[10px] bg-rt-surface px-1 py-0.5 rounded">access_type=offline</code>) to get a refresh token so your connection survives beyond 1 hour.
-                      </p>
-                      <p className="text-xs text-rt-text-muted">
-                        <strong>Option B — Server-based app:</strong> Open this URL in your browser, approve, and copy the code from the redirect:
-                      </p>
-                      <code className="text-[10px] block bg-rt-surface p-2 rounded mt-1 break-all text-rt-text-muted leading-relaxed select-all">
-                        https://accounts.zoho.com/oauth/v2/auth?scope=ZohoMail.accounts.READ,ZohoMail.messages.ALL&client_id={emailClientId.trim()}&response_type=code&access_type=offline&redirect_uri={emailRedirectUri.trim() || '{YOUR_REDIRECT_URI}'}
-                      </code>
-                    </div>
-                  )}
-                  {emailProvider === 'microsoft' && (
-                    <p className="text-xs text-rt-text-muted mt-1">
-                      Visit your Azure app's OAuth authorize URL with scope <code className="text-[10px] bg-rt-surface px-1 py-0.5 rounded">Mail.Read Mail.Send offline_access</code>, sign in, and paste the code from the redirect.
-                    </p>
-                  )}
-                  {emailProvider === 'google' && (
-                    <p className="text-xs text-rt-text-muted mt-1">
-                      Visit your Google OAuth consent URL with scope <code className="text-[10px] bg-rt-surface px-1 py-0.5 rounded">https://www.googleapis.com/auth/gmail.modify</code>, sign in, and paste the code.
-                    </p>
-                  )}
-                  {emailProvider === 'zoho' && !emailClientId.trim() && (
-                    <p className="text-xs text-rt-text-muted mt-1">
-                      Enter your Client ID above to see instructions for generating the authorization code.
-                    </p>
-                  )}
-                </div>
-
-                {/* Global notification webhooks */}
-                <div className="border-t border-rt-border pt-4 mt-4">
-                  <label className="label">Notification Webhooks (Optional)</label>
-                  <p className="text-xs text-rt-text-muted mb-3">
-                    Global webhook URLs used for escalations, summaries, and routing. Can be overridden per product.
-                  </p>
-                  <div className="space-y-3 bg-rt-surface/30 rounded-lg p-3">
-                    <div>
-                      <label className="label text-xs mb-1 block">Slack Incoming Webhook</label>
-                      <input
-                        type="text"
-                        className="input font-mono text-xs"
-                        placeholder="https://hooks.slack.com/services/..."
-                        value={globalSlackWebhook}
-                        onChange={(e) => setGlobalSlackWebhook(e.target.value)}
-                      />
-                    </div>
-                    <div>
-                      <label className="label text-xs mb-1 block">Teams Incoming Webhook</label>
-                      <input
-                        type="text"
-                        className="input font-mono text-xs"
-                        placeholder="https://outlook.office.com/webhook/..."
-                        value={globalTeamsWebhook}
-                        onChange={(e) => setGlobalTeamsWebhook(e.target.value)}
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                <div className="flex justify-end pt-2">
-                  <button
-                    onClick={() => createEmailConnectionMutation.mutate()}
-                    disabled={
-                      createEmailConnectionMutation.isPending ||
-                      !emailTenantName.trim() ||
-                      !emailOauthCode.trim() ||
-                      !emailClientId.trim()
-                    }
-                    className="btn-primary flex items-center gap-2"
-                  >
-                    {createEmailConnectionMutation.isPending ? (
-                      <>
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                        Connecting...
-                      </>
-                    ) : (
-                      <>
-                        <Plus className="w-4 h-4" />
-                        Connect Provider
-                      </>
-                    )}
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
+            <span className="text-xs text-rt-text-muted italic">Not available in trial</span>
+          </div>
         </div>
       </motion.div>
 
-      {/* Slack & Teams Channels — collapsible */}
+      {/* Slack & Teams Channels */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.35 }}
+        transition={{ delay: 0.3 }}
         className="max-w-4xl mt-6"
       >
         <div className="card overflow-hidden">
-          <button
-            type="button"
-            onClick={() => setChannelsExpanded((e) => !e)}
-            className="w-full flex items-center justify-between gap-3 p-3 text-left hover:bg-rt-bg-light/50 transition-colors"
-          >
+          <div className="flex items-center justify-between gap-3 p-3">
             <div className="flex items-center gap-2">
-              {channelsExpanded ? (
-                <ChevronDown className="w-4 h-4 text-rt-text-muted" />
-              ) : (
-                <ChevronRight className="w-4 h-4 text-rt-text-muted" />
-              )}
               <MessageSquare className="w-4 h-4 text-green-400" />
-              <span className="text-sm font-display font-semibold">Slack & Teams Channels</span>
+              <span className="text-sm font-headline font-semibold">Slack & Teams Channels</span>
             </div>
-            <span className="text-xs text-rt-text-muted">
-              {channelConnections.length > 0
-                ? `${channelConnections.length} channel${channelConnections.length > 1 ? 's' : ''}`
-                : 'Not configured'}
-            </span>
-          </button>
-          {channelsExpanded && (
-            <div className="p-4 pt-0 border-t border-rt-border/50">
-              {/* Existing channels */}
-              {channelConnections.length > 0 && (
-                <div className="space-y-2 mt-4 mb-4">
-                  <label className="label">Connected Channels</label>
-                  {channelConnections.map((ch: any) => (
-                    <div
-                      key={ch.connection_id}
-                      className="flex items-center justify-between p-3 rounded-lg border border-rt-border bg-rt-surface/30"
-                    >
-                      <div className="flex items-center gap-2 flex-1 min-w-0">
-                        <MessageSquare className="w-4 h-4 text-green-400 flex-shrink-0" />
-                        <span className="text-sm font-medium truncate">{ch.channel_name}</span>
-                        <span className="text-xs px-2 py-0.5 rounded bg-green-500/10 text-green-400 capitalize flex-shrink-0">
-                          {ch.platform}
-                        </span>
-                        {ch.auto_respond && (
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 flex-shrink-0">
-                            Auto-respond
-                          </span>
-                        )}
-                        {ch.ingest_history && (
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-400 flex-shrink-0">
-                            Ingest
-                          </span>
-                        )}
-                        {ch.last_synced_at && (
-                          <span className="text-[10px] text-rt-text-muted flex-shrink-0">
-                            Synced {new Date(ch.last_synced_at).toLocaleDateString()}
-                          </span>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-2 flex-shrink-0">
-                        <button
-                          onClick={() => testChannelMutation.mutate(ch.connection_id)}
-                          disabled={testChannelMutation.isPending}
-                          className="text-xs px-2 py-1 rounded border border-rt-border hover:border-rt-primary text-rt-text-muted hover:text-rt-primary transition-all flex items-center gap-1"
-                        >
-                          {testChannelMutation.isPending ? (
-                            <Loader2 className="w-3 h-3 animate-spin" />
-                          ) : (
-                            <Zap className="w-3 h-3" />
-                          )}
-                          Test
-                        </button>
-                        <button
-                          onClick={() => syncChannelMutation.mutate(ch.connection_id)}
-                          disabled={syncChannelMutation.isPending}
-                          className="text-xs px-2 py-1 rounded border border-rt-border hover:border-purple-500 text-rt-text-muted hover:text-purple-400 transition-all flex items-center gap-1"
-                        >
-                          {syncChannelMutation.isPending ? (
-                            <Loader2 className="w-3 h-3 animate-spin" />
-                          ) : (
-                            <RefreshCw className="w-3 h-3" />
-                          )}
-                          Sync
-                        </button>
-                        <button
-                          onClick={() => {
-                            if (confirm('Remove this channel connection?')) {
-                              deleteChannelMutation.mutate(ch.connection_id)
-                            }
-                          }}
-                          className="text-rt-text-muted hover:text-rt-accent transition-colors"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {/* Add new channel */}
-              <div className="space-y-4 mt-4">
-                <div>
-                  <label className="label">Platform</label>
-                  <div className="grid grid-cols-2 gap-3">
-                    {[
-                      { value: 'slack', label: 'Slack' },
-                      { value: 'teams', label: 'Microsoft Teams' },
-                    ].map((p) => (
-                      <button
-                        key={p.value}
-                        type="button"
-                        onClick={() => setChannelPlatform(p.value as any)}
-                        className={`p-3 rounded-lg border text-sm font-medium transition-all ${
-                          channelPlatform === p.value
-                            ? 'border-green-500 bg-green-500/10 text-green-400'
-                            : 'border-rt-border hover:border-rt-text-muted'
-                        }`}
-                      >
-                        {p.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div>
-                  <label className="label">Product</label>
-                  <select
-                    className="input"
-                    value={channelProductId}
-                    onChange={(e) => setChannelProductId(e.target.value)}
-                  >
-                    <option value="">Select a product...</option>
-                    {products.map((p: any) => (
-                      <option key={p.product_id} value={p.product_id}>
-                        {p.product_name}
-                      </option>
-                    ))}
-                  </select>
-                  <p className="text-xs text-rt-text-muted mt-1">
-                    Channel messages will be linked to this product's knowledge base.
-                  </p>
-                </div>
-
-                <div>
-                  <label className="label">
-                    {channelPlatform === 'slack' ? 'Bot Token' : 'App Credentials (JSON)'}
-                  </label>
-                  <input
-                    type="password"
-                    className="input font-mono text-xs"
-                    placeholder={
-                      channelPlatform === 'slack'
-                        ? 'xoxb-...'
-                        : '{"client_id":"...","client_secret":"...","tenant_id":"..."}'
-                    }
-                    value={channelBotToken}
-                    onChange={(e) => setChannelBotToken(e.target.value)}
-                  />
-                  <p className="text-xs text-rt-text-muted mt-1">
-                    {channelPlatform === 'slack'
-                      ? 'Slack Bot Token with channels:history, channels:read, chat:write scopes.'
-                      : 'JSON with client_id, client_secret, tenant_id from Azure AD app registration.'}
-                  </p>
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="label">Channel Name</label>
-                    <input
-                      type="text"
-                      className="input"
-                      placeholder="e.g. #general"
-                      value={channelName}
-                      onChange={(e) => setChannelName(e.target.value)}
-                    />
-                  </div>
-                  <div>
-                    <label className="label">Channel ID</label>
-                    <input
-                      type="text"
-                      className="input font-mono text-xs"
-                      placeholder={channelPlatform === 'slack' ? 'C01ABC23DEF' : 'channel-id'}
-                      value={channelId}
-                      onChange={(e) => setChannelId(e.target.value)}
-                    />
-                  </div>
-                </div>
-
-                {channelPlatform === 'teams' && (
-                  <div>
-                    <label className="label">Team ID</label>
-                    <input
-                      type="text"
-                      className="input font-mono text-xs"
-                      placeholder="Team ID from Microsoft Teams"
-                      value={channelTeamId}
-                      onChange={(e) => setChannelTeamId(e.target.value)}
-                    />
-                  </div>
-                )}
-
-                <div className="flex gap-4">
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={channelIngestHistory}
-                      onChange={(e) => setChannelIngestHistory(e.target.checked)}
-                      className="accent-rt-primary"
-                    />
-                    <span className="text-xs">Ingest history into knowledge base</span>
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={channelAutoRespond}
-                      onChange={(e) => setChannelAutoRespond(e.target.checked)}
-                      className="accent-rt-primary"
-                    />
-                    <span className="text-xs">Auto-respond to questions in channel</span>
-                  </label>
-                </div>
-
-                <div className="flex justify-end pt-2">
-                  <button
-                    onClick={() => createChannelMutation.mutate()}
-                    disabled={
-                      createChannelMutation.isPending ||
-                      !channelBotToken.trim() ||
-                      !channelName.trim() ||
-                      !channelId.trim() ||
-                      !channelProductId
-                    }
-                    className="btn-primary flex items-center gap-2"
-                  >
-                    {createChannelMutation.isPending ? (
-                      <>
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                        Connecting...
-                      </>
-                    ) : (
-                      <>
-                        <Plus className="w-4 h-4" />
-                        Connect Channel
-                      </>
-                    )}
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
+            <span className="text-xs text-rt-text-muted italic">Not available in trial</span>
+          </div>
         </div>
       </motion.div>
+
+      {/* Data Source Connections (SFTP / SMB / S3 / Azure) — admin only */}
+      {user?.role && ['admin', 'super_admin', 'tenant_admin', 'user_admin', 'zero_admin'].includes(user.role) && (
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.35 }}
+          className="max-w-4xl mt-6"
+        >
+          <div className="card overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setDataConnectionsExpanded((e) => !e)}
+              className="w-full flex items-center justify-between gap-3 p-3 text-left hover:bg-rt-bg-light/50 transition-colors"
+            >
+              <div className="flex items-center gap-2">
+                {dataConnectionsExpanded ? (
+                  <ChevronDown className="w-4 h-4 text-rt-text-muted" />
+                ) : (
+                  <ChevronRight className="w-4 h-4 text-rt-text-muted" />
+                )}
+                <Plug className="w-4 h-4 text-amber-400" />
+                <span className="text-sm font-headline font-semibold">Data Source Connections</span>
+              </div>
+              <span className="text-xs text-rt-text-muted">SFTP · SMB · S3 · Azure Blob</span>
+            </button>
+            {dataConnectionsExpanded && (
+              <div className="p-4 pt-3 border-t border-rt-border/50">
+                <p className="text-xs text-rt-text-muted mb-3">
+                  Stored credentials for remote sources. Once added, they show up under
+                  the Source dropdown in any team's "Add Training Data" dialog.
+                </p>
+                <ConnectionsManager compact />
+              </div>
+            )}
+          </div>
+        </motion.div>
+      )}
+
 
       {/* Company attribution */}
       <motion.div
@@ -1867,17 +2187,14 @@ export default function Settings() {
         className="max-w-4xl mt-10 mb-4"
       >
         <div className="flex items-center justify-center gap-3 py-4 border-t border-rt-border/30">
-          <div className="w-5 h-5 bg-gradient-to-br from-indigo-500 to-purple-600 rounded flex items-center justify-center">
-            <svg className="w-3 h-3 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M4 4v16" /><path d="M4 4h8q5 0 5 5t-5 5H4" /><path d="M11 14l7 6" />
-            </svg>
-          </div>
           <div className="text-xs text-rt-text-muted">
-            <span className="font-extrabold bg-gradient-to-r from-indigo-400 via-purple-400 to-violet-400 bg-clip-text text-transparent">ReTrace</span>
-            <span className="opacity-60"> is a product of </span>
-            <span className="font-semibold opacity-80">Lumena Technologies</span>
+            <span className="font-headline font-bold text-rt-primary">ReTrace</span>
+            <span className="opacity-60"> by </span>
+            <span className="font-semibold opacity-80">Lumena</span>
             <span className="opacity-40"> · </span>
-            <a href="https://lumenatech.io" target="_blank" rel="noopener noreferrer" className="opacity-50 hover:opacity-80 hover:text-indigo-400 transition-all">lumenatech.io</a>
+            <span className="opacity-60">Enterprise Edition</span>
+            <span className="opacity-40"> · </span>
+            <a href="https://lumenatech.io" target="_blank" rel="noopener noreferrer" className="opacity-50 hover:opacity-80 hover:text-rt-primary transition-all">lumenatech.io</a>
           </div>
         </div>
       </motion.div>

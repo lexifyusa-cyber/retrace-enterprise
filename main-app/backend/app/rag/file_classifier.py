@@ -1,7 +1,7 @@
 """
 FileClassifierService – LLM-driven file classification.
 
-Sends product metadata (name, folder groups, types) and file metadata
+Sends team metadata (name, folder groups, types) and file metadata
 (name, path, extension, size) to an LLM which decides the ProcessingType
 for each file.  No file contents are sent.
 """
@@ -25,7 +25,7 @@ SYSTEM_PROMPT = """\
 You are a file-classification engine for a knowledge management system.
 
 You will receive:
-  1. **Product context** – the product name, description, and a list of
+  1. **Team context** – the team name, description, and a list of
      folder groups with their names and declared content types.
   2. **Folder tree** – the nested directory structure showing all files with
      their sizes so you can see where each file sits in the project.
@@ -59,7 +59,7 @@ Allowed sub_category values PER processing_type:
     imports or empty, test files, log files, generated output, style/CSS files,
     lock files, .gitignore, requirements.txt, package.json (dependency lists),
     boilerplate config (setup.cfg, tsconfig.json), and any file unlikely to answer
-    a user question about how the product works.
+    a user question about how the team works.
   • Use file size as a signal: very small files (<100 bytes) are often empty stubs.
   • Use the folder tree to understand context: files in test/ or logs/ → embed=false.
 
@@ -91,25 +91,25 @@ No explanations, no markdown fences, no extra keys.  ONLY the JSON array.
 """
 
 
-class ProductContext:
-    """Lightweight container for product + folder-group metadata."""
+class TeamContext:
+    """Lightweight container for team + folder-group metadata."""
 
     def __init__(
         self,
-        product_name: str,
-        product_description: Optional[str] = None,
+        team_name: str,
+        team_description: Optional[str] = None,
         folder_groups: Optional[list[dict]] = None,
     ):
-        self.product_name = product_name
-        self.product_description = product_description or ""
+        self.team_name = team_name
+        self.team_description = team_description or ""
         self.folder_groups = folder_groups or []
 
     def to_prompt_section(self) -> str:
         lines = [
-            f"Product: {self.product_name}",
+            f"Team: {self.team_name}",
         ]
-        if self.product_description:
-            lines.append(f"Description: {self.product_description}")
+        if self.team_description:
+            lines.append(f"Description: {self.team_description}")
         if self.folder_groups:
             lines.append("Folder Groups:")
             for g in self.folder_groups:
@@ -124,7 +124,7 @@ class ProductContext:
 
 
 class FileClassifierService:
-    """Classify files by asking an LLM to look at product context + file metadata."""
+    """Classify files by asking an LLM to look at team context + file metadata."""
 
     def __init__(
         self,
@@ -141,7 +141,7 @@ class FileClassifierService:
     async def classify(
         self,
         files: list[FileRecord],
-        product_context: ProductContext,
+        team_context: TeamContext,
         folder_tree: Optional[dict] = None,
     ) -> list[ClassifiedFile]:
         """Classify all files using the LLM in batches."""
@@ -152,7 +152,7 @@ class FileClassifierService:
 
         for batch_start in range(0, len(files), CLASSIFICATION_BATCH_SIZE):
             batch = files[batch_start : batch_start + CLASSIFICATION_BATCH_SIZE]
-            results = await self._classify_batch(batch, product_context, batch_start, folder_tree)
+            results = await self._classify_batch(batch, team_context, batch_start, folder_tree)
             all_classified.extend(results)
 
         # Log stats
@@ -171,7 +171,7 @@ class FileClassifierService:
     async def _classify_batch(
         self,
         batch: list[FileRecord],
-        ctx: ProductContext,
+        ctx: TeamContext,
         global_offset: int,
         folder_tree: Optional[dict] = None,
     ) -> list[ClassifiedFile]:
@@ -198,7 +198,7 @@ class FileClassifierService:
             tree_section = f"\n=== FOLDER TREE ===\n{tree_text}\n"
 
         user_message = (
-            f"=== PRODUCT CONTEXT ===\n"
+            f"=== TEAM CONTEXT ===\n"
             f"{ctx.to_prompt_section()}\n"
             f"{tree_section}\n"
             f"=== FILES TO CLASSIFY ({len(batch)} files) ===\n"

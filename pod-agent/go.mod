@@ -1,6 +1,6 @@
 module github.com/lumenatech/retrace-agent
 
-go 1.21
+go 1.24
 
 require (
 	github.com/fsnotify/fsnotify v1.7.0

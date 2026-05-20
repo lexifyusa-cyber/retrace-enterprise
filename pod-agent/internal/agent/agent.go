@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"runtime"
 	"sync"
 	"time"
@@ -16,8 +18,9 @@ import (
 // Config holds the agent configuration.
 type Config struct {
 	Pod struct {
-		ID   string `mapstructure:"id"`
-		Name string `mapstructure:"name"`
+		ID      string `mapstructure:"id"`
+		Name    string `mapstructure:"name"`
+		RootDir string `mapstructure:"root_dir"`
 	} `mapstructure:"pod"`
 
 	MainApp struct {
@@ -56,6 +59,7 @@ type Agent struct {
 	storage     *storage.Manager
 	fileWatcher *filewatch.Watcher
 	rpcHandler  *RPCHandler
+	fsRoot      *os.Root
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -73,11 +77,31 @@ func New(config *Config, logger *zap.Logger) (*Agent, error) {
 		return nil, fmt.Errorf("failed to initialize storage: %w", err)
 	}
 
+	// Resolve and open the sandboxed filesystem root.
+	rootDir := config.Pod.RootDir
+	if rootDir == "" {
+		rootDir = "."
+	}
+	absRoot, err := filepath.Abs(rootDir)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to resolve root_dir %q: %w", rootDir, err)
+	}
+	fsRoot, err := os.OpenRoot(absRoot)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to open filesystem root %q: %w", absRoot, err)
+	}
+	logger.Info("Filesystem sandbox active",
+		zap.String("root_dir", absRoot),
+	)
+
 	// Create agent
 	agent := &Agent{
 		config:  config,
 		logger:  logger,
 		storage: storageManager,
+		fsRoot:  fsRoot,
 		ctx:     ctx,
 		cancel:  cancel,
 	}
@@ -149,7 +173,16 @@ func (a *Agent) Stop() error {
 		a.logger.Error("Error closing storage", zap.Error(err))
 	}
 
+	if a.fsRoot != nil {
+		a.fsRoot.Close()
+	}
+
 	return nil
+}
+
+// FSRoot returns the sandboxed filesystem root.
+func (a *Agent) FSRoot() *os.Root {
+	return a.fsRoot
 }
 
 // handleMessage handles incoming WebSocket messages.

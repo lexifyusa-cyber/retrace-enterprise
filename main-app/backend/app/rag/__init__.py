@@ -16,6 +16,6 @@ Embedding is NOT part of training — it happens at retrieval time or
 via a separate indexing step if needed later.
 
 Usage:
-    from app.rag.pipeline import TrainingPipeline, run_product_training
+    from app.rag.pipeline import TrainingPipeline, run_team_training
     from app.rag.kb_store import KnowledgeBaseStore
 """

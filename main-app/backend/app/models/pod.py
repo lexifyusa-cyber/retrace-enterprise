@@ -22,9 +22,9 @@ class Pod(Base):
         primary_key=True,
         default=lambda: str(uuid4())
     )
-    product_id: Mapped[Optional[str]] = mapped_column(
+    team_id: Mapped[Optional[str]] = mapped_column(
         String(36),
-        ForeignKey("products.product_id", ondelete="CASCADE"),
+        ForeignKey("teams.team_id", ondelete="CASCADE"),
         nullable=True,
     )
     pod_name: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -57,7 +57,7 @@ class Pod(Base):
         """Convert to dictionary."""
         return {
             "pod_id": self.pod_id,
-            "product_id": self.product_id,
+            "team_id": self.team_id,
             "pod_name": self.pod_name,
             "machine_hostname": self.machine_hostname,
             "os_type": self.os_type,

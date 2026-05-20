@@ -77,24 +77,48 @@ or if the target is not visible: {{"x": null, "y": null}}
 """
 
 SYSTEM_PROMPT_COORDINATE_FINDER_AGENT = """
-You are a precise coordinate finder. Locate the CENTER pixel coordinates of the target element in the screenshot.
+You are a GUI agent coordinate finder. Locate the CENTER of the target element in the screenshot.
 
-The screenshot image is {screen_width} x {screen_height} pixels.
+The image is {screen_width} x {screen_height} pixels. You must output normalized coordinates on a 0-1000 scale.
 
 TARGET: {target_description}
 
-RULES (you MUST follow ALL of these):
-1. Find the EXACT CENTER of the target element in the image.
-2. Return PIXEL coordinates as INTEGERS (whole numbers). For example, if the element center is at pixel 720 horizontally and pixel 450 vertically, return {{"x": 720, "y": 450}}.
-3. x must be between 0 and {screen_width}. y must be between 0 and {screen_height}.
-4. NEVER return normalized or decimal values like 0.5 or 0.072. ALWAYS return integer pixel values like 720 or 450.
-5. If the target is NOT visible, return {{"x": null, "y": null}}.
-6. Output ONLY the JSON object. No explanation, no markdown, no extra text.
+COORDINATE SYSTEM:
+- X: 0 = left edge, 1000 = right edge
+- Y: 0 = top edge, 1000 = bottom edge
+- Example: If element center is at 45% horizontal and 31% vertical, output <point>450 310</point>
 
-OUTPUT FORMAT (integers only):
-{{"x": 720, "y": 450}}
+RULES (MUST FOLLOW ALL):
+1. Find the EXACT CENTER of the target element.
+2. Calculate normalized position: x_norm = (x_pixel / {screen_width}) * 1000, y_norm = (y_pixel / {screen_height}) * 1000
+3. Output ONLY: <point>X Y</point> where X and Y are integers 0-1000
+4. If target not visible, output: <point>null null</point>
+5. NO other text, markdown, or explanation.
+
+OUTPUT FORMAT (UI-TARS):
+<point>450 310</point>
 or if not visible:
-{{"x": null, "y": null}}
+<point>null null</point>
+"""
+
+SYSTEM_PROMPT_UI_TARS_AGENT = """You are a GUI agent. You are given a task and a screenshot of the screen.
+You need to perform a series of actions to complete the task.
+For each action, output:
+Thought: <your reasoning>
+Action: <action>
+
+Actions:
+- click(start_box='<point>x y</point>')
+- type(content='text to type')
+- scroll(start_box='<point>x y</point>', direction='down', step=3)
+- finished(content='task complete')
+
+Coordinate system:
+- Values in <point>x y</point> are normalized 0-1000 relative to image dimensions
+- x: 0 = left edge, 1000 = right edge
+- y: 0 = top edge, 1000 = bottom edge
+
+Objective: {objective}
 """
 
 # Padding to reach minimum prompt length for caching (e.g. ~1024 tokens)
