@@ -30,8 +30,6 @@ class LLMSettings(BaseModel):
     screenops_api_url: Optional[str] = None
     screenops_api_key: Optional[str] = None
     screenops_model: Optional[str] = None
-    # ScreenOps keyboard-only: seconds to wait when mouse click unavoidable (5–120)
-    screenops_mouse_timeout: Optional[int] = None
     # ScreenOps image scale 25–100: percentage of screenshot size sent to model (reduces tokens)
     screenops_image_scale: Optional[int] = Field(None, ge=25, le=100)
     # Central delay (ms) before every screenshot capture (0–30000, default 2000)
@@ -77,7 +75,6 @@ class LLMSettingsResponse(BaseModel):
     snapshot_enabled: bool = False
     screenops_api_url: Optional[str] = None
     screenops_model: Optional[str] = None
-    screenops_mouse_timeout: int = 30
     screenops_image_scale: int = 100
     screenshot_delay_ms: int = 2000
     agent_max_iterations: int = 10
@@ -185,8 +182,6 @@ async def update_llm_settings(settings_data: LLMSettings, current_user: CurrentU
                     db_settings.screenops_api_key = settings_data.screenops_api_key if settings_data.screenops_api_key else None
                 if settings_data.screenops_model is not None:
                     db_settings.screenops_model = (settings_data.screenops_model or "").strip() or None
-                if settings_data.screenops_mouse_timeout is not None:
-                    db_settings.screenops_mouse_timeout = max(5, min(120, int(settings_data.screenops_mouse_timeout)))
                 if settings_data.screenops_image_scale is not None:
                     db_settings.screenops_image_scale = max(25, min(100, int(settings_data.screenops_image_scale)))
                 if settings_data.screenshot_delay_ms is not None:
@@ -279,7 +274,6 @@ async def update_llm_settings(settings_data: LLMSettings, current_user: CurrentU
                 snapshot_enabled=bool(getattr(db_settings, "snapshot_enabled", False)),
                 screenops_api_url=getattr(db_settings, "screenops_api_url", None),
                 screenops_model=db_settings.screenops_model,
-                screenops_mouse_timeout=int(getattr(db_settings, "screenops_mouse_timeout", 30) or 30),
                 screenops_image_scale=max(25, min(100, int(getattr(db_settings, "screenops_image_scale", 100) or 100))),
                 screenshot_delay_ms=max(0, min(30000, int(getattr(db_settings, "screenshot_delay_ms", 2000) or 2000))),
                 agent_max_iterations=int(getattr(db_settings, "agent_max_iterations", 10) or 10),
@@ -322,7 +316,6 @@ async def get_llm_settings(session: AsyncSession = Depends(get_session), current
         snapshot_enabled=bool(getattr(db_settings, "snapshot_enabled", False)),
         screenops_api_url=getattr(db_settings, "screenops_api_url", None),
         screenops_model=db_settings.screenops_model,
-        screenops_mouse_timeout=int(getattr(db_settings, "screenops_mouse_timeout", 30) or 30),
         screenops_image_scale=max(25, min(100, int(getattr(db_settings, "screenops_image_scale", 100) or 100))),
         screenshot_delay_ms=max(0, min(30000, int(getattr(db_settings, "screenshot_delay_ms", 2000) or 2000))),
         agent_max_iterations=int(getattr(db_settings, "agent_max_iterations", 10) or 10),
@@ -549,7 +542,6 @@ async def get_active_llm_settings(session: AsyncSession, consumer_key: str | Non
         "screenops_api_key": db_settings.screenops_api_key,
         "screenops_api_url": getattr(db_settings, "screenops_api_url", None),
         "screenops_model": getattr(db_settings, "screenops_model", None),
-        "screenops_mouse_timeout": max(5, min(120, int(getattr(db_settings, "screenops_mouse_timeout", 30) or 30))),
         "screenops_image_scale": max(25, min(100, int(getattr(db_settings, "screenops_image_scale", 100) or 100))),
         "screenshot_delay_ms": max(0, min(30000, int(getattr(db_settings, "screenshot_delay_ms", 2000) or 2000))),
         "serper_api_key": getattr(db_settings, "serper_api_key", None),

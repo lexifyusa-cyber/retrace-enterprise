@@ -17,7 +17,6 @@ interface LLMSettings {
   screenops_api_url?: string | null
   screenops_api_key?: string | null
   screenops_model?: string | null
-  screenops_mouse_timeout?: number | null
   screenops_image_scale?: number | null
   screenshot_delay_ms?: number | null
   serper_api_key?: string | null
@@ -41,7 +40,6 @@ interface LLMSettingsResponse {
   serper_api_key_set?: boolean
   screenops_api_url?: string | null
   screenops_model?: string | null
-  screenops_mouse_timeout?: number
   screenops_image_scale?: number
   screenshot_delay_ms?: number
   small_model_name?: string | null
@@ -74,7 +72,6 @@ export default function Settings() {
   const [screenopsUrl, setScreenopsUrl] = useState('')
   const [screenopsKey, setScreenopsKey] = useState('')
   const [screenopsModel, setScreenopsModel] = useState('gpt-4o-mini')
-  const [screenopsMouseTimeout, setScreenopsMouseTimeout] = useState(30)
   const [screenopsImageScale, setScreenopsImageScale] = useState(100)
   const [screenshotDelayMs, setScreenshotDelayMs] = useState(2000)
   const [serperKey, setSerperKey] = useState('')
@@ -240,7 +237,6 @@ export default function Settings() {
       setProvider((currentSettings.provider || 'openai') as any)
       setScreenopsUrl(currentSettings.screenops_api_url || '')
       setScreenopsModel(currentSettings.screenops_model || 'gpt-4o-mini')
-      setScreenopsMouseTimeout(Math.max(5, Math.min(120, currentSettings.screenops_mouse_timeout ?? 30)))
       setScreenopsImageScale(Math.max(25, Math.min(100, currentSettings.screenops_image_scale ?? 100)))
       setScreenshotDelayMs(Math.max(0, Math.min(30000, currentSettings.screenshot_delay_ms ?? 2000)))
       setDebugLogging(currentSettings.debug_logging ?? false)
@@ -544,7 +540,6 @@ export default function Settings() {
     } else {
       payload.screenops_model = null
     }
-    payload.screenops_mouse_timeout = Math.max(5, Math.min(120, screenopsMouseTimeout))
     payload.screenops_image_scale = Math.max(25, Math.min(100, screenopsImageScale))
     payload.screenshot_delay_ms = Math.max(0, Math.min(30000, screenshotDelayMs))
     if (serperKey.trim()) {
@@ -620,7 +615,6 @@ export default function Settings() {
       screenops_api_url: screenopsUrl.trim() || null,
       screenops_api_key: testScreenopsKey,
       screenops_model: screenopsModel.trim() || null,
-      screenops_mouse_timeout: screenopsMouseTimeout,
     })
   }
 
@@ -1218,23 +1212,6 @@ export default function Settings() {
                   </p>
                 )}
                 <div className="border-t border-rt-border/50 pt-3 mt-3 space-y-3">
-                  <div className="flex items-center gap-3">
-                    <label htmlFor="screenops-mouse-timeout" className="label text-xs whitespace-nowrap mb-0">Mouse wait timeout</label>
-                    <input
-                      id="screenops-mouse-timeout"
-                      type="number"
-                      className="input w-20 text-center"
-                      min={5}
-                      max={120}
-                      value={screenopsMouseTimeout}
-                      onChange={(e) => setScreenopsMouseTimeout(Math.max(5, Math.min(120, Number(e.target.value) || 30)))}
-                    />
-                    <span className="text-xs text-rt-text-muted">seconds</span>
-                  </div>
-                  <p className="text-xs text-rt-text-muted -mt-1">
-                    When running in keyboard-only mode (no API configured above), if a mouse click
-                    is unavoidable the agent waits this long for you to click manually, then stops.
-                  </p>
                   <div>
                     <div className="flex items-center gap-3">
                       <label htmlFor="screenops-image-scale" className="label text-xs whitespace-nowrap mb-0">Image scale</label>

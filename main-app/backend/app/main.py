@@ -139,10 +139,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
                 cursor.execute("ALTER TABLE llm_settings ADD COLUMN max_parallel_files INTEGER DEFAULT 1")
                 conn.commit()
                 print("[STARTUP] Added max_parallel_files column to llm_settings", flush=True)
-            if "screenops_mouse_timeout" not in cols:
-                cursor.execute("ALTER TABLE llm_settings ADD COLUMN screenops_mouse_timeout INTEGER DEFAULT 30")
-                conn.commit()
-                print("[STARTUP] Added screenops_mouse_timeout column to llm_settings", flush=True)
             if "screenops_image_scale" not in cols:
                 cursor.execute("ALTER TABLE llm_settings ADD COLUMN screenops_image_scale INTEGER DEFAULT 100")
                 conn.commit()
