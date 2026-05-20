@@ -140,7 +140,7 @@ def _action_with_screenshot(action: str, **kwargs) -> Union[str, tuple]:
 
 
 @mcp.tool()
-def navigate(url: str) -> str:
+def navigate(url: str):
     """Navigate the browser to a URL. Waits for the page to reach
     `domcontentloaded` before returning so subsequent reads see the loaded
     DOM. Returns the URL + title as text, with a screenshot of the loaded
