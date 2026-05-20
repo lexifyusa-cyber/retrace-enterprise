@@ -369,6 +369,43 @@ function MessageBlock({ message }: { message: any }) {
                 </div>
               )
             }
+            // tool_result with attachments (typical of retrace-browser auto-screenshots).
+            // The text content stays at `part.content`; image attachments live at
+            // `part.attachments[].url` as data: URIs. Render text first, then images.
+            if (part?.type === 'tool_result') {
+              const attachments = Array.isArray(part.attachments) ? part.attachments : []
+              return (
+                <div key={i} className="space-y-2">
+                  {part.content && (
+                    <pre className="text-xs text-rt-text whitespace-pre-wrap break-words font-mono">
+                      {typeof part.content === 'string' ? part.content : JSON.stringify(part.content, null, 2)}
+                    </pre>
+                  )}
+                  {attachments.map((a: any, j: number) => {
+                    const url = a?.url || ''
+                    const mime = a?.mime || ''
+                    if (url.startsWith('data:image/')) {
+                      return (
+                        <div key={j} className="my-1">
+                          <div className="text-[10px] text-rt-text-muted mb-0.5">📎 attachment ({mime})</div>
+                          <img
+                            src={url}
+                            alt={a?.filename || 'Tool attachment'}
+                            className="max-w-full rounded border border-rt-border"
+                            style={{ maxHeight: '400px', objectFit: 'contain' }}
+                          />
+                        </div>
+                      )
+                    }
+                    return (
+                      <div key={j} className="text-xs text-rt-text-muted italic">
+                        📎 attachment: {mime} {a?.filename ? `(${a.filename})` : ''}
+                      </div>
+                    )
+                  })}
+                </div>
+              )
+            }
             return (
               <pre key={i} className="text-xs text-rt-text-muted whitespace-pre-wrap break-words font-mono">
                 {JSON.stringify(part, null, 2)}

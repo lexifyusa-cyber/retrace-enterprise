@@ -271,7 +271,17 @@ def _format_tool_part_for_log(part: dict, *, truncate_output: int = 8000) -> dic
     """Convert an OC `tool` part into a chat-API-style {type:'tool_use', ...}
     block plus a paired {type:'tool_result', ...} block. Used in the request
     history rendering so the LLM Logs viewer shows tool calls + their results
-    inline as the LLM saw them."""
+    inline as the LLM saw them.
+
+    Attachments (typically screenshots from the retrace-browser MCP) live in
+    `state.attachments` as `{type, mime, url}` with `url` a `data:image/...`
+    URI. OC sends those to the LLM in the tool result, so we include them
+    in the LLM Logs view too — otherwise the viewer makes it look like the
+    LLM only received the text portion, which can be misleading when
+    diagnosing vision-related issues. We pass them through verbatim so the
+    frontend can render the data: URI inline (or at minimum show "1
+    attachment, image/jpeg, 72 KB").
+    """
     state = part.get("state") or {}
     output = state.get("output", "")
     if isinstance(output, (dict, list)):
@@ -279,6 +289,31 @@ def _format_tool_part_for_log(part: dict, *, truncate_output: int = 8000) -> dic
     output_str = str(output)
     if len(output_str) > truncate_output:
         output_str = output_str[:truncate_output] + f"\n…[truncated {len(output_str) - truncate_output} chars]"
+
+    tool_result: dict = {
+        "type": "tool_result",
+        "tool_use_id": part.get("callID", ""),
+        "content": output_str,
+        "status": state.get("status", ""),
+    }
+    attachments = state.get("attachments") or []
+    if isinstance(attachments, list) and attachments:
+        # Trim each attachment to the fields we actually care about for log
+        # display. The `url` is a `data:<mime>;base64,...` URI; the frontend
+        # can render images directly from it. We keep the full URL so the
+        # viewer can show the image — base64 expands the row but vision
+        # debugging is the whole point of having attachments in the log.
+        tool_result["attachments"] = [
+            {
+                "type": a.get("type"),
+                "mime": a.get("mime"),
+                "filename": a.get("filename"),
+                "url": a.get("url"),
+            }
+            for a in attachments
+            if isinstance(a, dict) and a.get("url")
+        ]
+
     return {
         "tool_use": {
             "type": "tool_use",
@@ -286,12 +321,7 @@ def _format_tool_part_for_log(part: dict, *, truncate_output: int = 8000) -> dic
             "name": part.get("tool", ""),
             "input": state.get("input", {}),
         },
-        "tool_result": {
-            "type": "tool_result",
-            "tool_use_id": part.get("callID", ""),
-            "content": output_str,
-            "status": state.get("status", ""),
-        },
+        "tool_result": tool_result,
     }
 
 
@@ -870,6 +900,13 @@ async def opencode_send_message(
         # Counter scoped to this stream so multi-step tool-use turns produce
         # iteration=1, 2, 3, … like the legacy LangGraph CodeAct logs.
         iter_counter = 0
+        # OC's stream sometimes fires `message.updated` twice for the same
+        # assistant message (e.g. once when the tool call hits status=tool-calls
+        # and again ~250ms later when the tool's running→completed transition
+        # settles). The second emit has identical content, so persisting on
+        # both produced duplicate LLMLog rows. Track which msg_id we've already
+        # persisted per stream and skip subsequent emits.
+        logged_msg_ids: set[str] = set()
         # Tool list + MCP-server roster for this stream — fetched lazily on the
         # first persist and reused. Neither changes mid-stream so one fetch is
         # enough. `/experimental/tool` requires the provider+model that were
@@ -1014,13 +1051,14 @@ async def opencode_send_message(
                         if info_role == "assistant":
                             logger.debug("[OC] EVT message.updated", msg_id=info_id, finish=info.get("finish"), cost=info.get("cost"))
                             yield f"data: {json.dumps({'type': 'message.created', 'message': {'id': info_id, 'role': 'assistant'}})}\n\n"
-                            if info.get("finish"):
+                            if info.get("finish") and info_id and info_id not in logged_msg_ids:
                                 # Persist an LLMLog row for this round-trip.
                                 # Pulls the canonical conversation state from
                                 # OC (messages + parts + tool definitions +
                                 # the system prompt we wrote into opencode.json)
                                 # so the row contains the same level of detail
                                 # the legacy LangGraph CodeAct logs did.
+                                logged_msg_ids.add(info_id)
                                 iter_counter += 1
                                 if tool_list_cache is None:
                                     tool_list_cache = await _fetch_oc_tool_list(
