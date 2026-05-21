@@ -290,9 +290,11 @@ echo "Installing Python dependencies..."
 pip install -q -r requirements.txt
 
 # Install Playwright browser binaries (Chromium) if not present
-echo "Installing Playwright browser binaries..."
-if ! python -m playwright install --dry-run 2>&1 | grep -q "already installed"; then
+echo "Checking Playwright browser binaries..."
+if ! python -c "from playwright.sync_api import sync_playwright; p=sync_playwright().start(); b=p.chromium.executable_path; p.stop(); exit(0 if b else 1)" 2>/dev/null; then
+    echo "📦 Installing Playwright Chromium (first time, ~260 MB)..."
     python -m playwright install chromium
+    echo "✅ Playwright Chromium installed"
 else
     echo "✅ Playwright Chromium already installed"
 fi
