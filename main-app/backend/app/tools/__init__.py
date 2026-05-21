@@ -346,72 +346,31 @@ def get_all_tools(
         sandbox_session: llm-sandbox SandboxSession for sandboxed execution
     """
     # ── Build coordinate finder invoker (if configured) ───────────
-    # Built early so both sandbox and host auto_browser can use it.
+    # Built early so both sandbox and host auto_browser can use it. The
+    # log_callback wiring (which persists every screenops VLM call to
+    # `llm_logs`) is shared with the post-OC `browser_manager.vision_click`
+    # path via `app.tools.screenops.llm_logging.make_coord_log_callback`.
     coord_finder_invoker = None
     if screenops_api_key:
         try:
             from app.tools.screenops.tool import _make_coordinate_finder_invoker
-            import asyncio
+            from app.tools.screenops.llm_logging import (
+                infer_provider_from_url,
+                make_coord_log_callback,
+            )
 
-            # Determine provider from API URL
-            _coord_api_url = (screenops_api_url or "").strip()
-            _coord_provider = "anthropic" if "anthropic" in _coord_api_url else "openai"
             _coord_model = screenops_model or "gpt-4o-mini"
-            _loop = main_event_loop  # FastAPI event loop, for scheduling DB writes
-
-            def _coord_log_callback(messages, response_text, usage, latency_ms, model_name, error):
-                """Persist coordinate finder LLM call to llm_logs table."""
-                import json
-                from uuid import uuid4
-                req_json = json.dumps(messages, default=str)
-                u = usage or {}
-                log_row = {
-                    "log_id": str(uuid4()),
-                    "user_id": user_id,
-                    "conversation_id": conversation_id,
-                    "iteration": 0,
-                    "request_messages_json": req_json,
-                    "response_content": (response_text or "")[:50000],
-                    "input_tokens": u.get("prompt_tokens", 0),
-                    "output_tokens": u.get("completion_tokens", 0),
-                    "total_tokens": u.get("total_tokens", 0),
-                    "cache_read_tokens": 0,
-                    "cache_creation_tokens": 0,
-                    "reasoning_tokens": 0,
-                    "model_provider": _coord_provider,
-                    "model_name": model_name or _coord_model,
-                    "latency_ms": latency_ms,
-                    "error": error,
-                }
-
-                async def _write():
-                    from app.db.database import async_session_maker
-                    from app.models.llm_log import LLMLog
-                    async with async_session_maker() as db:
-                        db.add(LLMLog(**log_row))
-                        await db.commit()
-
-                def _on_done(fut):
-                    try:
-                        fut.result()
-                    except Exception as e:
-                        logger.error("coord_log_callback_write_failed: %s", str(e))
-
-                if _loop is not None and _loop.is_running():
-                    try:
-                        future = asyncio.run_coroutine_threadsafe(_write(), _loop)
-                        future.add_done_callback(_on_done)
-                        return
-                    except Exception as e:
-                        logger.error("coord_log_callback_schedule_failed: %s", str(e))
-                try:
-                    asyncio.run(_write())
-                except Exception as e:
-                    logger.error("coord_log_callback_run_failed: %s", str(e))
+            _coord_log_callback = make_coord_log_callback(
+                user_id=user_id,
+                conversation_id=conversation_id,
+                provider=infer_provider_from_url(screenops_api_url),
+                default_model=_coord_model,
+                loop=main_event_loop,
+            )
 
             coord_finder_invoker = _make_coordinate_finder_invoker(
                 api_url=screenops_api_url or "",
-                model=screenops_model or "gpt-4o-mini",
+                model=_coord_model,
                 api_key=screenops_api_key,
                 log_callback=_coord_log_callback,
             )

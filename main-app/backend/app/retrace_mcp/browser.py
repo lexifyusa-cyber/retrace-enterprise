@@ -161,11 +161,20 @@ def take_screenshot():
 
 @mcp.tool()
 def click(selector: str):
-    """Click the first element matching a CSS selector. After the click we
-    wait for the page to settle (any same-tab navigation triggered by the
-    click completes before the screenshot is captured), then attach a
-    screenshot of the post-click page state as a vision input so you can
-    SEE the result of the click.
+    """Fallback click via CSS selector. Prefer `vision_click` for most clicks
+    — only reach for this tool when one of the following is true:
+
+      * `vision_click` already failed for the same target and you have a
+        confident structural selector to try instead.
+      * The element is intentionally invisible / off-screen (hidden form
+        inputs, programmatic submit buttons) and vision won't find it.
+      * You need to disambiguate between multiple visually-identical
+        elements (e.g., the 4th "Add to cart" button in a list) and the
+        DOM gives you a unique selector.
+
+    After the click we wait for the page to settle (any same-tab navigation
+    triggered by the click completes before the screenshot is captured),
+    then attach a screenshot of the post-click page state as a vision input.
 
     Args:
         selector: CSS selector of the element to click. Examples:
@@ -177,19 +186,27 @@ def click(selector: str):
 
 @mcp.tool()
 def vision_click(description: str):
-    """Click an element by visual description. Takes a screenshot and asks
-    a vision model (`screenops`) to return pixel coordinates, then clicks
-    at those coordinates. Use this when no stable CSS selector exists
-    (e.g., shadow DOM, dynamic classnames, image-based buttons). The
-    post-click page screenshot is attached as a vision input.
+    """Preferred way to click an element. Takes a screenshot, asks a vision
+    model (`screenops`) to return pixel coordinates for the described
+    element, then clicks at those coordinates. Use this by default — it
+    works on shadow DOM, dynamic class names, image-based buttons, canvas
+    UI, and ads-injected layouts where CSS selectors are brittle or
+    unavailable. The post-click page screenshot is attached as a vision
+    input so you can SEE the result.
+
+    Fall back to `click(selector)` only when (a) this tool fails to locate
+    the target after a more specific description, (b) the element is
+    intentionally invisible / off-screen, or (c) you need a specific one
+    among visually-identical elements.
 
     Requires server-side `screenops_api_key` configuration. If unset, this
-    falls back to returning a helpful error — use `click(selector)` instead.
+    returns a helpful error — use `click(selector)` in that case.
 
     Args:
         description: Natural-language description of the element to click.
-                    Examples: "blue submit button", "Sign in link in top right",
-                    "the second result card"
+                    Examples: "blue Sign in button in the top right",
+                    "the green Download button in the page hero",
+                    "the second result card titled 'Acme Inc'"
     """
     return _action_with_screenshot("vision_click", text=description)
 

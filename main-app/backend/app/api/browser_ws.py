@@ -34,6 +34,42 @@ logger = structlog.get_logger()
 router = APIRouter()
 
 
+async def _broadcast_click_indicator(session, x: int, y: int) -> None:
+    """Push a `click_indicator` to every WS client on `session`.
+
+    Matches what the manual-click path in `browser_websocket()` does, so the
+    workspace's dot+ripple animation fires for agent clicks too. Failures
+    are best-effort — a dead client just gets dropped from the set.
+    """
+    if not session:
+        logger.info("click_indicator_skip_no_session", x=x, y=y)
+        return
+    if not session.websocket_clients:
+        logger.info(
+            "click_indicator_skip_no_ws_clients",
+            x=x, y=y,
+            conv_id=getattr(session, "conversation_id", None),
+        )
+        return
+    msg = {"type": "click_indicator", "x": int(x), "y": int(y)}
+    disconnected = set()
+    sent = 0
+    for ws in list(session.websocket_clients):
+        try:
+            await ws.send_json(msg)
+            sent += 1
+        except Exception as exc:
+            disconnected.add(ws)
+            logger.warning("click_indicator_send_failed", error=str(exc))
+    session.websocket_clients -= disconnected
+    logger.info(
+        "click_indicator_broadcast",
+        x=x, y=y, sent=sent,
+        conv_id=getattr(session, "conversation_id", None),
+        total_ws=len(session.websocket_clients),
+    )
+
+
 @router.websocket("/ws/browser/{conversation_id}")
 async def browser_websocket(websocket: WebSocket, conversation_id: str):
     """Bidirectional browser I/O over WebSocket."""
@@ -345,16 +381,43 @@ async def internal_browser_action(
                 raise HTTPException(status_code=400, detail="`url` required for navigate")
             result = await session.navigate(body.url)
         elif action == "click_xy":
-            result = await session.click(int(body.x or 0), int(body.y or 0))
+            # Coords known up-front: broadcast before the click so the dot+
+            # ripple shows on the pre-click screenshot the user is still seeing.
+            cx, cy = int(body.x or 0), int(body.y or 0)
+            await _broadcast_click_indicator(session, cx, cy)
+            result = await session.click(cx, cy)
         elif action == "click":
             # Selector-based click — what the agent sends most of the time.
             if not body.selector:
                 raise HTTPException(status_code=400, detail="`selector` required for click")
             result = await session.click_selector(body.selector)
+            # click_selector now resolves the element's center and returns it
+            # as `clicked: {x, y}` so the workspace can render the indicator.
+            clicked = result.get("clicked") if isinstance(result, dict) else None
+            if clicked and clicked.get("x") is not None and clicked.get("y") is not None:
+                await _broadcast_click_indicator(session, clicked["x"], clicked["y"])
+            else:
+                logger.info(
+                    "click_indicator_no_coords",
+                    action="click", selector=body.selector,
+                    has_clicked_field=bool(clicked),
+                )
         elif action == "vision_click":
             if not body.text:
                 raise HTTPException(status_code=400, detail="`text` (description) required for vision_click")
             result = await session.vision_click(body.text)
+            # vision_click returns `clicked: {x, y}` after the screenops model
+            # resolves the description to coords. Broadcast post-click so the
+            # ripple lands on whichever screenshot is on screen.
+            clicked = result.get("clicked") if isinstance(result, dict) else None
+            if clicked and clicked.get("x") is not None and clicked.get("y") is not None:
+                await _broadcast_click_indicator(session, clicked["x"], clicked["y"])
+            else:
+                logger.info(
+                    "click_indicator_no_coords",
+                    action="vision_click", target=body.text,
+                    has_clicked_field=bool(clicked),
+                )
         elif action == "type":
             if not body.selector:
                 raise HTTPException(status_code=400, detail="`selector` required for type")
