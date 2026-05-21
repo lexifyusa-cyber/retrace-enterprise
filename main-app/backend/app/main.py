@@ -432,16 +432,35 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     except Exception as exc:
         print(f"[STARTUP] __local__ pod creation skipped: {exc}", flush=True)
 
-    # Ensure default administrator account exists (login: administrator, password: ***REMOVED***)
+    # Ensure default organization + administrator both exist AND are linked.
+    # Tenant must come first: without `admin.tenant_id` pointing at a real
+    # tenant, every team/conversation the admin creates will inherit
+    # tenant_id=NULL, which then becomes invisible to any SSO user provisioned
+    # into a real tenant. The first-run order was previously reversed and the
+    # link was never set — see the tenant_id backfill in the git history.
     _DEFAULT_ADMIN_PASSWORD = "***REMOVED***"
     try:
         from sqlalchemy import select, func
         from app.db.database import async_session_maker
         from app.models.user import User
+        from app.models.tenant import Tenant
         from app.core.security import hash_password
 
         async with async_session_maker() as session:
-            # Case-insensitive lookup (DB may have "Administrator" or "administrator")
+            # 1) Ensure the default tenant exists, and grab its id.
+            result = await session.execute(select(Tenant))
+            default_tenant = result.scalars().first()
+            if default_tenant is None:
+                default_tenant = Tenant(
+                    name="Default Organization",
+                    domain="local",
+                    auth_method="email",
+                )
+                session.add(default_tenant)
+                await session.flush()  # populate default_tenant.tenant_id
+                print("[STARTUP] Created default organization (domain: local)", flush=True)
+
+            # 2) Ensure the administrator exists and is linked to that tenant.
             result = await session.execute(
                 select(User).where(func.lower(User.email) == "administrator")
             )
@@ -454,37 +473,25 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
                     role="admin",
                     auth_provider="email",
                     force_password_change=False,
+                    tenant_id=default_tenant.tenant_id,
                 )
                 session.add(admin)
-                await session.commit()
                 print("[STARTUP] Created default administrator account (username: administrator, password: ***REMOVED***)", flush=True)
             else:
-                # Normalize email to lowercase and reset password
+                # Normalize email, reset password, and self-heal tenant link
+                # if a pre-fix install left it NULL.
                 admin.email = "administrator"
                 admin.hashed_password = hash_password(_DEFAULT_ADMIN_PASSWORD)
                 admin.force_password_change = False
                 admin.is_active = True
-                await session.commit()
+                if admin.tenant_id is None:
+                    admin.tenant_id = default_tenant.tenant_id
+                    print("[STARTUP] Linked administrator to default tenant (self-heal)", flush=True)
                 print("[STARTUP] Reset administrator password to ***REMOVED***", flush=True)
-    except Exception as exc:
-        print(f"[STARTUP] Default admin creation skipped: {exc}", flush=True)
 
-    # Ensure default organization (single-tenant) exists
-    try:
-        from app.models.tenant import Tenant
-        async with async_session_maker() as session:
-            result = await session.execute(select(Tenant))
-            if result.scalar_one_or_none() is None:
-                default_tenant = Tenant(
-                    name="Default Organization",
-                    domain="local",
-                    auth_method="email",
-                )
-                session.add(default_tenant)
-                await session.commit()
-                print("[STARTUP] Created default organization (domain: local)", flush=True)
+            await session.commit()
     except Exception as exc:
-        print(f"[STARTUP] Default organization creation skipped: {exc}", flush=True)
+        print(f"[STARTUP] Default admin/tenant setup skipped: {exc}", flush=True)
 
     # Auto-seed ServiceNow as built-in extension and auto-install for all users
     try:

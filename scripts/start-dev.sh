@@ -317,9 +317,40 @@ if lsof -ti :8000 &> /dev/null; then
 fi
 
 echo "Starting FastAPI backend..."
-# External-OC mode: tell the backend to route HTTP to the OC source we
-# launch below on :4096 instead of trying to spawn an `opencode` binary.
-export RETRACE_OPENCODE_EXTERNAL_URL="${RETRACE_OPENCODE_EXTERNAL_URL:-http://127.0.0.1:4096}"
+# By default we run in **managed mode**: the backend spawns its own `opencode`
+# binary per logged-in user. Each user gets isolated MCPs with the right
+# RETRACE_USER_ID — required for multi-user testing. The binary is the
+# patched ReTrace fork built at `opencode/packages/opencode/dist/opencode`
+# (see RETRACE_OPENCODE_BIN below).
+#
+# Set RETRACE_USE_EXTERNAL_OC=1 to flip into external/dev mode: we'll launch
+# the OC source from `opencode/packages/opencode` on :4096 via `bun run` and
+# point the backend at it. This gets you hot-reload of OC TypeScript edits,
+# but every logged-in user shares the one OC process → multi-user is broken.
+# Use it only when actively editing the vendored OC fork.
+if [ "${RETRACE_USE_EXTERNAL_OC:-}" = "1" ]; then
+    export RETRACE_OPENCODE_EXTERNAL_URL="${RETRACE_OPENCODE_EXTERNAL_URL:-http://127.0.0.1:4096}"
+    echo "→ External OC mode enabled (RETRACE_USE_EXTERNAL_OC=1)"
+else
+    unset RETRACE_OPENCODE_EXTERNAL_URL
+    # Point at the patched ReTrace fork binary for the current platform,
+    # falling back to whatever `opencode` is on PATH if the fork hasn't
+    # been built yet. The fork's build.ts produces per-platform output dirs.
+    case "$(uname -s)-$(uname -m)" in
+        Darwin-arm64) PATCHED_OC_BIN="$PROJECT_ROOT/opencode/packages/opencode/dist/opencode-darwin-arm64/bin/opencode" ;;
+        Darwin-x86_64) PATCHED_OC_BIN="$PROJECT_ROOT/opencode/packages/opencode/dist/opencode-darwin-x64/bin/opencode" ;;
+        Linux-aarch64|Linux-arm64) PATCHED_OC_BIN="$PROJECT_ROOT/opencode/packages/opencode/dist/opencode-linux-arm64/bin/opencode" ;;
+        Linux-x86_64) PATCHED_OC_BIN="$PROJECT_ROOT/opencode/packages/opencode/dist/opencode-linux-x64/bin/opencode" ;;
+        *) PATCHED_OC_BIN="" ;;
+    esac
+    if [ -n "$PATCHED_OC_BIN" ] && [ -x "$PATCHED_OC_BIN" ]; then
+        export RETRACE_OPENCODE_BIN="$PATCHED_OC_BIN"
+        echo "→ Managed OC mode (using patched fork: $PATCHED_OC_BIN)"
+    else
+        echo "→ Managed OC mode (patched binary not built; will fall back to \`opencode\` on PATH)"
+        echo "   Build with: cd opencode/packages/opencode && bun run build"
+    fi
+fi
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000 &
 BACKEND_PID=$!
 sleep 2  # Give backend time to start
@@ -340,34 +371,30 @@ npm run dev &
 FRONTEND_PID=$!
 echo "Frontend started (PID: $FRONTEND_PID)"
 
-# Start OpenCode (the agent runtime, port 4096). The forked source lives at
-# $PROJECT_ROOT/opencode and is run via bun directly — no build step. Edits
-# to opencode/.../src/*.ts get picked up on the next start.
-#
-# `run-for-retrace.sh` auto-detects user_id from ~/.config/opencode/projects/
-# and sets OPENCODE_CONFIG_DIR + RETRACE_USER_ID/BACKEND_URL/INTERNAL_TOKEN.
-# Skips OC startup gracefully if no user config exists yet (first-run case
-# where the user hasn't visited /agent yet to trigger generate_config).
+# OpenCode startup — only spawn it manually in external mode. In managed
+# mode (default) the backend handles per-user OC lifecycle itself.
 OC_PID=""
-echo ""
-echo "🤖 Starting OpenCode agent runtime..."
+if [ "${RETRACE_USE_EXTERNAL_OC:-}" = "1" ]; then
+    echo ""
+    echo "🤖 Starting OpenCode agent runtime (external mode)..."
 
-# Install OpenCode dependencies if needed
-OC_PKG_DIR="$PROJECT_ROOT/opencode/packages/opencode"
-if [ -d "$OC_PKG_DIR" ] && [ ! -d "$OC_PKG_DIR/node_modules" ]; then
-    echo "📦 Installing OpenCode dependencies (first time)..."
-    export PATH="$HOME/.bun/bin:$PATH"
-    bun install --cwd "$OC_PKG_DIR"
-fi
+    # Install OpenCode dependencies if needed
+    OC_PKG_DIR="$PROJECT_ROOT/opencode/packages/opencode"
+    if [ -d "$OC_PKG_DIR" ] && [ ! -d "$OC_PKG_DIR/node_modules" ]; then
+        echo "📦 Installing OpenCode dependencies (first time)..."
+        export PATH="$HOME/.bun/bin:$PATH"
+        bun install --cwd "$OC_PKG_DIR"
+    fi
 
-if [ -d "$HOME/.config/opencode/projects" ] && [ -n "$(ls -A "$HOME/.config/opencode/projects" 2>/dev/null)" ]; then
-    export PATH="$HOME/.bun/bin:$PATH"
-    "$PROJECT_ROOT/opencode/run-for-retrace.sh" &
-    OC_PID=$!
-    echo "OpenCode started (PID: $OC_PID, port: 4096)"
-else
-    echo "⚠️  No OpenCode user config found yet. Hit /agent once in the UI to"
-    echo "   generate one, then run: $PROJECT_ROOT/opencode/run-for-retrace.sh"
+    if [ -d "$HOME/.config/opencode/projects" ] && [ -n "$(ls -A "$HOME/.config/opencode/projects" 2>/dev/null)" ]; then
+        export PATH="$HOME/.bun/bin:$PATH"
+        "$PROJECT_ROOT/opencode/run-for-retrace.sh" &
+        OC_PID=$!
+        echo "OpenCode started (PID: $OC_PID, port: 4096)"
+    else
+        echo "⚠️  No OpenCode user config found yet. Hit /agent once in the UI to"
+        echo "   generate one, then run: $PROJECT_ROOT/opencode/run-for-retrace.sh"
+    fi
 fi
 
 # Cleanup function

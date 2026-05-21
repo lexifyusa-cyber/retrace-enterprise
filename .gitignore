@@ -1,6 +1,10 @@
 # Claude Code
 .claude/
 
+# LLM Council skill keys — keep local, do not commit
+/.env
+/.env.llm-council.template
+
 # Python
 __pycache__/
 *.pyc
