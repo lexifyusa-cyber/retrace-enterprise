@@ -289,6 +289,14 @@ pip install --upgrade pip setuptools wheel
 echo "Installing Python dependencies..."
 pip install -q -r requirements.txt
 
+# Install Playwright browser binaries (Chromium) if not present
+echo "Installing Playwright browser binaries..."
+if ! python -m playwright install --dry-run 2>&1 | grep -q "already installed"; then
+    python -m playwright install chromium
+else
+    echo "✅ Playwright Chromium already installed"
+fi
+
 # Install local ServiceNow MCP server package
 echo "Installing ServiceNow MCP server..."
 pip install -q -e "$PROJECT_ROOT/servicenow-mcp-server/"
@@ -341,7 +349,17 @@ echo "Frontend started (PID: $FRONTEND_PID)"
 OC_PID=""
 echo ""
 echo "🤖 Starting OpenCode agent runtime..."
+
+# Install OpenCode dependencies if needed
+OC_PKG_DIR="$PROJECT_ROOT/opencode/packages/opencode"
+if [ -d "$OC_PKG_DIR" ] && [ ! -d "$OC_PKG_DIR/node_modules" ]; then
+    echo "📦 Installing OpenCode dependencies (first time)..."
+    export PATH="$HOME/.bun/bin:$PATH"
+    bun install --cwd "$OC_PKG_DIR"
+fi
+
 if [ -d "$HOME/.config/opencode/projects" ] && [ -n "$(ls -A "$HOME/.config/opencode/projects" 2>/dev/null)" ]; then
+    export PATH="$HOME/.bun/bin:$PATH"
     "$PROJECT_ROOT/opencode/run-for-retrace.sh" &
     OC_PID=$!
     echo "OpenCode started (PID: $OC_PID, port: 4096)"
