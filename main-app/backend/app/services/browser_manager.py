@@ -98,6 +98,14 @@ class BrowserSession:
     websocket_clients: set = field(default_factory=set)
     screenshot_task: Optional[asyncio.Task] = None
     last_activity: float = field(default_factory=time.time)
+    # Downloads triggered by browser actions land in
+    # `<oc_working_dir>/<conversation_id>/Downloads/<suggested_filename>` and
+    # are surfaced back to the agent in the next click/navigate response.
+    # `download_tasks` tracks in-flight save_as() coroutines so click/navigate
+    # can await completion before returning. `pending_downloads` is the
+    # drain-on-read buffer of {filename, saved_to, suggested_filename, url}.
+    pending_downloads: list = field(default_factory=list)
+    download_tasks: set = field(default_factory=set)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     current_url: str = "about:blank"
     current_title: str = ""
@@ -273,6 +281,105 @@ class BrowserSession:
                 pass
         return result
 
+    async def _resolve_downloads_dir(self) -> str:
+        """Return `<oc_working_dir>/<conversation_id>/Downloads`.
+
+        Asks OC for its current directory (the same call `_oc_working_dir` in
+        agent.py uses). Mirrors the per-conversation layout from the sandbox
+        `browser_daemon.py` so the Files tab and `/api/v1/agent/sandbox/<conv>/
+        download` endpoint pick the file up automatically. Falls back to
+        `~/.retrace/downloads/<conv>` if OC isn't reachable — we'd rather
+        save somewhere reasonable than lose the file.
+        """
+        oc_dir: Optional[str] = None
+        try:
+            if self.user_id:
+                from app.services.opencode_manager import opencode_manager
+                import httpx as _httpx
+                port = opencode_manager.get_port(self.user_id)
+                if port:
+                    async with _httpx.AsyncClient(timeout=3) as client:
+                        resp = await client.get(f"http://127.0.0.1:{port}/path")
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            oc_dir = data.get("directory") or data.get("worktree")
+        except Exception as exc:
+            logger.warning("download_dir_oc_lookup_failed", error=str(exc))
+        if not oc_dir:
+            oc_dir = os.path.expanduser("~/.retrace/downloads")
+        return os.path.join(oc_dir, self.conversation_id, "Downloads")
+
+    async def _save_download(self, download) -> None:
+        """Persist a Playwright download to the per-conversation Downloads dir.
+
+        Without an explicit `save_as`, Playwright keeps the file under
+        `/tmp/playwright-artifacts-*/` named after a UUID and deletes it when
+        the context closes — invisible to the user, invisible to the agent.
+        We move it to `<oc_working_dir>/<conv>/Downloads/<suggested>` and
+        record the result so click/navigate can surface it.
+        """
+        try:
+            target_dir = await self._resolve_downloads_dir()
+            await asyncio.to_thread(os.makedirs, target_dir, exist_ok=True)
+            suggested = download.suggested_filename or "download.bin"
+            target = os.path.join(target_dir, suggested)
+            # Collision handling: append "(N)" before the extension so two
+            # downloads of the same name don't clobber each other.
+            if os.path.exists(target):
+                stem, ext = os.path.splitext(suggested)
+                n = 1
+                while os.path.exists(os.path.join(target_dir, f"{stem} ({n}){ext}")):
+                    n += 1
+                target = os.path.join(target_dir, f"{stem} ({n}){ext}")
+            await download.save_as(target)
+            self.pending_downloads.append({
+                "filename": os.path.basename(target),
+                "saved_to": target,
+                "suggested_filename": suggested,
+                "url": download.url,
+            })
+            logger.info(
+                "browser_download_saved",
+                conversation_id=self.conversation_id,
+                saved_to=target,
+                suggested=suggested,
+            )
+        except Exception as exc:
+            logger.warning(
+                "browser_download_save_failed",
+                conversation_id=self.conversation_id,
+                error=str(exc),
+            )
+
+    async def _drain_downloads(self, settle: float = 0.6) -> list:
+        """Return + clear downloads triggered by the most recent action.
+
+        Polls for up to `settle` seconds waiting for a download to begin
+        (Playwright's `download` event fires asynchronously after the click,
+        not synchronously), then awaits any in-flight `save_as` tasks with a
+        30 s cap. Empty list = no download happened.
+        """
+        deadline = time.time() + settle
+        while time.time() < deadline:
+            if self.download_tasks or self.pending_downloads:
+                break
+            await asyncio.sleep(0.05)
+        if self.download_tasks:
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*self.download_tasks, return_exceptions=True),
+                    timeout=30,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "browser_download_save_timeout",
+                    conversation_id=self.conversation_id,
+                    in_flight=len(self.download_tasks),
+                )
+        out = list(self.pending_downloads)
+        self.pending_downloads.clear()
+        return out
+
     async def navigate(self, url: str) -> dict:
         """Navigate the page to a URL. Returns as soon as the navigation is
         committed (`wait_until="commit"`) so multi-hop redirect chains —
@@ -289,16 +396,27 @@ class BrowserSession:
                 return await self._sandbox_action({"action": "navigate", "url": url})
             if not self.page:
                 return {"error": "No browser page"}
-            await self.page.goto(url, wait_until="commit", timeout=30000)
+            try:
+                await self.page.goto(url, wait_until="commit", timeout=30000)
+            except Exception as exc:
+                # A direct download URL aborts the navigation with
+                # `net::ERR_ABORTED` while still firing the `download` event.
+                # If a download landed, that's success, not an error.
+                downloads = await self._drain_downloads()
+                if downloads:
+                    return {"url": self.current_url, "title": self.current_title, "downloads": downloads}
+                return {"error": str(exc)}
             # Paint settle. Matches the pre-OC auto_browser sleep before the
             # screenshot push so the panel sees the new page, not a frame
             # from while it was still rendering.
             await self._settle()
             self.current_url = self.page.url
             self.current_title = await self.page.title()
-            return {"url": self.current_url, "title": self.current_title}
-        except Exception as exc:
-            return {"error": str(exc)}
+            result = {"url": self.current_url, "title": self.current_title}
+            downloads = await self._drain_downloads(settle=0.2)
+            if downloads:
+                result["downloads"] = downloads
+            return result
         finally:
             self.is_navigating = False
 
@@ -319,7 +437,11 @@ class BrowserSession:
             await self._settle()
             self.current_url = self.page.url
             self.current_title = await self.page.title()
-            return {"url": self.current_url, "title": self.current_title}
+            result = {"url": self.current_url, "title": self.current_title}
+            downloads = await self._drain_downloads()
+            if downloads:
+                result["downloads"] = downloads
+            return result
         except Exception as exc:
             return {"error": str(exc)}
 
@@ -441,7 +563,11 @@ class BrowserSession:
             await self._settle()
             self.current_url = self.page.url
             self.current_title = await self.page.title()
-            return {"url": self.current_url, "title": self.current_title, "selector": selector}
+            result = {"url": self.current_url, "title": self.current_title, "selector": selector}
+            downloads = await self._drain_downloads()
+            if downloads:
+                result["downloads"] = downloads
+            return result
         except Exception as exc:
             return {"error": str(exc), "selector": selector}
 
@@ -530,12 +656,16 @@ class BrowserSession:
             await self._settle()
             self.current_url = self.page.url
             self.current_title = await self.page.title()
-            return {
+            result = {
                 "clicked": {"x": cx, "y": cy},
                 "target": description,
                 "url": self.current_url,
                 "title": self.current_title,
             }
+            downloads = await self._drain_downloads()
+            if downloads:
+                result["downloads"] = downloads
+            return result
         except Exception as exc:
             return {"error": f"vision_click failed: {exc}", "target": description}
 
@@ -867,7 +997,16 @@ class BrowserManager:
                         "AppleWebKit/537.36 (KHTML, like Gecko) "
                         "Chrome/120.0.0.0 Safari/537.36"
                     ),
+                    accept_downloads=True,
                 )
+                # Persist downloads to `<oc_working_dir>/<conv>/Downloads/`
+                # instead of letting Playwright drop them in /tmp/ with a UUID.
+                # Without this handler the file is GC'd when the context closes.
+                def _on_download(d, _session=session):
+                    task = asyncio.create_task(_session._save_download(d))
+                    _session.download_tasks.add(task)
+                    task.add_done_callback(_session.download_tasks.discard)
+                session.context.on("download", _on_download)
                 session.page = await session.context.new_page()
                 logger.info(
                     "browser_session_created",
