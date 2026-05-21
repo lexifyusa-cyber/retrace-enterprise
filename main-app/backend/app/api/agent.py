@@ -3908,44 +3908,56 @@ async def dashboard_stats(
 # Sandbox file explorer
 # ---------------------------------------------------------------------------
 
-def _resolve_sandbox_id(conversation_id: str, current_user=None) -> str:
-    """Resolve conversation_id to the user's sandbox ID (user_id).
+async def _oc_working_dir(user_id: str) -> Optional[str]:
+    """Ask OC for the directory it's operating in.
 
-    Falls back to current_user.user_id if mapping not found,
-    then to conversation_id as last resort.
+    OC's `GET /path` returns `{home, state, config, worktree, directory}`. The
+    `directory` field is the instance's actual cwd — what the write/edit tools
+    resolve relative paths against. In managed mode this is OC's per-user
+    config dir; in external/dev mode it's wherever the developer ran `bun run`.
     """
-    from app.services.sandbox_manager import get_user_for_conversation
-    user_id = get_user_for_conversation(conversation_id)
-    if user_id:
-        return user_id
-    if current_user and hasattr(current_user, 'user_id'):
-        return current_user.user_id
-    return conversation_id
+    import httpx
+    port = opencode_manager.get_port(user_id)
+    if not port:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=3) as client:
+            resp = await client.get(f"http://127.0.0.1:{port}/path")
+            if resp.status_code != 200:
+                return None
+            data = resp.json()
+            return data.get("directory") or data.get("worktree")
+    except Exception:
+        return None
 
 
 @router.get("/sandbox/{conversation_id}/files")
 async def list_sandbox_files(
     conversation_id: str,
-    path: str = Query(default="/", description="Directory path relative to sandbox root"),
+    path: str = Query(default="/", description="Directory path relative to OC working dir"),
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    """List files and directories in the sandbox volume."""
+    """List files in the agent's actual working directory (OC's cwd)."""
     from app.services.sandbox_manager import list_sandbox_files as _list_files
-    sandbox_id = _resolve_sandbox_id(conversation_id, current_user)
-    entries = _list_files(sandbox_id, path)
-    return {"path": path, "entries": entries}
+    root_dir = await _oc_working_dir(current_user.user_id)
+    if not root_dir:
+        return {"path": path, "entries": [], "root_dir": None}
+    entries = _list_files(root_dir, path)
+    return {"path": path, "entries": entries, "root_dir": root_dir}
 
 
 @router.get("/sandbox/{conversation_id}/file")
 async def read_sandbox_file(
     conversation_id: str,
-    path: str = Query(..., description="File path relative to sandbox root"),
+    path: str = Query(..., description="File path relative to OC working dir"),
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    """Read a text file from the sandbox volume."""
+    """Read a text file from the agent's working directory."""
     from app.services.sandbox_manager import read_sandbox_file as _read_file
-    sandbox_id = _resolve_sandbox_id(conversation_id, current_user)
-    content = _read_file(sandbox_id, path)
+    root_dir = await _oc_working_dir(current_user.user_id)
+    if not root_dir:
+        raise HTTPException(status_code=404, detail="OC working directory unavailable")
+    content = _read_file(root_dir, path)
     if content is None:
         raise HTTPException(status_code=404, detail="File not found")
     return {"path": path, "content": content}
@@ -3954,16 +3966,18 @@ async def read_sandbox_file(
 @router.get("/sandbox/{conversation_id}/download")
 async def download_sandbox_file(
     conversation_id: str,
-    path: str = Query(..., description="File path relative to sandbox root"),
+    path: str = Query(..., description="File path relative to OC working dir"),
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    """Download a file from the sandbox volume."""
+    """Download a file from the agent's working directory."""
     from app.services.sandbox_manager import get_sandbox_file_path
     from fastapi.responses import FileResponse
     import os
 
-    sandbox_id = _resolve_sandbox_id(conversation_id, current_user)
-    file_path = get_sandbox_file_path(sandbox_id, path)
+    root_dir = await _oc_working_dir(current_user.user_id)
+    if not root_dir:
+        raise HTTPException(status_code=404, detail="OC working directory unavailable")
+    file_path = get_sandbox_file_path(root_dir, path)
     if file_path is None:
         raise HTTPException(status_code=404, detail="File not found")
 
@@ -3976,17 +3990,23 @@ async def serve_sandbox_file(
     conversation_id: str,
     path: str,
 ):
-    """Serve a sandbox file with correct MIME type (for browser rendering).
+    """Serve a file from the agent's working directory with correct MIME type.
 
-    This endpoint does NOT require auth so the browser workspace iframe
-    can load HTML/JS/CSS files directly from the sandbox.
+    This endpoint does NOT require auth so the browser workspace iframe can
+    load HTML/JS/CSS files directly. Resolves the owning user via the
+    conversation registry, then asks OC for its current working directory.
     """
     from app.services.sandbox_manager import get_sandbox_file_path, get_user_for_conversation
     from fastapi.responses import FileResponse
     import mimetypes
 
-    sandbox_id = get_user_for_conversation(conversation_id) or conversation_id
-    file_path = get_sandbox_file_path(sandbox_id, path)
+    user_id = get_user_for_conversation(conversation_id)
+    if not user_id:
+        raise HTTPException(status_code=404, detail="Unknown conversation")
+    root_dir = await _oc_working_dir(user_id)
+    if not root_dir:
+        raise HTTPException(status_code=404, detail="OC working directory unavailable")
+    file_path = get_sandbox_file_path(root_dir, path)
     if file_path is None:
         raise HTTPException(status_code=404, detail="File not found")
 

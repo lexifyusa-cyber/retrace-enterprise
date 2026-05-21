@@ -27,6 +27,12 @@ IDLE_TIMEOUT_SECONDS = 30 * 60  # 30 minutes
 SANDBOX_BASE = os.environ.get("SANDBOX_BASE", "/data/workspaces" if os.path.isdir("/data") else os.path.join(os.path.expanduser("~"), ".retrace", "workspaces"))
 SANDBOX_IMAGE = "retrace-sandbox:latest"
 
+# Post-OC migration the agent writes to OC's instance directory — which is
+# whatever OC was launched from (managed mode: ~/.config/opencode/projects/<uid>/;
+# external/dev mode: wherever the developer ran `bun run` from). The Files tab
+# resolves this at request time via OC's `GET /path` and passes the directory
+# down to these helpers, so they no longer guess the root.
+
 
 def register_conversation(conversation_id: str, user_id: str):
     """Register which user owns a conversation (for reverse lookups)."""
@@ -379,11 +385,14 @@ def cleanup_volume(conversation_id: str):
         logger.info("sandbox_volume_cleaned", conversation_id=conversation_id)
 
 
-def list_sandbox_files(conversation_id: str, path: str = "/") -> list[dict]:
-    """List files in a sandbox volume directory."""
-    # Resolve user_id from conversation_id for workspace path
-    user_id = get_user_for_conversation(conversation_id)
-    base = os.path.join(SANDBOX_BASE, user_id) if user_id else os.path.join(SANDBOX_BASE, conversation_id)
+def list_sandbox_files(root_dir: str, path: str = "/") -> list[dict]:
+    """List files under `root_dir` (the agent's actual working directory).
+
+    Callers must resolve `root_dir` themselves — typically via OC's `GET /path`
+    `directory` field, which reflects OC's launch cwd in either managed or
+    external mode.
+    """
+    base = root_dir
     target = os.path.join(base, path.lstrip("/"))
     target = os.path.abspath(target)
 
@@ -393,7 +402,15 @@ def list_sandbox_files(conversation_id: str, path: str = "/") -> list[dict]:
     if not os.path.isdir(target):
         return []
 
-    _HIDDEN = {".sandbox-pip-cache", ".sandbox-venv", "__pycache__"}
+    # Hide OC infrastructure + caches so the user sees agent artifacts, not
+    # the scaffolding OC needs to run. `opencode.json` / `retrace-plugin.js`
+    # are seeded by Retrace; `node_modules`, `package*.json`, `.gitignore`
+    # are part of OC's default project skeleton.
+    _HIDDEN = {
+        ".sandbox-pip-cache", ".sandbox-venv", "__pycache__",
+        "node_modules", "opencode.json", "retrace-plugin.js",
+        "package.json", "package-lock.json", ".gitignore",
+    }
 
     entries = []
     try:
@@ -416,10 +433,9 @@ def list_sandbox_files(conversation_id: str, path: str = "/") -> list[dict]:
     return entries
 
 
-def read_sandbox_file(conversation_id: str, path: str) -> Optional[str]:
-    """Read a text file from the sandbox volume."""
-    user_id = get_user_for_conversation(conversation_id)
-    base = os.path.join(SANDBOX_BASE, user_id) if user_id else os.path.join(SANDBOX_BASE, conversation_id)
+def read_sandbox_file(root_dir: str, path: str) -> Optional[str]:
+    """Read a text file under `root_dir`. See `list_sandbox_files` for sourcing."""
+    base = root_dir
     target = os.path.join(base, path.lstrip("/"))
     target = os.path.abspath(target)
 
@@ -436,10 +452,9 @@ def read_sandbox_file(conversation_id: str, path: str) -> Optional[str]:
         return None
 
 
-def get_sandbox_file_path(conversation_id: str, path: str) -> Optional[str]:
-    """Get the absolute host path for a sandbox file."""
-    user_id = get_user_for_conversation(conversation_id)
-    base = os.path.join(SANDBOX_BASE, user_id) if user_id else os.path.join(SANDBOX_BASE, conversation_id)
+def get_sandbox_file_path(root_dir: str, path: str) -> Optional[str]:
+    """Get the absolute host path for a file under `root_dir`. See `list_sandbox_files`."""
+    base = root_dir
     target = os.path.join(base, path.lstrip("/"))
     target = os.path.abspath(target)
 

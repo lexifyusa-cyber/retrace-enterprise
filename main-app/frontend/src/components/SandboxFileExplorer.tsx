@@ -45,6 +45,7 @@ const authHeaders = () => ({
 export default function SandboxFileExplorer({ conversationId }: SandboxFileExplorerProps) {
   const [currentPath, setCurrentPath] = useState('/')
   const [entries, setEntries] = useState<FileEntry[]>([])
+  const [rootDir, setRootDir] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
   const [fileContent, setFileContent] = useState<string | null>(null)
@@ -58,6 +59,7 @@ export default function SandboxFileExplorer({ conversationId }: SandboxFileExplo
       if (res.ok) {
         const data = await res.json()
         setEntries(data.entries || [])
+        setRootDir(data.root_dir ?? null)
         setCurrentPath(path)
       }
     } catch {
@@ -191,7 +193,7 @@ export default function SandboxFileExplorer({ conversationId }: SandboxFileExplo
         )}
         <FolderOpen className="w-4 h-4 text-rt-primary" />
         <span className="text-sm text-rt-text font-mono truncate">
-          /workspace{currentPath === '/' ? '' : currentPath}
+          {rootDir ? rootDir.replace(/^\/Users\/[^/]+/, '~') : 'agent-workspace'}{currentPath === '/' ? '' : currentPath}
         </span>
         <button
           onClick={() => loadFiles(currentPath)}

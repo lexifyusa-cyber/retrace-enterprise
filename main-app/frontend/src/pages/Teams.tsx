@@ -1976,7 +1976,7 @@ function FileBrowserModal({
     queryKey: isLocal ? ['local-browse', currentPath] : ['pod-browse', podId, currentPath],
     queryFn: () =>
       isLocal
-        ? localFilesApi.browse(currentPath)
+        ? localFilesApi.browse(currentPath, true)
         : podApi.browse(podId, currentPath, false),
     enabled: !!podId,
   })
