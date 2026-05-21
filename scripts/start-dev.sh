@@ -3,9 +3,17 @@
 
 set -e
 
+OS="$(uname -s)"
+ARCH="$(uname -m)"
+
 # Ensure Homebrew is in PATH (macOS)
-if [ -f "/opt/homebrew/bin/brew" ]; then
+if [ "$OS" = "Darwin" ] && [ -f "/opt/homebrew/bin/brew" ]; then
     eval "$(/opt/homebrew/bin/brew shellenv)"
+fi
+
+# Prefer a previously-installed local Go (avoids re-downloading on every run)
+if [ -d "$HOME/.local/go/bin" ]; then
+    export PATH="$HOME/.local/go/bin:$PATH"
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,22 +30,64 @@ check_command() {
     fi
 }
 
+# pod-agent uses os.Root.ReadFile (added in Go 1.25), so 1.25+ is required.
+REQUIRED_GO_MAJOR=1
+REQUIRED_GO_MINOR=25
+GO_INSTALL_VERSION="1.25.0"
+
+go_version_ok() {
+    command -v go &> /dev/null || return 1
+    local ver major minor
+    ver=$(go version 2>/dev/null | grep -oE 'go[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1 | sed 's/go//')
+    [ -z "$ver" ] && return 1
+    major=$(echo "$ver" | cut -d. -f1)
+    minor=$(echo "$ver" | cut -d. -f2)
+    if [ "$major" -gt "$REQUIRED_GO_MAJOR" ]; then return 0; fi
+    if [ "$major" -eq "$REQUIRED_GO_MAJOR" ] && [ "$minor" -ge "$REQUIRED_GO_MINOR" ]; then return 0; fi
+    return 1
+}
+
 install_go() {
-    if ! command -v go &> /dev/null; then
-        echo "📦 Go is not installed. Installing via Homebrew..."
-        
+    if go_version_ok; then
+        echo "✅ Go $(go version | awk '{print $3}') OK"
+        return
+    fi
+    if command -v go &> /dev/null; then
+        echo "ℹ️  Detected Go $(go version | awk '{print $3}'); need ${REQUIRED_GO_MAJOR}.${REQUIRED_GO_MINOR}+. Installing newer version..."
+    else
+        echo "📦 Go is not installed; installing ${GO_INSTALL_VERSION}..."
+    fi
+
+    if [ "$OS" = "Darwin" ]; then
         if ! command -v brew &> /dev/null; then
-            echo "❌ Homebrew is required to install Go. Installing Homebrew first..."
+            echo "❌ Homebrew is required to install Go on macOS. Installing Homebrew first..."
             /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-            
-            # Add Homebrew to PATH for Apple Silicon Macs
-            if [ -f "/opt/homebrew/bin/brew" ]; then
-                eval "$(/opt/homebrew/bin/brew shellenv)"
-            fi
+            [ -f "/opt/homebrew/bin/brew" ] && eval "$(/opt/homebrew/bin/brew shellenv)"
         fi
-        
         brew install go
         echo "✅ Go installed successfully"
+        return
+    fi
+
+    # Linux: download official Go tarball into ~/.local/go (no sudo, no apt — apt is too old)
+    local arch_label="amd64"
+    case "$ARCH" in
+        aarch64|arm64) arch_label="arm64" ;;
+    esac
+    local tarball="go${GO_INSTALL_VERSION}.linux-${arch_label}.tar.gz"
+    local url="https://go.dev/dl/${tarball}"
+    local install_dir="$HOME/.local/go"
+    echo "  Downloading $url ..."
+    mkdir -p "$HOME/.local"
+    rm -rf "$install_dir"
+    curl -fsSL "$url" -o "/tmp/$tarball"
+    tar -C "$HOME/.local" -xzf "/tmp/$tarball"
+    rm -f "/tmp/$tarball"
+    export PATH="$install_dir/bin:$PATH"
+    if go_version_ok; then
+        echo "✅ Go $(go version | awk '{print $3}') installed at $install_dir"
+    else
+        echo "❌ Go installation failed"; exit 1
     fi
 }
 
@@ -115,6 +165,27 @@ install_bun() {
 
 install_bun
 
+# OpenCode's tree-sitter and node-pty native modules compile C/C++ at install time.
+# macOS has clang via Xcode CLT; Debian/Ubuntu needs build-essential explicitly.
+install_build_tools_linux() {
+    [ "$OS" = "Darwin" ] && return 0
+    if command -v g++ &> /dev/null && command -v make &> /dev/null; then return 0; fi
+    echo "📦 Installing build-essential (g++/make required by OpenCode native modules)..."
+    if command -v apt-get &> /dev/null; then
+        sudo apt-get update -y && sudo apt-get install -y build-essential
+    elif command -v dnf &> /dev/null; then
+        sudo dnf groupinstall -y "Development Tools"
+    elif command -v pacman &> /dev/null; then
+        sudo pacman -Sy --noconfirm base-devel
+    else
+        echo "⚠️  No supported package manager found; install a C/C++ toolchain manually."
+        return 1
+    fi
+    echo "✅ build-essential installed"
+}
+
+install_build_tools_linux
+
 # Install uv (required for MCP Builder dependency management)
 if ! command -v uv &> /dev/null && [ ! -f "$HOME/.local/bin/uv" ]; then
     echo "📦 Installing uv (Python package manager for MCP Builder)..."
@@ -124,20 +195,13 @@ fi
 
 install_go
 
-# Install and setup Podman (for sandbox container isolation)
-setup_podman() {
-    echo ""
-    echo "🐳 Setting up Podman (sandbox container runtime)..."
-
-    # Install Podman if not present
+setup_podman_macos() {
     if ! command -v podman &> /dev/null; then
         echo "📦 Installing Podman..."
         if ! command -v brew &> /dev/null; then
             echo "❌ Homebrew is required. Installing Homebrew first..."
             /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-            if [ -f "/opt/homebrew/bin/brew" ]; then
-                eval "$(/opt/homebrew/bin/brew shellenv)"
-            fi
+            [ -f "/opt/homebrew/bin/brew" ] && eval "$(/opt/homebrew/bin/brew shellenv)"
         fi
         brew install podman
         echo "✅ Podman installed"
@@ -145,65 +209,99 @@ setup_podman() {
         echo "✅ Podman already installed ($(podman --version))"
     fi
 
-    # Detect chip type for optimal VM provider
-    ARCH=$(uname -m)
+    local vm_provider="applehv"
     if [ "$ARCH" = "arm64" ]; then
-        VM_PROVIDER="libkrun"   # Apple Silicon — no SSH, stable
-        # Install krunkit if needed (required for libkrun)
+        vm_provider="libkrun"
         if ! command -v krunkit &> /dev/null; then
             echo "📦 Installing krunkit (required for libkrun)..."
-            brew tap slp/krunkit
-            brew install krunkit
-            echo "✅ krunkit installed"
+            brew tap slp/krunkit && brew install krunkit
         fi
         export CONTAINERS_MACHINE_PROVIDER=libkrun
-    else
-        VM_PROVIDER="applehv"   # Intel — SSH-based, needs keep-alive
     fi
 
-    # Initialize Podman machine if not exists
     if ! podman machine inspect podman-machine-default &> /dev/null; then
-        echo "📦 Initializing Podman machine (Linux VM, provider: $VM_PROVIDER)..."
+        echo "📦 Initializing Podman machine (provider: $vm_provider)..."
         podman machine init
-        echo "✅ Podman machine initialized"
     fi
 
-    # Ensure machine is running and responsive
-    echo "🔄 Ensuring Podman machine is ready..."
-    MACHINE_STATE=$(podman machine info --format "{{.Host.MachineState}}" 2>/dev/null || echo "Unknown")
-    if [ "$MACHINE_STATE" = "Running" ]; then
-        # Verify connection actually works
+    local machine_state
+    machine_state=$(podman machine info --format "{{.Host.MachineState}}" 2>/dev/null || echo "Unknown")
+    if [ "$machine_state" = "Running" ]; then
         if podman info --format "{{.Host.RemoteSocket.Exists}}" &> /dev/null; then
             echo "✅ Podman machine running and responsive"
         else
             echo "⚠️  Podman machine connection stale. Restarting..."
             podman machine stop 2>/dev/null || true
             podman machine start
-            echo "✅ Podman machine restarted"
         fi
     else
         echo "🔄 Starting Podman machine..."
         podman machine start
-        echo "✅ Podman machine started"
     fi
 
-    # Set correct SSH key for Podman machine (prevents auth failures)
     export CONTAINER_SSHKEY=~/.local/share/containers/podman/machine/machine
 
-    # Configure SSH keep-alive to prevent Podman connection drops (all Macs)
     if ! grep -q "ServerAliveInterval" ~/.ssh/config 2>/dev/null; then
         echo "🔧 Configuring SSH keep-alive for Podman stability..."
         mkdir -p ~/.ssh
-        echo "" >> ~/.ssh/config
-        echo "# Podman machine keep-alive (prevents SSH drops)" >> ~/.ssh/config
-        echo "Host *" >> ~/.ssh/config
-        echo "    ServerAliveInterval 30" >> ~/.ssh/config
-        echo "    ServerAliveCountMax 5" >> ~/.ssh/config
+        {
+            echo ""
+            echo "# Podman machine keep-alive (prevents SSH drops)"
+            echo "Host *"
+            echo "    ServerAliveInterval 30"
+            echo "    ServerAliveCountMax 5"
+        } >> ~/.ssh/config
         chmod 600 ~/.ssh/config
-        echo "✅ SSH keep-alive configured"
+    fi
+}
+
+setup_podman_linux() {
+    if ! command -v podman &> /dev/null; then
+        echo "📦 Installing Podman via apt..."
+        sudo apt-get update -y && sudo apt-get install -y podman
+    else
+        echo "✅ Podman already installed ($(podman --version))"
     fi
 
-    # Build sandbox image if not exists
+    # The backend shells out to `docker` for sandbox lifecycle. podman-docker
+    # provides a /usr/bin/docker shim that forwards to podman. On macOS the
+    # user typically has Docker Desktop or `podman` aliased, so this is
+    # Linux-specific.
+    if ! command -v docker &> /dev/null; then
+        echo "📦 Installing podman-docker (provides 'docker' shim → podman)..."
+        if command -v apt-get &> /dev/null; then
+            sudo apt-get install -y podman-docker
+        elif command -v dnf &> /dev/null; then
+            sudo dnf install -y podman-docker
+        fi
+        if command -v docker &> /dev/null; then
+            echo "✅ 'docker' shim installed (forwards to podman)"
+        else
+            echo "⚠️  Could not install podman-docker; backend sandbox features may fail"
+        fi
+    fi
+
+    # Linux podman is rootless and runs natively — no VM, no SSH, no krunkit.
+    if podman info &> /dev/null; then
+        echo "✅ Podman responsive (native, no VM needed)"
+    else
+        echo "⚠️  'podman info' failed. Sandbox containers may not work."
+        echo "    Try: systemctl --user enable --now podman.socket"
+    fi
+}
+
+# Install and setup Podman (for sandbox container isolation)
+setup_podman() {
+    echo ""
+    echo "🐳 Setting up Podman (sandbox container runtime)..."
+
+    if [ "$OS" = "Darwin" ]; then
+        setup_podman_macos
+    else
+        setup_podman_linux
+    fi
+
+    # Build sandbox image if not exists (same on both OSes)
     SANDBOX_DIR="$PROJECT_ROOT/main-app/sandbox"
     if [ -f "$SANDBOX_DIR/Dockerfile" ]; then
         if ! podman image exists retrace-sandbox:latest 2>/dev/null; then
@@ -289,14 +387,26 @@ pip install --upgrade pip setuptools wheel
 echo "Installing Python dependencies..."
 pip install -q -r requirements.txt
 
-# Install Playwright browser binaries (Chromium) if not present
+# Install Playwright browser binaries. The backend uses chrome-headless-shell;
+# the previous check only inspected the expected path string and skipped install
+# even when the binary was absent. Verify on disk before skipping.
 echo "Checking Playwright browser binaries..."
-if ! python -c "from playwright.sync_api import sync_playwright; p=sync_playwright().start(); b=p.chromium.executable_path; p.stop(); exit(0 if b else 1)" 2>/dev/null; then
-    echo "📦 Installing Playwright Chromium (first time, ~260 MB)..."
-    python -m playwright install chromium
-    echo "✅ Playwright Chromium installed"
+PLAYWRIGHT_OK=$(python - <<'PY' 2>/dev/null
+import os
+from playwright.sync_api import sync_playwright
+with sync_playwright() as p:
+    paths = [p.chromium.executable_path]
+    # chrome-headless-shell lives in a sibling cache dir; the most reliable
+    # check is whether *every* expected binary actually exists on disk.
+    print("OK" if all(os.path.isfile(x) for x in paths) else "MISSING")
+PY
+)
+if [ "$PLAYWRIGHT_OK" != "OK" ] || ! ls "$HOME/.cache/ms-playwright"/chromium_headless_shell-*/chrome-headless-shell-linux*/chrome-headless-shell 2>/dev/null | head -1 | grep -q .; then
+    echo "📦 Installing Playwright browsers (chromium + chrome-headless-shell, first time, ~280 MB)..."
+    python -m playwright install chromium chromium-headless-shell
+    echo "✅ Playwright browsers installed"
 else
-    echo "✅ Playwright Chromium already installed"
+    echo "✅ Playwright browsers already installed"
 fi
 
 # Install local ServiceNow MCP server package
