@@ -317,21 +317,17 @@ if lsof -ti :8000 &> /dev/null; then
 fi
 
 echo "Starting FastAPI backend..."
-# By default we run in **managed mode**: the backend spawns its own `opencode`
-# binary per logged-in user. Each user gets isolated MCPs with the right
-# RETRACE_USER_ID — required for multi-user testing. The binary is the
-# patched ReTrace fork built at `opencode/packages/opencode/dist/opencode`
-# (see RETRACE_OPENCODE_BIN below).
+# By default we run in **external mode**: we launch the OC source from
+# `opencode/packages/opencode` on :4096 via `bun run` (below) and point the
+# backend at it. This gets you hot-reload of OC TypeScript edits, which is
+# what daily development needs. Trade-off: every logged-in user shares the
+# one OC process, so multi-user testing is broken in this mode.
 #
-# Set RETRACE_USE_EXTERNAL_OC=1 to flip into external/dev mode: we'll launch
-# the OC source from `opencode/packages/opencode` on :4096 via `bun run` and
-# point the backend at it. This gets you hot-reload of OC TypeScript edits,
-# but every logged-in user shares the one OC process → multi-user is broken.
-# Use it only when actively editing the vendored OC fork.
-if [ "${RETRACE_USE_EXTERNAL_OC:-}" = "1" ]; then
-    export RETRACE_OPENCODE_EXTERNAL_URL="${RETRACE_OPENCODE_EXTERNAL_URL:-http://127.0.0.1:4096}"
-    echo "→ External OC mode enabled (RETRACE_USE_EXTERNAL_OC=1)"
-else
+# Set RETRACE_USE_MANAGED_OC=1 to flip into managed mode: the backend spawns
+# its own `opencode` binary per logged-in user (using the patched ReTrace
+# fork at opencode/packages/opencode/dist/...). Required for multi-user
+# testing and matches production behavior. Loses hot-reload of OC source.
+if [ "${RETRACE_USE_MANAGED_OC:-}" = "1" ]; then
     unset RETRACE_OPENCODE_EXTERNAL_URL
     # Point at the patched ReTrace fork binary for the current platform,
     # falling back to whatever `opencode` is on PATH if the fork hasn't
@@ -350,6 +346,9 @@ else
         echo "→ Managed OC mode (patched binary not built; will fall back to \`opencode\` on PATH)"
         echo "   Build with: cd opencode/packages/opencode && bun run build"
     fi
+else
+    export RETRACE_OPENCODE_EXTERNAL_URL="${RETRACE_OPENCODE_EXTERNAL_URL:-http://127.0.0.1:4096}"
+    echo "→ External OC mode (default — hot-reload of OC source, single-user only)"
 fi
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000 &
 BACKEND_PID=$!
@@ -371,10 +370,10 @@ npm run dev &
 FRONTEND_PID=$!
 echo "Frontend started (PID: $FRONTEND_PID)"
 
-# OpenCode startup — only spawn it manually in external mode. In managed
-# mode (default) the backend handles per-user OC lifecycle itself.
+# OpenCode startup — only spawn it manually in external mode (default).
+# Managed mode handles OC lifecycle in the backend, so we skip this block.
 OC_PID=""
-if [ "${RETRACE_USE_EXTERNAL_OC:-}" = "1" ]; then
+if [ "${RETRACE_USE_MANAGED_OC:-}" != "1" ]; then
     echo ""
     echo "🤖 Starting OpenCode agent runtime (external mode)..."
 
