@@ -53,3 +53,7 @@ Thumbs.db
 main-app/backend/product_files.txt
 main-app/backend/product_files_content.txt
 main-app/backend/product_files_for_desktop.txt
+
+# Per-conversation OC working-dir artifacts (browser downloads land in
+# <oc_working_dir>/<conv-uuid>/Downloads/ in external-dev mode).
+/opencode/packages/opencode/[0-9a-f]*-*/
