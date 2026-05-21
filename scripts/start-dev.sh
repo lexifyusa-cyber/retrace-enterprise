@@ -186,6 +186,35 @@ install_build_tools_linux() {
 
 install_build_tools_linux
 
+# pyautogui (via mouseinfo) imports tkinter at module load. On Debian/Ubuntu
+# Python is built without _tkinter unless python3-tk is installed, and the
+# import calls sys.exit() — which leaks past the screenops try/except guard
+# and crashes vision_click. Install the system package so the full screenops
+# path works; the in-code guard now also catches SystemExit as a safety net.
+install_python_tk_linux() {
+    [ "$OS" = "Darwin" ] && return 0
+    [ -z "$PYTHON_CMD" ] && return 0
+    if $PYTHON_CMD -c "import tkinter" &> /dev/null; then return 0; fi
+    echo "📦 Installing python3-tk (required by pyautogui/mouseinfo for screenops)..."
+    if command -v apt-get &> /dev/null; then
+        sudo apt-get update -y && sudo apt-get install -y python3-tk python3-dev
+    elif command -v dnf &> /dev/null; then
+        sudo dnf install -y python3-tkinter python3-devel
+    elif command -v pacman &> /dev/null; then
+        sudo pacman -Sy --noconfirm tk
+    else
+        echo "⚠️  No supported package manager found; install python3-tk manually if you need pyautogui screenops."
+        return 0
+    fi
+    if $PYTHON_CMD -c "import tkinter" &> /dev/null; then
+        echo "✅ python3-tk installed"
+    else
+        echo "⚠️  python3-tk install attempted but 'import tkinter' still fails. pyautogui screenops will be disabled (vision_click via Playwright still works)."
+    fi
+}
+
+install_python_tk_linux
+
 # Install uv (required for MCP Builder dependency management)
 if ! command -v uv &> /dev/null && [ ! -f "$HOME/.local/bin/uv" ]; then
     echo "📦 Installing uv (Python package manager for MCP Builder)..."
@@ -418,13 +447,20 @@ if [ ! -f ".env" ]; then
     echo "⚠️  Created .env file. Please configure your API keys!"
 fi
 
-# Kill any existing backend on port 8000
-echo "Checking for existing backend processes..."
-if lsof -ti :8000 &> /dev/null; then
-    echo "⚠️  Port 8000 is in use. Killing existing processes..."
-    lsof -ti :8000 | xargs kill -9 2>/dev/null || true
-    sleep 1
-fi
+# Kill any existing dev processes on the ports we own. Without this, a stale
+# OC on :4096 (or Vite on :5173) from a previous run survives and the newly
+# spawned process fails to bind silently in the background — the frontend
+# ends up talking to a half-dead old OC and the UI looks hung.
+echo "Checking for existing dev processes on ports 8000 / 5173 / 4096..."
+killed_any=0
+for port in 8000 5173 4096; do
+    if lsof -ti :$port &> /dev/null; then
+        echo "⚠️  Port $port is in use. Killing existing processes..."
+        lsof -ti :$port | xargs kill -9 2>/dev/null || true
+        killed_any=1
+    fi
+done
+[ "$killed_any" = "1" ] && sleep 1
 
 echo "Starting FastAPI backend..."
 # By default we run in **external mode**: we launch the OC source from
@@ -499,7 +535,42 @@ if [ "${RETRACE_USE_MANAGED_OC:-}" != "1" ]; then
         export PATH="$HOME/.bun/bin:$PATH"
         "$PROJECT_ROOT/opencode/run-for-retrace.sh" &
         OC_PID=$!
-        echo "OpenCode started (PID: $OC_PID, port: 4096)"
+        echo "OpenCode spawning (PID: $OC_PID, port: 4096) — waiting for HTTP listener..."
+
+        # Cold `bun run src/index.ts` can sit silent for 10+ s before OC binds
+        # :4096. The frontend's first /agent call during that window gets
+        # ECONNREFUSED and the UI looks hung. Poll until OC speaks HTTP AND
+        # has at least one MCP server connected — /doc proves the listener,
+        # /mcp proves the retrace-* subprocesses (browser/search/kb/screenops)
+        # have actually spawned and registered. Without the second check, the
+        # Agent page paints with every MCP-backed tool chip dim until the user
+        # hard-refreshes. Cap at ~30 s; if MCP is still warming up at the cap,
+        # warn but continue — the frontend's refetchInterval picks up the slack.
+        oc_ready=0
+        oc_mcp_ready=0
+        for i in $(seq 1 60); do
+            if ! kill -0 "$OC_PID" 2>/dev/null; then
+                echo "❌ OpenCode process exited during startup (PID $OC_PID gone). Check output above."
+                break
+            fi
+            if [ "$oc_ready" = "0" ] && curl -sS -o /dev/null --max-time 1 http://127.0.0.1:4096/doc 2>/dev/null; then
+                oc_ready=1
+            fi
+            if [ "$oc_ready" = "1" ]; then
+                if curl -sS --max-time 1 http://127.0.0.1:4096/mcp 2>/dev/null | grep -q '"status":"connected"'; then
+                    oc_mcp_ready=1
+                    break
+                fi
+            fi
+            sleep 0.5
+        done
+        if [ "$oc_mcp_ready" = "1" ]; then
+            echo "✅ OpenCode HTTP listener + MCP servers ready on :4096"
+        elif [ "$oc_ready" = "1" ]; then
+            echo "⚠️  OpenCode HTTP up but MCP servers not yet connected within 30s. Tool chips will light up as they finish connecting."
+        else
+            echo "⚠️  OpenCode did not respond on :4096 within 30s. Continuing anyway — the UI may show 'agent unavailable' until it catches up."
+        fi
     else
         echo "⚠️  No OpenCode user config found yet. Hit /agent once in the UI to"
         echo "   generate one, then run: $PROJECT_ROOT/opencode/run-for-retrace.sh"

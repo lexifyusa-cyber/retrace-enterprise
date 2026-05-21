@@ -268,9 +268,25 @@ export default function Agent() {
     queryFn: () => teamApi.list(),
   })
 
+  // MCP-backed tools whose `available` flag depends on OC's /mcp report. On
+  // cold start OC's MCP subprocesses can take several seconds to connect
+  // after the HTTP listener is up — during that window /agent/tools returns
+  // available=false for these and the chips paint dim. Poll every 2s until
+  // every one of them reports available, then stop. Self-terminating, so
+  // there's no background polling once everything is green.
+  const MCP_BACKED_TOOLS = new Set([
+    'web_search', 'web_research', 'web_advanced',
+    'retrace-kb', 'retrace-browser', 'retrace-screenops',
+  ])
   const { data: tools = [] } = useQuery<AgentTool[]>({
     queryKey: ['agent-tools'],
     queryFn: () => agentApi.listTools(),
+    refetchInterval: (query) => {
+      const data = query.state.data as AgentTool[] | undefined
+      if (!data) return 2000
+      const anyUnavailable = data.some(t => MCP_BACKED_TOOLS.has(t.name) && !t.available)
+      return anyUnavailable ? 2000 : false
+    },
   })
 
   // Tool toggle — LIVE update, no agent restart.

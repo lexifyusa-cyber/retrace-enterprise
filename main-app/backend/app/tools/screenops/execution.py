@@ -12,9 +12,9 @@ import time
 try:
     import pyautogui
     from PIL import Image
-except (ImportError, KeyError, Exception):
-    # KeyError: 'DISPLAY' on headless Linux (no X11 display)
-    # Other exceptions from pyautogui init on headless systems
+except (Exception, SystemExit):
+    # KeyError: 'DISPLAY' on headless Linux (no X11 display).
+    # SystemExit: mouseinfo calls sys.exit() when tkinter is missing.
     pyautogui = None  # type: ignore[assignment]
     Image = None  # type: ignore[assignment]
 
