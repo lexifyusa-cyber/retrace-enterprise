@@ -12,6 +12,7 @@ import type { Agent } from "@/agent/agent"
 import type { MessageV2 } from "./message-v2"
 import { Plugin } from "@/plugin"
 import { SystemPrompt } from "./system"
+import { createRetraceCaptureMiddleware, buildRetraceOnFinish, type RetraceCaptureRef } from "./retrace-capture"
 import { Permission } from "@/permission"
 import { PermissionID } from "@/permission/schema"
 import { Bus } from "@/bus"
@@ -322,12 +323,24 @@ const live: Layer.Layer<
         ? (yield* InstanceState.context).project.id
         : undefined
 
+      // Faithful LLM capture for the ReTrace LLM Logs page. The middleware
+      // (appended last below) snapshots post-transform params onto captureRef;
+      // onFinish reads it back alongside the response and POSTs to the backend.
+      const captureRef: RetraceCaptureRef = {}
+      const captureMeta = {
+        sessionID: input.sessionID,
+        modelID: input.model.id,
+        providerID: input.model.providerID,
+        agentName: input.agent.name,
+      }
+
       return streamText({
         onError(error) {
           l.error("stream error", {
             error,
           })
         },
+        onFinish: buildRetraceOnFinish(captureMeta, captureRef),
         async experimental_repairToolCall(failed) {
           const lower = failed.toolCall.toolName.toLowerCase()
           if (lower !== failed.toolCall.toolName && sortedTools[lower]) {
@@ -390,6 +403,8 @@ const live: Layer.Layer<
                 return args.params
               },
             },
+            // Appended last: observes params AFTER ProviderTransform.message.
+            createRetraceCaptureMiddleware(captureRef),
           ],
         }),
         experimental_telemetry: {

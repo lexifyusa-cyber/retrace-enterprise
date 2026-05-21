@@ -1059,27 +1059,32 @@ async def opencode_send_message(
                                 # so the row contains the same level of detail
                                 # the legacy LangGraph CodeAct logs did.
                                 logged_msg_ids.add(info_id)
-                                iter_counter += 1
-                                if tool_list_cache is None:
-                                    tool_list_cache = await _fetch_oc_tool_list(
-                                        port,
-                                        provider=info.get("providerID") or "",
-                                        model=info.get("modelID") or "",
-                                    )
-                                if mcp_servers_cache is None:
-                                    mcp_servers_cache = await _fetch_oc_mcp_servers(port)
-                                try:
-                                    await _persist_oc_llm_log(
-                                        user_id=user_id,
-                                        oc_session_id=session_id,
-                                        port=port,
-                                        info=info,
-                                        iteration=iter_counter,
-                                        tool_list_cache=tool_list_cache or [],
-                                        mcp_servers_cache=mcp_servers_cache or {},
-                                    )
-                                except Exception as _log_exc:
-                                    logger.warning("[OC] llm_log inline failed", error=str(_log_exc))
+                                # Legacy reconstruction. The AI-SDK middleware
+                                # capture (POST /api/v1/internal/llm/capture) is
+                                # the canonical writer now; opt back into the
+                                # reconstruction with RETRACE_LLM_LOG_FALLBACK=1.
+                                if os.environ.get("RETRACE_LLM_LOG_FALLBACK") == "1":
+                                    iter_counter += 1
+                                    if tool_list_cache is None:
+                                        tool_list_cache = await _fetch_oc_tool_list(
+                                            port,
+                                            provider=info.get("providerID") or "",
+                                            model=info.get("modelID") or "",
+                                        )
+                                    if mcp_servers_cache is None:
+                                        mcp_servers_cache = await _fetch_oc_mcp_servers(port)
+                                    try:
+                                        await _persist_oc_llm_log(
+                                            user_id=user_id,
+                                            oc_session_id=session_id,
+                                            port=port,
+                                            info=info,
+                                            iteration=iter_counter,
+                                            tool_list_cache=tool_list_cache or [],
+                                            mcp_servers_cache=mcp_servers_cache or {},
+                                        )
+                                    except Exception as _log_exc:
+                                        logger.warning("[OC] llm_log inline failed", error=str(_log_exc))
                                 yield f"data: {json.dumps({'type': 'message.completed', 'message': {'id': info_id, 'finish': info.get('finish'), 'cost': info.get('cost'), 'tokens': info.get('tokens')}})}\n\n"
                                 if info.get("finish") == "stop":
                                     logger.info("[OC] stream complete", session_id=session_id, total_events=event_count, relayed=relayed_count)

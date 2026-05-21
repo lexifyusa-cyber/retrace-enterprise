@@ -21,6 +21,7 @@ Protocol (JSON messages):
 """
 
 import asyncio
+import json
 import os
 
 import structlog
@@ -441,3 +442,270 @@ async def internal_browser_action(
             logger.warning("auto_screenshot_attach_failed", action=action, error=str(exc))
 
     return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Faithful LLM capture bridge
+#
+# OpenCode's AI-SDK middleware (`retrace-capture.ts`) POSTs here once per LLM
+# round-trip with the EXACT post-transform request params (system, messages,
+# tools with full MCP JSON schemas, sampling params) and the accumulated
+# response. We render that into the `{role, content}` shape the LLM Logs page
+# already knows how to draw and write one `llm_logs` row. This is the
+# canonical writer; `agent.py`'s reconstruction only runs under
+# `RETRACE_LLM_LOG_FALLBACK=1`. Same `X-Internal-Token` auth as above.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class _LLMCaptureBody(BaseModel):
+    """Body posted by OpenCode's faithful-LLM-capture middleware."""
+
+    session_id: str
+    log_id: str
+    model_provider: Optional[str] = None
+    model_name: Optional[str] = None
+    agent_name: Optional[str] = None
+    user_id: Optional[str] = None
+    started_at_ms: int = 0
+    completed_at_ms: int = 0
+    request: dict = {}
+    response: Optional[dict] = None
+    error: Optional[str] = None
+
+
+def _safe_int(value) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _stringify(value) -> str:
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, indent=2, ensure_ascii=False)
+    except Exception:
+        return str(value)
+
+
+def _render_capture_request(request: dict) -> list[dict]:
+    """Turn a post-transform AI SDK `LanguageModelV3CallOptions` dict into the
+    `{role, content}` message list the LLM Logs viewer renders.
+
+    The first synthesized `system` block carries the sampling params and the
+    full tool definitions (with MCP JSON schemas) so they show inline.
+    """
+    out: list[dict] = []
+
+    head: list[str] = ["## REQUEST PARAMS"]
+    for key in ("temperature", "topP", "topK", "maxOutputTokens", "toolChoice"):
+        if request.get(key) is not None:
+            head.append(f"- {key}: {_stringify(request[key])}")
+    provider_options = request.get("providerOptions")
+    if provider_options:
+        head.append("\nproviderOptions:\n```json\n" + _stringify(provider_options) + "\n```")
+
+    tools = request.get("tools")
+    if isinstance(tools, list) and tools:
+        head.append(f"\n## TOOLS ({len(tools)})\n")
+        for tool in tools:
+            if not isinstance(tool, dict):
+                continue
+            name = tool.get("name") or tool.get("type") or "?"
+            desc = (tool.get("description") or "").strip()
+            head.append(f"### {name}\n{desc}")
+            schema = tool.get("inputSchema")
+            if schema is not None:
+                head.append("```json\n" + _stringify(schema) + "\n```")
+    out.append({"role": "system", "content": "\n".join(head)})
+
+    for msg in request.get("prompt") or []:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role") or "user"
+        content = msg.get("content")
+        if isinstance(content, str):
+            out.append({"role": role, "content": content})
+            continue
+        if not isinstance(content, list):
+            out.append({"role": role, "content": _stringify(content)})
+            continue
+        blocks: list = []
+        for part in content:
+            if not isinstance(part, dict):
+                blocks.append({"type": "text", "text": str(part)})
+                continue
+            part_type = part.get("type")
+            if part_type == "text":
+                blocks.append({"type": "text", "text": part.get("text", "")})
+            elif part_type == "reasoning":
+                blocks.append({"type": "text", "text": "[reasoning] " + (part.get("text") or "")})
+            elif part_type == "tool-call":
+                blocks.append({
+                    "type": "tool_use",
+                    "id": part.get("toolCallId", ""),
+                    "name": part.get("toolName", ""),
+                    "input": part.get("input"),
+                })
+            elif part_type == "tool-result":
+                output = part.get("output")
+                value = output.get("value") if isinstance(output, dict) else output
+                blocks.append({
+                    "type": "tool_result",
+                    "tool_use_id": part.get("toolCallId", ""),
+                    "content": value if isinstance(value, str) else _stringify(value),
+                })
+            elif part_type == "file":
+                media = part.get("mediaType") or ""
+                data = part.get("data")
+                if isinstance(data, str) and media.startswith("image/"):
+                    url = data if data.startswith(("data:", "http")) else f"data:{media};base64,{data}"
+                    blocks.append({"type": "image_url", "image_url": {"url": url}})
+                else:
+                    blocks.append({"type": "text", "text": f"[file: {media or 'unknown type'}]"})
+            else:
+                blocks.append(part)
+        out.append({"role": role, "content": blocks})
+
+    return out
+
+
+def _render_capture_response(response: Optional[dict], error: Optional[str]) -> str:
+    """Render the AI SDK `onFinish` event into the ━━━-delimited plaintext
+    blob the LLM Logs viewer shows for `response_content`.
+    """
+    if not response:
+        return error or ""
+    sections: list[str] = []
+    reasoning = response.get("reasoningText")
+    if reasoning:
+        sections.append(f"━━━ THINKING ━━━\n{reasoning}")
+    text = response.get("text")
+    if text:
+        sections.append(f"━━━ TEXT ━━━\n{text}")
+    for call in response.get("toolCalls") or []:
+        if not isinstance(call, dict):
+            continue
+        name = call.get("toolName") or "?"
+        call_id = call.get("toolCallId") or "?"
+        sections.append(
+            f"━━━ TOOL CALL: {name} (call_id={call_id}) ━━━\n"
+            f"input:\n{_stringify(call.get('input'))}"
+        )
+    footer: list[str] = []
+    if response.get("finishReason"):
+        footer.append(f"finish_reason: {response['finishReason']}")
+    if response.get("usage"):
+        footer.append(f"usage: {_stringify(response['usage'])}")
+    if response.get("warnings"):
+        footer.append(f"warnings: {_stringify(response['warnings'])}")
+    if footer:
+        sections.append("━━━ META ━━━\n" + "\n".join(footer))
+    if error:
+        sections.append(f"━━━ ERROR ━━━\n{error}")
+    return "\n\n".join(sections).strip()
+
+
+@router.post("/api/v1/internal/llm/capture", include_in_schema=False)
+async def internal_llm_capture(
+    body: _LLMCaptureBody,
+    x_internal_token: Optional[str] = Header(None, alias="X-Internal-Token"),
+):
+    """Persist one faithful LLM round-trip captured by OpenCode's AI-SDK
+    middleware — the canonical writer for the `llm_logs` table.
+    """
+    _check_internal_token(x_internal_token)
+
+    from app.db.database import async_session_maker
+    from app.models.llm_log import LLMLog
+    from app.services.session_bridge import find_conversation_by_opencode_session
+    from sqlalchemy import func, select
+
+    convo = None
+    try:
+        convo = await find_conversation_by_opencode_session(body.session_id)
+    except Exception as exc:
+        logger.warning("llm_capture_conv_lookup_failed", session_id=body.session_id, error=str(exc))
+    conversation_id = convo.conversation_id if convo else None
+    user_id = (convo.user_id if convo else None) or body.user_id
+
+    try:
+        request_messages = _render_capture_request(body.request or {})
+    except Exception as exc:
+        logger.warning("llm_capture_render_request_failed", error=str(exc))
+        request_messages = [{"role": "system", "content": f"[capture render failed: {exc}]"}]
+    request_json = json.dumps(request_messages, ensure_ascii=False)
+    if len(request_json) > 8_000_000:
+        request_json = json.dumps(
+            [{"role": "system", "content": f"[capture too large: {len(request_json)} bytes — not stored]"}]
+        )
+
+    try:
+        response_content = _render_capture_response(body.response, body.error)
+    except Exception as exc:
+        logger.warning("llm_capture_render_response_failed", error=str(exc))
+        response_content = body.error or ""
+
+    usage = (body.response or {}).get("usage") or {}
+    input_tokens = _safe_int(usage.get("inputTokens"))
+    output_tokens = _safe_int(usage.get("outputTokens"))
+    total_tokens = _safe_int(usage.get("totalTokens")) or (input_tokens + output_tokens)
+    reasoning_tokens = _safe_int(usage.get("reasoningTokens"))
+    cache_read = _safe_int(usage.get("cachedInputTokens"))
+    cache_creation = 0
+    provider_meta = (body.response or {}).get("providerMetadata")
+    if isinstance(provider_meta, dict):
+        anthropic_meta = provider_meta.get("anthropic")
+        if isinstance(anthropic_meta, dict):
+            cache_creation = _safe_int(anthropic_meta.get("cacheCreationInputTokens"))
+
+    latency_ms = max(0, _safe_int(body.completed_at_ms) - _safe_int(body.started_at_ms))
+
+    async with async_session_maker() as db:
+        existing = await db.get(LLMLog, body.log_id)
+        if existing is not None:
+            # Idempotent retry — keep the original row untouched.
+            return {
+                "log_id": existing.log_id,
+                "iteration": existing.iteration,
+                "conversation_id": existing.conversation_id,
+                "idempotent": True,
+            }
+
+        if conversation_id is not None:
+            max_iter = (await db.execute(
+                select(func.max(LLMLog.iteration)).where(LLMLog.conversation_id == conversation_id)
+            )).scalar()
+            iteration = (max_iter + 1) if max_iter is not None else 0
+        else:
+            iteration = 0
+
+        db.add(LLMLog(
+            log_id=body.log_id,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            iteration=iteration,
+            request_messages_json=request_json,
+            response_content=(response_content or "")[:200000],
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
+            cache_read_tokens=cache_read,
+            cache_creation_tokens=cache_creation,
+            reasoning_tokens=reasoning_tokens,
+            model_provider=body.model_provider,
+            model_name=body.model_name,
+            latency_ms=latency_ms,
+            error=body.error,
+        ))
+        await db.commit()
+
+    logger.info(
+        "llm_capture_persisted",
+        log_id=body.log_id,
+        conversation_id=conversation_id,
+        iteration=iteration,
+        model=body.model_name,
+    )
+    return {"log_id": body.log_id, "iteration": iteration, "conversation_id": conversation_id}
