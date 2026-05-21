@@ -274,9 +274,13 @@ class BrowserSession:
         return result
 
     async def navigate(self, url: str) -> dict:
-        """Navigate the page to a URL. Waits for `domcontentloaded` plus a
-        short 500 ms paint settle so the screenshot pushed after this call
-        captures the new page, not a half-rendered intermediate.
+        """Navigate the page to a URL. Returns as soon as the navigation is
+        committed (`wait_until="commit"`) so multi-hop redirect chains —
+        e.g. google.com → www.google.com → country mirror, plus the JS
+        navigation Google fires soon after — don't abort the goto with
+        `net::ERR_ABORTED` when a second hop starts before `domcontentloaded`
+        fires for the first. After commit, the settle wait gives the page
+        time to render before the screenshot is pushed.
         """
         self.is_navigating = True
         self.last_activity = time.time()
@@ -285,7 +289,7 @@ class BrowserSession:
                 return await self._sandbox_action({"action": "navigate", "url": url})
             if not self.page:
                 return {"error": "No browser page"}
-            await self.page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            await self.page.goto(url, wait_until="commit", timeout=30000)
             # Paint settle. Matches the pre-OC auto_browser sleep before the
             # screenshot push so the panel sees the new page, not a frame
             # from while it was still rendering.
