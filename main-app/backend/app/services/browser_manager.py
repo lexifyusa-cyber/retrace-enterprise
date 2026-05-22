@@ -552,6 +552,20 @@ class BrowserSession:
         if not self.page:
             return {"error": "No browser page"}
         try:
+            # Compute the element's center BEFORE the click so the caller
+            # (internal_browser_action) can broadcast a click_indicator to the
+            # workspace WS clients. bounding_box() may return None for
+            # display:none or detached elements — broadcast skips in that case.
+            clicked_at: Optional[dict] = None
+            try:
+                bbox = await self.page.locator(selector).first.bounding_box(timeout=5000)
+                if bbox:
+                    clicked_at = {
+                        "x": int(bbox["x"] + bbox["width"] / 2),
+                        "y": int(bbox["y"] + bbox["height"] / 2),
+                    }
+            except Exception:
+                pass
             await self.page.click(selector, timeout=10000)
             # Wait for any navigation the click triggered to finish. No-op
             # when the click didn't trigger one. Short timeout because most
@@ -564,6 +578,8 @@ class BrowserSession:
             self.current_url = self.page.url
             self.current_title = await self.page.title()
             result = {"url": self.current_url, "title": self.current_title, "selector": selector}
+            if clicked_at:
+                result["clicked"] = clicked_at
             downloads = await self._drain_downloads()
             if downloads:
                 result["downloads"] = downloads
