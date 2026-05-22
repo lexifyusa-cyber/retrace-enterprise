@@ -625,6 +625,10 @@ class BrowserSession:
 
         try:
             from app.tools.screenops.tool import _make_coordinate_finder_invoker
+            from app.tools.screenops.llm_logging import (
+                infer_provider_from_url,
+                make_coord_log_callback,
+            )
         except Exception as exc:
             return {"error": f"screenops import failed: {exc}"}
 
@@ -634,7 +638,25 @@ class BrowserSession:
                 return {"error": "Screenshot capture failed for vision_click"}
             vp = self.page.viewport_size or {"width": SCREENSHOT_WIDTH, "height": SCREENSHOT_HEIGHT}
             vp_w, vp_h = int(vp["width"]), int(vp["height"])
-            invoker = _make_coordinate_finder_invoker(api_url, model, api_key)
+            # Wire screenops VLM calls into the `llm_logs` table so the LLM
+            # Logs page sees every vision_click coord-resolution alongside
+            # the main agent LLM calls. The invoker runs on a worker thread
+            # (see `asyncio.to_thread` below), so we capture the current
+            # event loop for the callback to schedule its DB write back on.
+            try:
+                _loop = asyncio.get_running_loop()
+            except RuntimeError:
+                _loop = None
+            log_cb = make_coord_log_callback(
+                user_id=self.user_id,
+                conversation_id=self.conversation_id,
+                provider=infer_provider_from_url(api_url),
+                default_model=model,
+                loop=_loop,
+            )
+            invoker = _make_coordinate_finder_invoker(
+                api_url, model, api_key, log_callback=log_cb,
+            )
             # `invoker` is sync (uses httpx blocking) so push it to a worker
             # thread to avoid stalling the event loop while the VLM thinks.
             coords, _usage = await asyncio.to_thread(
