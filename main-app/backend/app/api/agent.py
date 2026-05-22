@@ -744,6 +744,32 @@ async def opencode_create_session(
     )
 
     async with httpx.AsyncClient(timeout=30) as client:
+        # External-mode bootstrap: on the very first /agent click after a clean
+        # checkout, start_for_user just wrote opencode.json but the OC daemon
+        # (launched separately by scripts/start-dev.sh → run-for-retrace.sh) is
+        # still in its 5–10 s cold `bun run` warmup before it binds :4096.
+        # Wait here until /doc answers so the user gets "first click works"
+        # instead of "first click 502s, second click works." Capped at 45 s.
+        # No-op when OC is already up (typical case) — the first probe succeeds.
+        external_mode = bool(os.environ.get("RETRACE_OPENCODE_EXTERNAL_URL", "").strip())
+        if external_mode:
+            ready = False
+            for _ in range(90):  # 90 × 0.5s = 45s
+                try:
+                    probe = await client.get(f"http://127.0.0.1:{port}/doc", timeout=1.0)
+                    if probe.status_code < 500:
+                        ready = True
+                        break
+                except (httpx.ConnectError, httpx.ReadError, httpx.TimeoutException):
+                    pass
+                await asyncio.sleep(0.5)
+            if not ready:
+                logger.error("[OC] create_session: OC not reachable on :%d after 45s", port)
+                raise HTTPException(
+                    status_code=503,
+                    detail="OpenCode is still starting. Wait a few seconds and try again.",
+                )
+
         create_payload = {}
         if body.agent:
             create_payload["agent"] = body.agent

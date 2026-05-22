@@ -518,6 +518,13 @@ echo "Frontend started (PID: $FRONTEND_PID)"
 
 # OpenCode startup — only spawn it manually in external mode (default).
 # Managed mode handles OC lifecycle in the backend, so we skip this block.
+#
+# External mode used to require a pre-existing ~/.config/opencode/projects/
+# entry and would otherwise bail with a "re-run after sign-in" message.
+# run-for-retrace.sh now waits for the backend to write that config (first
+# sign-in + click on Agent), so we always launch it in the background here.
+# The backend's /opencode/session handler retries the upstream connect until
+# OC binds :4096, so the very first Agent click works on a single script run.
 OC_PID=""
 if [ "${RETRACE_USE_MANAGED_OC:-}" != "1" ]; then
     echo ""
@@ -531,76 +538,18 @@ if [ "${RETRACE_USE_MANAGED_OC:-}" != "1" ]; then
         bun install --cwd "$OC_PKG_DIR"
     fi
 
-    # Determine which user's OC config to launch. Precedence:
-    #   1. $RETRACE_OC_USER_ID         — explicit override.
-    #   2. Single user dir             — auto-pick.
-    #   3. Multiple dirs               — pick the most-recently-modified
-    #                                    (the user who last hit /agent).
-    # Without this, multi-account dev boxes hit run-for-retrace.sh's
-    # "Usage: ... <user-id>" exit because it refuses to guess.
-    OC_PROJECTS_DIR="$HOME/.config/opencode/projects"
-    OC_USER_ID="${RETRACE_OC_USER_ID:-}"
-    OC_USER_COUNT=0
-    if [ -d "$OC_PROJECTS_DIR" ]; then
-        OC_USER_COUNT=$(find "$OC_PROJECTS_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
-    fi
-    if [ -z "$OC_USER_ID" ] && [ "$OC_USER_COUNT" -gt 0 ]; then
-        OC_USER_ID=$(ls -1td "$OC_PROJECTS_DIR"/*/ 2>/dev/null | head -1 | xargs -n1 basename)
-    fi
-
-    if [ -n "$OC_USER_ID" ]; then
-        export PATH="$HOME/.bun/bin:$PATH"
-        if [ "$OC_USER_COUNT" -gt 1 ] && [ -z "${RETRACE_OC_USER_ID:-}" ]; then
-            echo "ℹ️  Multiple OpenCode user configs found; using most-recent: $OC_USER_ID"
-            echo "    Override with: RETRACE_OC_USER_ID=<user-id> scripts/start-dev.sh"
-        fi
-        "$PROJECT_ROOT/opencode/run-for-retrace.sh" "$OC_USER_ID" &
-        OC_PID=$!
-        echo "OpenCode spawning (PID: $OC_PID, user: $OC_USER_ID, port: 4096) — waiting for HTTP listener..."
-
-        # Cold `bun run src/index.ts` can sit silent for 10+ s before OC binds
-        # :4096. The frontend's first /agent call during that window gets
-        # ECONNREFUSED and the UI looks hung. Poll until OC speaks HTTP AND
-        # has at least one MCP server connected — /doc proves the listener,
-        # /mcp proves the retrace-* subprocesses (browser/search/kb/screenops)
-        # have actually spawned and registered. Without the second check, the
-        # Agent page paints with every MCP-backed tool chip dim until the user
-        # hard-refreshes. Cap at ~30 s; if MCP is still warming up at the cap,
-        # warn but continue — the frontend's refetchInterval picks up the slack.
-        oc_ready=0
-        oc_mcp_ready=0
-        for i in $(seq 1 60); do
-            if ! kill -0 "$OC_PID" 2>/dev/null; then
-                echo "❌ OpenCode process exited during startup (PID $OC_PID gone). Check output above."
-                break
-            fi
-            if [ "$oc_ready" = "0" ] && curl -sS -o /dev/null --max-time 1 http://127.0.0.1:4096/doc 2>/dev/null; then
-                oc_ready=1
-            fi
-            if [ "$oc_ready" = "1" ]; then
-                if curl -sS --max-time 1 http://127.0.0.1:4096/mcp 2>/dev/null | grep -q '"status":"connected"'; then
-                    oc_mcp_ready=1
-                    break
-                fi
-            fi
-            sleep 0.5
-        done
-        if [ "$oc_mcp_ready" = "1" ]; then
-            echo "✅ OpenCode HTTP listener + MCP servers ready on :4096"
-        elif [ "$oc_ready" = "1" ]; then
-            echo "⚠️  OpenCode HTTP up but MCP servers not yet connected within 30s. Tool chips will light up as they finish connecting."
-        else
-            echo "⚠️  OpenCode did not respond on :4096 within 30s. Continuing anyway — the UI may show 'agent unavailable' until it catches up."
-        fi
+    export PATH="$HOME/.bun/bin:$PATH"
+    # RETRACE_OC_USER_ID still wins if set; otherwise run-for-retrace.sh picks
+    # an existing config (most-recent when several exist) or waits for one to
+    # appear. No pre-flight detection in this script — the launcher owns it.
+    if [ -n "${RETRACE_OC_USER_ID:-}" ]; then
+        "$PROJECT_ROOT/opencode/run-for-retrace.sh" "$RETRACE_OC_USER_ID" &
     else
-        echo "ℹ️  No OpenCode user config exists yet (first-time setup)."
-        echo "    1. Backend + frontend are up — open http://localhost:5173 and sign in."
-        echo "    2. Click 'Agent' in the sidebar. That generates"
-        echo "       ~/.config/opencode/projects/<your-user-id>/opencode.json."
-        echo "    3. Re-run scripts/start-dev.sh and OpenCode will come online."
-        echo "    Alternatively, set RETRACE_USE_MANAGED_OC=1 to have the backend"
-        echo "    spawn OC per-user on demand (no script re-run needed)."
+        "$PROJECT_ROOT/opencode/run-for-retrace.sh" &
     fi
+    OC_PID=$!
+    echo "OpenCode launcher running (PID: $OC_PID, port: 4096)."
+    echo "   On first run: sign in at http://localhost:5173 and click 'Agent' — OC starts automatically."
 fi
 
 # Cleanup function

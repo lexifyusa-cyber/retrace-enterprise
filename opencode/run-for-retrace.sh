@@ -21,37 +21,49 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECTS_DIR="$HOME/.config/opencode/projects"
 PORT="${RETRACE_OC_PORT:-4096}"
 
-# Pick the config dir
+# Pick the config dir. When no user-id is passed and no config exists yet,
+# wait for the backend to write one (first sign-in + /agent click) instead of
+# bailing. start-dev.sh launches us in the background before any user has
+# signed in, so the wait is what lets the whole dev environment come up on a
+# single script run.
 USER_ID="${1:-}"
+
+config_dir_for() { echo "$PROJECTS_DIR/$1"; }
+
+pick_user_id() {
+  [ -d "$PROJECTS_DIR" ] || return 1
+  local users=("$PROJECTS_DIR"/*/)
+  [ "${users[0]}" = "$PROJECTS_DIR/*/" ] && return 1
+  if [ ${#users[@]} -eq 1 ]; then
+    basename "${users[0]}"
+    return 0
+  fi
+  # Multiple configs: pick most-recently-modified (matches start-dev.sh's prior
+  # behavior — the user who last hit /agent).
+  basename "$(ls -1td "$PROJECTS_DIR"/*/ 2>/dev/null | head -1)"
+}
+
 if [ -z "$USER_ID" ]; then
-  if [ -d "$PROJECTS_DIR" ]; then
-    USERS=("$PROJECTS_DIR"/*/)
-    if [ ${#USERS[@]} -eq 1 ] && [ "${USERS[0]}" != "$PROJECTS_DIR/*/" ]; then
-      USER_ID="$(basename "${USERS[0]}")"
-      echo "→ Auto-detected user_id: $USER_ID"
-    elif [ ${#USERS[@]} -gt 1 ]; then
-      echo "Multiple user configs found in $PROJECTS_DIR/:"
-      for u in "${USERS[@]}"; do
-        echo "    $(basename "$u")"
-      done
-      echo "Usage: $0 <user-id>"
-      exit 1
-    else
-      echo "No user configs found in $PROJECTS_DIR/."
-      echo "Hit /agent in retrace first to generate one, then re-run."
-      exit 1
-    fi
+  USER_ID="$(pick_user_id || true)"
+  if [ -z "$USER_ID" ]; then
+    echo "⏳ Waiting for OpenCode user config at $PROJECTS_DIR/<user-id>/"
+    echo "   (sign in at http://localhost:5173 and click 'Agent' to create one)"
+    while [ -z "$USER_ID" ]; do
+      sleep 1
+      USER_ID="$(pick_user_id || true)"
+    done
+    echo "→ Detected user_id: $USER_ID"
   else
-    echo "No $PROJECTS_DIR directory found. Has retrace ever started OC for this user?"
-    exit 1
+    echo "→ Auto-detected user_id: $USER_ID"
   fi
 fi
 
-CONFIG_DIR="$PROJECTS_DIR/$USER_ID"
-if [ ! -f "$CONFIG_DIR/opencode.json" ]; then
-  echo "No opencode.json at $CONFIG_DIR. Hit /agent in retrace first to generate it."
-  exit 1
-fi
+CONFIG_DIR="$(config_dir_for "$USER_ID")"
+# The user-id directory exists but opencode.json may not be written yet
+# (generate_config writes the dir + file together, but be defensive).
+while [ ! -f "$CONFIG_DIR/opencode.json" ]; do
+  sleep 1
+done
 
 echo "→ Starting OC from source"
 echo "    config dir: $CONFIG_DIR"
