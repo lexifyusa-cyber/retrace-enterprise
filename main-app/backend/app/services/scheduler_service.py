@@ -246,7 +246,11 @@ class AutomationScheduler:
                     step = {**step, "content": "\n\n".join(step_outputs)}
 
                 try:
-                    output = await self._run_step(tool, command, team_id, step=step, sandbox_session=sandbox_session)
+                    output = await self._run_step(
+                        tool, command, team_id, step=step,
+                        sandbox_session=sandbox_session,
+                        user_id=sandbox_user_id, run_id=run_id,
+                    )
                     log_parts.append(f"Output: {output[:2000]}")
                     step_outputs.append(output)
                     # Treat non-zero exit code (e.g. from terminal) as step failure
@@ -311,7 +315,16 @@ class AutomationScheduler:
             except Exception:
                 pass
 
-    async def _run_step(self, tool: str, command: str, team_id: str, step: dict | None = None, sandbox_session=None) -> str:
+    async def _run_step(
+        self,
+        tool: str,
+        command: str,
+        team_id: str,
+        step: dict | None = None,
+        sandbox_session=None,
+        user_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+    ) -> str:
         """Execute a single automation step using the appropriate tool.
 
         For tools that take a single argument (e.g. terminal, read_file), `command` is passed as-is.
@@ -320,10 +333,33 @@ class AutomationScheduler:
 
         When a sandbox_session is available, read_file, write_file, and terminal
         are routed through the sandbox container instead of the host filesystem.
+
+        Browser / screenops tools (`navigate`, `click`, `vision_click`, etc.)
+        dispatch into `app.tools.scheduler_browser`, which drives the same
+        `BrowserSession` the interactive agent uses — the scheduler gets
+        Playwright-backed browser automation deterministically, no LLM.
+        Requires `user_id` + `run_id` to scope the BrowserSession.
         """
         from app.tools import get_tool_by_name
+        from app.tools.scheduler_browser import DISPATCHERS as _BROWSER_DISPATCHERS, make_conv_id
 
         step = step or {}
+
+        # Special handling for browser / screenops tools — they need a
+        # BrowserSession scoped to the automation run, not the standard
+        # one-arg tool function signature.
+        if tool in _BROWSER_DISPATCHERS:
+            if not user_id:
+                return f"Error: browser tool '{tool}' requires a user_id (no triggering user or team owner)"
+            if not run_id:
+                return f"Error: browser tool '{tool}' requires a run_id"
+            conv_id = make_conv_id(run_id)
+            dispatcher = _BROWSER_DISPATCHERS[tool]
+            try:
+                return await dispatcher(command, step, user_id, conv_id)
+            except Exception as exc:
+                logger.warning("scheduler_browser_step_failed", tool=tool, error=str(exc))
+                return f"Error: browser tool '{tool}' raised {exc}"
 
         # Special handling for knowledge base search — needs team_id + LLM settings
         if tool in ("search_knowledge_base", "knowledge_base"):
