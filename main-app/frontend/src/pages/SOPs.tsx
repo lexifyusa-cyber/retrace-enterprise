@@ -133,6 +133,52 @@ export default function SOPs() {
     }
   }, [])
 
+  // Silent refresh — same fetch as loadRunLogs, but no spinner toggle and no
+  // error toast. Used by the polling effect below so we don't flash a loader
+  // every 2 seconds while a run is in flight.
+  const refreshRunLogsSilent = useCallback(async (sopId: string) => {
+    try {
+      const logs = await agentApi.listRuns(sopId)
+      setRunLogs(prev => ({ ...prev, [sopId]: logs }))
+    } catch {
+      /* polling — best-effort, ignore errors */
+    }
+  }, [])
+
+  // Poll run history while:
+  //   1. The user is actively looking at a SOP's runs (detail panel's "logs"
+  //      tab open, OR the history dropdown is open), AND
+  //   2. At least one run for that SOP is in a non-terminal state.
+  //
+  // Without this, the UI showed "running" + spinner until the user manually
+  // refreshed — because the original code only fetched once at +2 s after
+  // a manual run, and runs that take longer than 2 s left stale state in
+  // the snapshot. Self-terminating: once every run reaches a terminal
+  // status the interval clears itself.
+  useEffect(() => {
+    const activeSopIds = new Set<string>()
+    if (expandedSopId && expandedSection === 'logs') activeSopIds.add(expandedSopId)
+    if (showLogsDropdown) activeSopIds.add(showLogsDropdown)
+    if (activeSopIds.size === 0) return
+
+    const sopsToPoll = Array.from(activeSopIds).filter(sopId => {
+      const runs = runLogs[sopId] || []
+      // Poll if we don't have data yet OR any run is in-flight.
+      // `pending`/`queued` are also non-terminal in case the backend ever
+      // emits them.
+      if (runs.length === 0) return true
+      return runs.some((r: any) =>
+        r.status === 'running' || r.status === 'pending' || r.status === 'queued'
+      )
+    })
+
+    if (sopsToPoll.length === 0) return
+    const interval = setInterval(() => {
+      sopsToPoll.forEach(sopId => refreshRunLogsSilent(sopId))
+    }, 2000)
+    return () => clearInterval(interval)
+  }, [expandedSopId, expandedSection, showLogsDropdown, runLogs, refreshRunLogsSilent])
+
   const handleSaveSchedule = useCallback(async (sopId: string, teamId: string) => {
     try {
       const result = await agentApi.updateSchedule(sopId, scheduleType, scheduleType !== 'none' ? scheduleConfig : undefined)
@@ -237,8 +283,8 @@ export default function SOPs() {
     } else {
       setExpandedSopId(sopId)
       setExpandedSection('steps')
-      // Auto-load logs
-      if (!runLogs[sopId]) loadRunLogs(sopId)
+      // Always refresh logs on expand so stale "running" entries get updated
+      loadRunLogs(sopId)
     }
   }
 
@@ -394,7 +440,7 @@ export default function SOPs() {
                                     onClick={(e) => {
                                       e.stopPropagation()
                                       if (showLogsDropdown === sop.sop_id) setShowLogsDropdown(null)
-                                      else { setShowLogsDropdown(sop.sop_id); if (!runLogs[sop.sop_id]) loadRunLogs(sop.sop_id) }
+                                      else { setShowLogsDropdown(sop.sop_id); loadRunLogs(sop.sop_id) }
                                     }}
                                     className="p-1.5 rounded-lg hover:bg-indigo-500/15 text-indigo-400/60 hover:text-indigo-400 transition-colors relative"
                                     title="Execution logs"
@@ -523,7 +569,7 @@ export default function SOPs() {
                               key={tab.key}
                               onClick={() => {
                                 setExpandedSection(tab.key)
-                                if (tab.key === 'logs' && !runLogs[sop.sop_id]) loadRunLogs(sop.sop_id)
+                                if (tab.key === 'logs') loadRunLogs(sop.sop_id)
                                 if (tab.key === 'schedule') {
                                   setEditingScheduleId(sop.sop_id)
                                   setScheduleType(sop.schedule_type || 'none')
