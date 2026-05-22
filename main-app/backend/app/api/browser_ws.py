@@ -489,6 +489,75 @@ def _stringify(value) -> str:
         return str(value)
 
 
+# AI SDK / MCP content parts that represent images use a few different
+# shapes depending on SDK version. We accept all three so the LLM Logs
+# viewer can render the screenshot regardless of which one OC emits.
+_IMAGE_PART_TYPES = {"image", "image-data"}
+
+
+def _is_image_part(part) -> bool:
+    """True if `part` is a content block that carries image data."""
+    if not isinstance(part, dict):
+        return False
+    t = part.get("type")
+    if t in _IMAGE_PART_TYPES:
+        return bool(part.get("data"))
+    if t == "image_url":
+        return bool((part.get("image_url") or {}).get("url"))
+    if t == "file":
+        media = (part.get("mediaType") or part.get("mimeType") or "").lower()
+        return media.startswith("image/") and bool(part.get("data"))
+    return False
+
+
+def _extract_image_url(part: dict) -> Optional[str]:
+    """Return a `data:` URI (or http URL) for an image content part, or None."""
+    t = part.get("type")
+    media = part.get("mediaType") or part.get("mimeType") or "image/png"
+    if t in _IMAGE_PART_TYPES or t == "file":
+        data = part.get("data")
+        if not isinstance(data, str) or not data:
+            return None
+        if data.startswith(("data:", "http://", "https://")):
+            return data
+        return f"data:{media};base64,{data}"
+    if t == "image_url":
+        return (part.get("image_url") or {}).get("url")
+    return None
+
+
+def _split_tool_result_content(value) -> tuple[str, list[dict]]:
+    """Split an AI SDK ToolResultPart.output.value (which can be a list of
+    mixed text / image / unknown content parts) into a flat text string
+    plus a list of `{url, mime}` attachment dicts. Images go to
+    attachments so the viewer's existing `tool_result.attachments[]`
+    branch (LlmLogs.tsx:384-405) renders them as `<img>` under the
+    tool result block.
+    """
+    if isinstance(value, str):
+        return value, []
+    if not isinstance(value, list):
+        return _stringify(value), []
+
+    text_parts: list[str] = []
+    attachments: list[dict] = []
+    for item in value:
+        if _is_image_part(item):
+            url = _extract_image_url(item)
+            if url:
+                mime = item.get("mediaType") or item.get("mimeType") or "image/png"
+                attachments.append({"url": url, "mime": mime})
+                continue
+        if isinstance(item, dict) and item.get("type") == "text":
+            text_parts.append(item.get("text") or "")
+        elif isinstance(item, str):
+            text_parts.append(item)
+        else:
+            # Unknown content part — preserve as JSON so we don't lose info.
+            text_parts.append(_stringify(item))
+    return "\n\n".join(t for t in text_parts if t), attachments
+
+
 def _render_capture_request(request: dict) -> list[dict]:
     """Turn a post-transform AI SDK `LanguageModelV3CallOptions` dict into the
     `{role, content}` message list the LLM Logs viewer renders.
@@ -551,11 +620,15 @@ def _render_capture_request(request: dict) -> list[dict]:
             elif part_type == "tool-result":
                 output = part.get("output")
                 value = output.get("value") if isinstance(output, dict) else output
-                blocks.append({
+                text, attachments = _split_tool_result_content(value)
+                tr_block = {
                     "type": "tool_result",
                     "tool_use_id": part.get("toolCallId", ""),
-                    "content": value if isinstance(value, str) else _stringify(value),
-                })
+                    "content": text,
+                }
+                if attachments:
+                    tr_block["attachments"] = attachments
+                blocks.append(tr_block)
             elif part_type == "file":
                 media = part.get("mediaType") or ""
                 data = part.get("data")
