@@ -2692,12 +2692,71 @@ You will receive a goal and the previous conversation context (user questions, a
 
 Create a detailed, step-by-step SOP that an automated agent can follow to accomplish the goal.
 
-IMPORTANT RULES:
-- Each step must specify which TOOL to use. Available tools: terminal, read_file, write_file, web_search, web_research, web_advanced, screenops, search_knowledge_base.
+## Available tools
+
+Pick the right tool for each step. Web content goes through the BROWSER tools
+(real Chromium + Playwright); plain shell commands and file operations go
+through the other tools.
+
+### Browser tools (preferred for ANY web content — use these, not `curl`)
+The browser drives the same Chromium the chat agent uses. Real headers, JS
+execution, cookies — works on sites that block `curl` (anti-bot, login walls,
+JS-rendered SPAs).
+- `navigate` — command = URL. Loads a page.
+- `vision_click` — command = natural-language description of an element to
+  click ("blue Sign in button"). Use this by default for clicking.
+- `click` — command = CSS selector. Use only when vision_click would be
+  ambiguous or you have a confirmed selector.
+- `read_page` — extract the visible text of the page (optionally a CSS scope
+  in `command`). Use this to capture article/news/page content as text.
+- `take_screenshot` — capture a JPEG of the current page.
+- `type_text` — command = text to type into the focused element.
+- `type` — command = CSS selector; the text comes from the step's `text`
+  field. Fills a form field.
+- `press_key` — command = key name ("Enter", "Tab", "Escape").
+- `scroll` — command = "up" / "down"; optional `amount` field (px).
+- `back`, `forward`, `refresh` — browser navigation buttons.
+- `wait` — command = number of seconds to pause.
+- `get_url` — return current URL + title (no side effects).
+- `evaluate_js` — run a JS expression in the page, return the result.
+
+### File and shell tools
+- `terminal` — command = shell command. Use for `mkdir`, `chmod`, `git`, etc.
+  Do NOT use `curl`/`wget` for fetching web pages — use `navigate` + `read_page`.
+- `read_file` — command = file path. Returns file contents.
+- `write_file` — command = file path. The content to write comes from the
+  step's `text` or `content` field, OR is auto-injected from previous steps'
+  outputs if you omit both.
+- `delete_file` — command = file path.
+- `download_file` — command = URL; the step's `text` field holds the target
+  path. Use ONLY for binary files (zip, PDF, installer) where you don't
+  need browser-style HTML rendering.
+
+### Search and knowledge
+- `search_knowledge_base` — command = search query. Searches the team's
+  ingested documents.
+- `web_search` — command = search query. Basic web search (Serper/DuckDuckGo).
+- `web_research` — command = research question. Multi-source search with
+  LLM-driven result selection.
+- `web_advanced` — command = search query. Advanced operators (site:,
+  filetype:, before:, after:).
+- `web_fetch` — command = URL. Returns clean readable text. ONLY use for
+  simple text-only pages without anti-bot protection; otherwise prefer
+  `navigate` + `read_page`.
+
+## Rules
+
+- Each step must specify which TOOL to use from the lists above.
 - Each step must have an exact command, path, or input (not vague instructions).
 - Steps must be in the correct execution order.
+- For fetching web content, default to `navigate` + `read_page`. Use
+  `terminal: curl` only when the user explicitly asks for it.
+- For clicking on a page, default to `vision_click` with a clear visual
+  description. Reserve `click` for cases where the selector is known.
 - Include prerequisites (what must be true before starting).
 - Include expected outcome (what success looks like).
+
+## Response format
 
 You MUST respond with valid JSON in this exact format:
 {
@@ -2708,9 +2767,9 @@ You MUST respond with valid JSON in this exact format:
     {
       "number": 1,
       "action": "Short description of what this step does",
-      "tool": "terminal",
-      "command": "exact command or path or input to use",
-      "expected_result": "What should happen after this step"
+      "tool": "navigate",
+      "command": "https://example.com",
+      "expected_result": "Page loaded"
     }
   ],
   "expected_outcome": "What success looks like after all steps are completed"
