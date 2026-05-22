@@ -838,13 +838,25 @@ async def opencode_send_message(
         from app.services.session_bridge import find_conversation_by_opencode_session
         convo_for_browser = await find_conversation_by_opencode_session(session_id)
         if convo_for_browser and convo_for_browser.conversation_id:
-            _active_browser_conv[user_id] = convo_for_browser.conversation_id
+            real_conv_id = convo_for_browser.conversation_id
+            _active_browser_conv[user_id] = real_conv_id
             logger.debug(
                 "[OC] browser_bridge: active conv set",
                 user_id=user_id,
-                retrace_conv=convo_for_browser.conversation_id,
+                retrace_conv=real_conv_id,
                 oc_session=session_id,
             )
+            # Adopt the user's `standalone_xxx` BrowserSession (the one
+            # mounted by the /agent page before any conversation existed)
+            # onto the real conv_id. Without this, the agent's first
+            # browser tool call would `get_or_create(real_conv_id)` and
+            # mint a fresh headless session — the user's panel stays
+            # attached to the standalone session and sees nothing.
+            try:
+                from app.services.browser_manager import browser_manager
+                await browser_manager.adopt_into_conversation(user_id, real_conv_id)
+            except Exception as exc:
+                logger.warning("[OC] browser_bridge: adopt failed", error=str(exc))
     except Exception as exc:
         logger.warning("[OC] browser_bridge: active conv lookup failed", error=str(exc))
 

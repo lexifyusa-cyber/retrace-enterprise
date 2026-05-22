@@ -65,7 +65,14 @@ export default function BrowserWorkspace({ conversationId, isVisible, isAgentRun
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const host = window.location.host
+    // Pass the access token as a query param — browsers can't set
+    // Authorization headers on `new WebSocket(...)`. The backend reads this
+    // to tag the BrowserSession with the connecting user, which is how the
+    // agent's browser MCP later finds the same session the user is watching
+    // (especially for `standalone_*` IDs that have no DB row to look up).
+    const token = localStorage.getItem('rt_access_token') || ''
     const wsUrl = `${protocol}//${host}/ws/browser/${effectiveSessionId}`
+      + (token ? `?token=${encodeURIComponent(token)}` : '')
 
     connectAttemptRef.current += 1
     const attempt = connectAttemptRef.current

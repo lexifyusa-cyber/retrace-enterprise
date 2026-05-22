@@ -1084,6 +1084,48 @@ class BrowserManager:
         """Get an existing session or None."""
         return self._sessions.get(conversation_id)
 
+    async def adopt_into_conversation(
+        self, user_id: str, conversation_id: str
+    ) -> Optional[BrowserSession]:
+        """Re-key a standalone session owned by `user_id` (one that has at
+        least one live WebSocket client) onto `conversation_id`.
+
+        The /agent page mounts BrowserWorkspace with a `standalone_xxx` ID
+        before the user sends their first message, so a BrowserSession exists
+        and the user's WS is attached to it. When the first turn resolves
+        the real `conversation_id`, this method moves the session under that
+        key so the agent's browser MCP — which dispatches by conversation_id
+        — drives the same session the user is watching, instead of creating
+        a fresh (headless) one.
+
+        No-op if a session is already keyed under `conversation_id` (a previous
+        turn already adopted, or `get_or_create` already minted one). Returns
+        the session that now lives under `conversation_id`, or None if there
+        was nothing to adopt.
+        """
+        async with self._lock:
+            existing = self._sessions.get(conversation_id)
+            if existing is not None:
+                return existing
+            for sid, sess in list(self._sessions.items()):
+                if (
+                    sid.startswith("standalone_")
+                    and sess.user_id == user_id
+                    and sess.websocket_clients
+                ):
+                    sess.conversation_id = conversation_id
+                    self._sessions[conversation_id] = sess
+                    del self._sessions[sid]
+                    logger.info(
+                        "browser_session_adopted",
+                        user_id=user_id,
+                        from_sid=sid,
+                        to_sid=conversation_id,
+                        ws_clients=len(sess.websocket_clients),
+                    )
+                    return sess
+            return None
+
     async def close_session(self, conversation_id: str) -> None:
         """Close and cleanup a browser session."""
         async with self._lock:

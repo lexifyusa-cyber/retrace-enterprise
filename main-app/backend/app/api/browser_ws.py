@@ -76,37 +76,57 @@ async def browser_websocket(websocket: WebSocket, conversation_id: str):
     """Bidirectional browser I/O over WebSocket."""
     await websocket.accept()
 
-    # Resolve the user_id for this conversation_id so the BrowserSession
-    # gets tagged with it. The internal-browser-action bridge uses this
-    # tag to find the right session as a fallback when the active-conv
-    # map is empty (e.g. after a dev-server reload mid-turn). Standalone
-    # conversation IDs (the React composer's `standalone_xxx` ones) have
-    # no DB row — those get user_id=None and a per-conversation Chromium.
+    # Resolve the user_id so the BrowserSession gets tagged with it. The
+    # internal-browser-action bridge uses this tag to find the right session
+    # as a fallback when the active-conv map is empty (e.g. after a dev-server
+    # reload mid-turn) and — crucially — to match the user's standalone
+    # session before any ReTrace conversation has been created.
+    #
+    # Two sources, in order:
+    #   1. `?token=<jwt>` query param from the WS handshake. Browsers can't
+    #      send Authorization headers on `new WebSocket(...)`, so the frontend
+    #      appends the access token here. This is the only way to identify a
+    #      `standalone_xxx` session (no DB row to look up).
+    #   2. Fall back to deriving user_id from the conversation row in DB, for
+    #      real (non-standalone) conversation IDs. Covers browser-tab reloads
+    #      where the JWT might not be on the query string yet.
     resolved_user_id: Optional[str] = None
-    try:
-        from app.services.sandbox_manager import get_user_for_conversation
-        resolved_user_id = get_user_for_conversation(conversation_id)
-        if not resolved_user_id and not conversation_id.startswith("standalone_"):
-            # DB lookup for real ReTrace conversations not yet in the
-            # in-memory map (e.g. browser opens before the agent fires).
-            from sqlalchemy import text as sa_text
-            from app.db.database import async_session_maker
-            async with async_session_maker() as db:
-                result = await db.execute(
-                    sa_text("SELECT user_id FROM conversations WHERE conversation_id = :cid"),
-                    {"cid": conversation_id},
-                )
-                row = result.fetchone()
-                if row and row[0]:
-                    resolved_user_id = row[0]
-                    # Register so subsequent lookups skip the DB.
-                    try:
-                        from app.services.sandbox_manager import register_conversation
-                        register_conversation(conversation_id, resolved_user_id)
-                    except Exception:
-                        pass
-    except Exception as exc:
-        logger.warning("browser_ws_user_lookup_failed", conversation_id=conversation_id, error=str(exc))
+
+    token = websocket.query_params.get("token")
+    if token:
+        try:
+            from app.core.security import verify_token
+            payload = verify_token(token, expected_type="access")
+            if payload and isinstance(payload.get("sub"), str):
+                resolved_user_id = payload["sub"]
+        except Exception as exc:
+            logger.warning("browser_ws_token_verify_failed", error=str(exc))
+
+    if not resolved_user_id:
+        try:
+            from app.services.sandbox_manager import get_user_for_conversation
+            resolved_user_id = get_user_for_conversation(conversation_id)
+            if not resolved_user_id and not conversation_id.startswith("standalone_"):
+                # DB lookup for real ReTrace conversations not yet in the
+                # in-memory map (e.g. browser opens before the agent fires).
+                from sqlalchemy import text as sa_text
+                from app.db.database import async_session_maker
+                async with async_session_maker() as db:
+                    result = await db.execute(
+                        sa_text("SELECT user_id FROM conversations WHERE conversation_id = :cid"),
+                        {"cid": conversation_id},
+                    )
+                    row = result.fetchone()
+                    if row and row[0]:
+                        resolved_user_id = row[0]
+                        # Register so subsequent lookups skip the DB.
+                        try:
+                            from app.services.sandbox_manager import register_conversation
+                            register_conversation(conversation_id, resolved_user_id)
+                        except Exception:
+                            pass
+        except Exception as exc:
+            logger.warning("browser_ws_user_lookup_failed", conversation_id=conversation_id, error=str(exc))
 
     try:
         session = await browser_manager.get_or_create(conversation_id, user_id=resolved_user_id)
