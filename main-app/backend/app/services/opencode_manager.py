@@ -619,6 +619,17 @@ class OpenCodeManager:
         if api_url:
             config["provider"][provider_id]["options"]["baseURL"] = api_url
 
+        # Custom OpenAI-compatible gateways (vLLM, lumenatech, xAI, etc.) speak
+        # the Chat Completions API (`/v1/chat/completions`), but OC's built-in
+        # `openai` provider uses `@ai-sdk/openai`, which defaults to the OpenAI
+        # Responses API (`/v1/responses`). Those gateways reject the Responses
+        # request shape (e.g. "input should be a string" validation errors), so
+        # the agent starts but every turn fails. Pin the provider to
+        # `@ai-sdk/openai-compatible` (the same package OC's own Zen models use)
+        # so OC posts Chat Completions. Stock api.openai.com keeps the default.
+        if provider_id == "openai" and is_custom_openai_endpoint:
+            config["provider"][provider_id]["npm"] = "@ai-sdk/openai-compatible"
+
         user_mcp_servers = await self._get_user_mcp_servers(user_id)
         for name, srv in user_mcp_servers.items():
             config["mcp"][name] = srv
