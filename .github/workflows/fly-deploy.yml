@@ -1,0 +1,26 @@
+# Auto-deploy `main` to the shared Fly app on every push (and on demand).
+# Requires repo secret FLY_API_TOKEN (a Fly deploy token).
+name: Deploy main to Fly
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+# Serialise with the manual branch-deploy workflow so they never race on the
+# single shared app.
+concurrency:
+  group: fly-deploy-retrace-dev
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: flyctl deploy (main)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: Deploy
+        run: flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

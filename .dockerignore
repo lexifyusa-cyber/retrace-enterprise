@@ -1,0 +1,51 @@
+# Keep the build context small and reproducible.
+
+# VCS / tooling
+.git
+.github
+.claude
+
+# Node / build output (frontend is built fresh inside the image)
+**/node_modules
+main-app/frontend/dist
+main-app/frontend/dist-electron
+main-app/frontend/backend-bundle
+main-app/frontend/desktop-package
+
+# Python caches / virtualenvs
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/venv
+**/.venv
+**/.build-venv
+
+# Committed SQLite databases + the large .db.bak snapshots (~155MB) — never
+# ship these into the image; the app creates/uses the DB on the Fly volume.
+main-app/backend/*.db
+main-app/backend/*.db-wal
+main-app/backend/*.db-shm
+main-app/backend/*.db.bak*
+main-app/backend/retrace.db*
+main-app/backend/*.sqlite3
+
+# Local secrets — provided via Fly secrets instead
+main-app/backend/.env
+
+# Runtime artifacts
+main-app/backend/screenops_screenshots
+main-app/backend/screenops_debug.log
+main-app/backend/chroma_data
+main-app/backend/build
+
+# Go agent build output (not part of the web app)
+pod-agent/dist
+
+# Desktop / DMG artifacts
+dist-dmg
+*.dmg
+
+# OS / IDE
+**/.DS_Store
+.idea
+.vscode
