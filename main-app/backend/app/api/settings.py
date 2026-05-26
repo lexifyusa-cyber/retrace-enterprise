@@ -258,6 +258,24 @@ async def update_llm_settings(settings_data: LLMSettings, current_user: CurrentU
                 except Exception as verify_error:
                     print(f"[SETTINGS] Could not verify (non-critical): {verify_error}", flush=True)
             
+            # Apply the new LLM config to any running OpenCode session right
+            # away, so a model/provider/key change takes effect WITHOUT a
+            # server or agent restart. OpenCode reads its model + api_key from
+            # a per-user config file written when its session starts;
+            # reload_for_user() regenerates that file from the settings we just
+            # saved and restarts the live instance. No-op for users who have no
+            # running OpenCode session (their next cold start reads it anyway).
+            try:
+                from app.services.opencode_manager import opencode_manager
+                for _uid in list(opencode_manager._processes.keys()):
+                    try:
+                        await opencode_manager.reload_for_user(_uid)
+                        print(f"[SETTINGS] Reloaded OpenCode for {_uid} to apply new LLM config", flush=True)
+                    except Exception as _re:
+                        print(f"[SETTINGS] OpenCode reload failed for {_uid} (non-critical): {_re}", flush=True)
+            except Exception as _oc_err:
+                print(f"[SETTINGS] OpenCode reload skipped (non-critical): {_oc_err}", flush=True)
+
             # Build response from the refreshed object
             response = LLMSettingsResponse(
                 api_url=db_settings.api_url,
@@ -556,5 +574,4 @@ async def get_active_llm_settings(session: AsyncSession, consumer_key: str | Non
         "debug_logging": bool(getattr(db_settings, "debug_logging", False)),
         "max_parallel_files": max(1, min(32, int(getattr(db_settings, "max_parallel_files", 1) or 1))),
     }
-
 
