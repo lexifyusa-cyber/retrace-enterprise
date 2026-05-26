@@ -28,10 +28,14 @@ primary_region = "iad"
   internal_port = 8000
   force_https = true
   # Scale-to-zero: this is an intermittently-used dev box, so let the single
-  # machine sleep when idle and auto-start on the next request (~25s cold
-  # start while Xvfb/Chrome + MCP servers boot). Cuts idle cost to the volume
-  # only (~$0.45/mo vs ~$22.89/mo running 24/7).
-  auto_stop_machines = "stop"
+  # machine sleep when idle and auto-start on the next request. We use
+  # "suspend" (not "stop"): it freezes RAM and resumes warm in well under a
+  # second, so the booted Xvfb/Chrome + per-user OpenCode/MCP processes survive
+  # an idle gap instead of cold-restarting (~25s). Idle compute cost is still
+  # ~zero — you pay only for the volume (~$0.45/mo) vs ~$22.89/mo running 24/7.
+  # NOTE: an open /agent tab polls continuously, which keeps the machine awake;
+  # gate frontend polling on idle/visibility to actually realise the savings.
+  auto_stop_machines = "suspend"
   auto_start_machines = true
   min_machines_running = 0
 
