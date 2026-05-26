@@ -38,18 +38,30 @@ _LLM_API_KEY = os.environ.get("RETRACE_LLM_API_KEY", "")
 _LLM_BASE_URL = os.environ.get("RETRACE_LLM_BASE_URL", "")
 _LLM_MODEL = os.environ.get("RETRACE_LLM_MODEL", "")
 
-# Configure the shared search module's Serper key at import time.
-from app.tools.web_search import (
-    configure_web_search,
-    web_search as _web_search_fn,
-    web_advanced as _web_advanced_fn,
-    make_web_research_fn,
-    _search_and_extract_with_provider,
-    _scrape_urls,
-    _format_research_content,
-)
 
-configure_web_search(serper_api_key=_SERPER_API_KEY)
+# Lazily import the shared web-search module on first tool call.
+#
+# `from app.tools.web_search import ...` at module load looks cheap, but
+# importing that submodule first runs `app/tools/__init__.py`, which eagerly
+# imports LangChain + every tool module (~35-40s). Doing that during MCP server
+# startup made this server blow past OpenCode's MCP request timeout
+# (`MCP error -32001: Request timed out`) and, via CPU contention on a small
+# VM, starved the other MCP servers too — so tool resolution stalled and the
+# agent appeared broken. Deferring the import to the first actual search call
+# keeps server startup near-instant; the LangChain cost is paid once, lazily,
+# only if a web tool is used. (web_search.py itself is pure Python — the cost
+# is purely the package __init__ side effect.)
+_ws_module = None
+
+
+def _ws():
+    """Return the configured app.tools.web_search module, importing it on first use."""
+    global _ws_module
+    if _ws_module is None:
+        from app.tools import web_search as _m
+        _m.configure_web_search(serper_api_key=_SERPER_API_KEY)
+        _ws_module = _m
+    return _ws_module
 
 
 def _get_llm_client():
@@ -81,7 +93,7 @@ def web_search(query: str, num_results: int = 10, gl: str = "us", hl: str = "en"
         gl: Region code (ISO 3166-1 alpha-2, default "us").
         hl: Language code (ISO 639-1, default "en").
     """
-    return _web_search_fn(query, num_results=num_results, gl=gl, hl=hl)
+    return _ws().web_search(query, num_results=num_results, gl=gl, hl=hl)
 
 
 @mcp.tool()
@@ -102,10 +114,11 @@ def web_research(query: str) -> str:
     if not query or not query.strip():
         return "Error: empty query"
 
+    ws = _ws()
     client = _get_llm_client()
     if client and _LLM_MODEL:
         try:
-            fn = make_web_research_fn(client, _LLM_MODEL)
+            fn = ws.make_web_research_fn(client, _LLM_MODEL)
             return fn(query)
         except Exception as exc:
             # Fall through to no-LLM mode rather than failing the call.
@@ -113,14 +126,14 @@ def web_research(query: str) -> str:
 
     # Fallback: no LLM available — use the first 3 results directly.
     try:
-        results = _search_and_extract_with_provider(query)
+        results = ws._search_and_extract_with_provider(query)
         if not results:
             return f"No search results found for: {query}"
         top = results[:3]
-        scraped = _scrape_urls(top)
+        scraped = ws._scrape_urls(top)
         if not scraped:
             return "Failed to scrape any URLs."
-        return _format_research_content(query, scraped, top)
+        return ws._format_research_content(query, scraped, top)
     except Exception as exc:
         return f"Web research error: {exc}"
 
@@ -175,7 +188,7 @@ def web_advanced(
         exclude: Terms to exclude (comma-separated).
         or_terms: Alternative terms (comma-separated, OR operator).
     """
-    return _web_advanced_fn(
+    return _ws().web_advanced(
         query,
         num_results=num_results,
         gl=gl,
