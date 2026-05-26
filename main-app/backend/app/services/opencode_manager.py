@@ -634,6 +634,17 @@ class OpenCodeManager:
         for name, srv in user_mcp_servers.items():
             config["mcp"][name] = srv
 
+        # Local MCP servers import heavy dependencies on startup — retrace-search
+        # pulls the langchain tree (`app.tools`), which takes ~35-40s to import
+        # cold (no .pyc cache: PYTHONDONTWRITEBYTECODE). That exceeds OC's default
+        # MCP startup/connect timeout, so the server is killed as "timed out" and
+        # resolveTools stalls the whole turn. Give local servers generous headroom
+        # so a slow cold import can't fail tool resolution. (OC reads `timeout`
+        # per MCP server: see opencode/src/config/mcp.ts + mcp/index.ts.)
+        for _srv in config["mcp"].values():
+            if isinstance(_srv, dict) and _srv.get("type") == "local":
+                _srv.setdefault("timeout", 90000)
+
         proc = self._processes.get(user_id)
         config_dir = proc.config_dir if proc else _opencode_projects_dir() / user_id
         config_dir.mkdir(parents=True, exist_ok=True)
