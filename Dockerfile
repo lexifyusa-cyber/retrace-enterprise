@@ -31,7 +31,8 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     BUN_INSTALL=/usr/local \
-    PATH=/usr/local/bin:$PATH
+    PATH=/usr/local/bin:$PATH \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 # System packages:
 #  - tesseract-ocr / poppler-utils : optional OCR + PDF rasterisation
@@ -75,6 +76,19 @@ RUN cd /opt/opencode && bun install --frozen-lockfile \
 # Python deps.
 COPY main-app/backend/requirements.txt ./requirements.txt
 RUN pip install -r requirements.txt
+
+# Playwright browser + OS libraries for the agent's headless-Chromium browser
+# tool (app/services/browser_manager.py launches `pw.chromium`). `pip install
+# playwright` ships only the Python package — the browser binary and its system
+# libraries must be installed separately, or chromium.launch() fails at runtime
+# (first "Executable doesn't exist", then missing libnss/libatk/libxkbcommon/...
+# shared objects). `--with-deps` apt-installs those libs; the browser downloads
+# into PLAYWRIGHT_BROWSERS_PATH (set above) so build + runtime agree on the path
+# regardless of $HOME. apt-get update is needed because the lists were cleared
+# in the earlier system-package layer.
+RUN apt-get update \
+    && python -m playwright install --with-deps chromium \
+    && rm -rf /var/lib/apt/lists/*
 
 # Local ServiceNow MCP package (referenced at startup as `-m servicenow_mcp`).
 # Non-fatal if its layout isn't pip-installable — the seeding step is guarded.
