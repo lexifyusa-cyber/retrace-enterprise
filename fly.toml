@@ -1,4 +1,4 @@
-# Fly.io config for ReTrace (FastAPI backend + built React SPA).
+# Fly.io config for ReTrace (FastAPI backend + built React SPA + OpenCode).
 # App: retrace-dev  |  Org: lumena tech (personal)  |  Region: iad
 #
 # Single shared dev environment:
@@ -20,6 +20,9 @@ primary_region = "iad"
   LOG_FORMAT = "json"
   # SQLite on the mounted volume (absolute path -> 4 slashes after the scheme).
   DATABASE_URL = "sqlite+aiosqlite:////data/retrace.db"
+  # Managed OpenCode: the backend spawns one OC server per user by running
+  # this wrapper (bun run src/index.ts serve ...). Unset = managed mode.
+  RETRACE_OPENCODE_BIN = "/opt/opencode/run-from-source.sh"
 
 [http_service]
   internal_port = 8000
@@ -40,8 +43,9 @@ primary_region = "iad"
   source = "retrace_data"
   destination = "/data"
 
-# Single machine (required: the volume binds to one machine). This app pulls in
-# a heavy stack (LangChain, PyMuPDF, numpy, websockets, scheduler) — give it RAM.
+# Single machine (required: the volume binds to one machine). Heavy stack
+# (LangChain, PyMuPDF, numpy, uvicorn) PLUS per-user Bun OpenCode processes —
+# give it 4 GB.
 [[vm]]
   size = "shared-cpu-2x"
-  memory = "2048"
+  memory = "4096"

@@ -2,6 +2,8 @@
 # ReTrace — Fly.io deployment image.
 # Builds the React/Vite frontend, then bakes it into the FastAPI backend
 # image which serves both the API and the SPA on a single origin (port 8000).
+# Also bundles the vendored OpenCode fork (Bun) so the agent/chat feature can
+# spawn an OpenCode server per user.
 
 # ---------------------------------------------------------------------------
 # Stage 1 — build the frontend (Vite -> /fe/dist)
@@ -20,26 +22,33 @@ COPY main-app/frontend/ ./
 RUN npx vite build
 
 # ---------------------------------------------------------------------------
-# Stage 2 — Python backend runtime
+# Stage 2 — Python backend runtime (+ Bun-powered OpenCode)
 # ---------------------------------------------------------------------------
 FROM python:3.11-slim AS backend
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    BUN_INSTALL=/usr/local \
+    PATH=/usr/local/bin:$PATH
 
 # System packages:
 #  - tesseract-ocr / poppler-utils : optional OCR + PDF rasterisation
 #  - xvfb + xauth + X libs + scrot  : let pyautogui import/run headless
 #    (xvfb-run needs the xauth binary, or it exits before uvicorn starts)
+#  - nodejs + build-essential       : compile OpenCode native modules
+#    (tree-sitter, node-pty) during `bun install`
+#  - unzip / ca-certificates        : required by the Bun installer
 #  - libmagic1                      : file type sniffing
-#  - build-essential, curl, git     : building wheels / debugging
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential \
+      ca-certificates \
       curl \
       git \
+      unzip \
       libmagic1 \
+      nodejs \
       tesseract-ocr \
       poppler-utils \
       xvfb \
@@ -49,9 +58,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libx11-6 libxext6 libxrandr2 libxtst6 libxi6 \
     && rm -rf /var/lib/apt/lists/*
 
+# Bun (installs to $BUN_INSTALL/bin -> /usr/local/bin/bun, already on PATH).
+RUN curl -fsSL https://bun.sh/install | bash
+
 WORKDIR /app
 
-# Python deps first (layer caching).
+# ---- OpenCode fork (Bun) ---------------------------------------------------
+# Copied + installed before the Python deps so backend-code edits don't bust
+# this expensive layer. run-from-source.sh proxies `opencode serve ...` to
+# `bun run src/index.ts ...`; the backend spawns it per user (managed mode)
+# via RETRACE_OPENCODE_BIN (set in fly.toml).
+COPY opencode/ /opt/opencode/
+RUN cd /opt/opencode && bun install --frozen-lockfile \
+    && chmod +x /opt/opencode/run-from-source.sh
+
+# Python deps.
 COPY main-app/backend/requirements.txt ./requirements.txt
 RUN pip install -r requirements.txt
 
