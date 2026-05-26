@@ -1,0 +1,3 @@
+# Bump this file to trigger a manual redeploy of retrace-dev via the
+# "Deploy main to Fly" workflow.
+deploy: 2026-05-26T00:00:01Z initial
