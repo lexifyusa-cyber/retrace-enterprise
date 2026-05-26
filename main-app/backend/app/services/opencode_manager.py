@@ -339,7 +339,16 @@ class OpenCodeManager:
         # forwarded to the provider. Previously gated on `provider in (xai, grok)`
         # which left the `models: {}` empty for xAI-as-openai users.
         is_xai_endpoint = provider in ("xai", "grok") or (api_url and "x.ai" in api_url)
-        if provider_id == "openai" and (provider in ("xai", "grok") or is_xai_endpoint):
+        # A custom OpenAI-compatible gateway (any baseURL other than stock
+        # api.openai.com) may serve models that aren't in OC's models.dev
+        # catalog — e.g. self-hosted Gemma / Qwen / UI-TARS behind a vLLM
+        # gateway. OC raises ProviderModelNotFoundError for any `openai/<model>`
+        # it can't resolve from the catalog unless the model is declared here.
+        # Leaving `models: {}` empty is exactly what broke agent startup for the
+        # lumenatech gateway. Stock OpenAI model ids ARE catalogued, so restrict
+        # this to non-OpenAI base URLs to avoid clobbering their real metadata.
+        is_custom_openai_endpoint = bool(api_url) and "api.openai.com" not in api_url
+        if provider_id == "openai" and (is_xai_endpoint or is_custom_openai_endpoint):
             custom_models[model_name] = {
                 "name": model_name,
                 # `attachment: true` lets OC forward file/image parts to the
