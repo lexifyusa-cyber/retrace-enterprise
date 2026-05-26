@@ -31,7 +31,8 @@ ENV PYTHONUNBUFFERED=1 \
 
 # System packages:
 #  - tesseract-ocr / poppler-utils : optional OCR + PDF rasterisation
-#  - xvfb + X libs + scrot          : let pyautogui import/run headless
+#  - xvfb + xauth + X libs + scrot  : let pyautogui import/run headless
+#    (xvfb-run needs the xauth binary, or it exits before uvicorn starts)
 #  - libmagic1                      : file type sniffing
 #  - build-essential, curl, git     : building wheels / debugging
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -42,6 +43,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       tesseract-ocr \
       poppler-utils \
       xvfb \
+      xauth \
       scrot \
       python3-tk \
       libx11-6 libxext6 libxrandr2 libxtst6 libxi6 \
