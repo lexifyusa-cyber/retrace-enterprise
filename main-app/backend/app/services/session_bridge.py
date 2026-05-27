@@ -349,8 +349,9 @@ async def _deferred_title_sync(
     failed deferred sync just leaves the truncation stopgap in place.
     """
     import asyncio
+    logger.info("deferred_title_sync_start", oc_sid=opencode_session_id, conv_id=conversation_id, expected_auto=expected_auto)
     delays = (1.0, 1.5, 2.0, 2.5)  # ~7s total polling window
-    for delay in delays:
+    for i, delay in enumerate(delays):
         await asyncio.sleep(delay)
         try:
             oc_title = await _fetch_opencode_session_title(
@@ -358,6 +359,7 @@ async def _deferred_title_sync(
             )
         except Exception:
             oc_title = None
+        logger.info("deferred_title_sync_poll", oc_sid=opencode_session_id, attempt=i + 1, got=bool(oc_title), title=(oc_title or "")[:80])
         if not oc_title:
             continue
         try:
@@ -396,20 +398,9 @@ async def _fetch_opencode_session_title(
 ) -> Optional[str]:
     """Read OpenCode's `session.title` via the per-user OC sidecar HTTP API.
 
-    OpenCode's `ensureTitle` fires a forked LLM call on the first turn of a
-    new session and updates the session's internal title (visible at
-    `GET /session/<id>` as `info.title`). This helper exposes that title to
-    retrace's message-sync so the conversation pill in the UI can show the
-    polished LLM-generated title instead of a truncated user message.
-
-    Returns:
-      - The LLM-generated title (string), or
-      - None if: no OC sidecar is running for this user, the request fails,
-        the response shape is unexpected, or OC's title is still a default
-        placeholder (we skip default-looking strings so we don't adopt one).
-
-    Best-effort — wraps everything in try/except. Sync logic must never block
-    on this; a missing/late title falls through to the truncation stopgap.
+    DEBUG: temporarily logs every step at INFO level so we can diagnose why
+    OC's "Greeting" isn't surfacing to the pill. Strip the extra logging
+    once the root cause is identified.
     """
     try:
         from app.services.opencode_manager import opencode_manager
@@ -417,26 +408,32 @@ async def _fetch_opencode_session_title(
 
         port = opencode_manager.get_port(user_id)
         if not port:
+            logger.info("title_fetch_skip_no_port", oc_sid=opencode_session_id, user_id=user_id)
             return None
         async with httpx.AsyncClient(timeout=2.0) as client:
             r = await client.get(
                 f"http://127.0.0.1:{port}/session/{opencode_session_id}"
             )
-            if r.status_code != 200:
+            status = r.status_code
+            body_preview = r.text[:300] if r.text else ""
+            if status != 200:
+                logger.info("title_fetch_non_200", oc_sid=opencode_session_id, status=status, body=body_preview)
                 return None
             data = r.json()
-        # OC session info may be flat or nested under "info" depending on
-        # endpoint version — accept both.
         if isinstance(data, dict) and "info" in data and isinstance(data["info"], dict):
             data = data["info"]
-        title = (data.get("title") or "").strip()
-        # Filter OC's own default-looking titles. OC's `isDefaultTitle`
-        # check considers any title starting with "New " a default; mirror
-        # that here so we don't promote a placeholder.
-        if not title or title.lower().startswith("new "):
+        raw_title = data.get("title") if isinstance(data, dict) else None
+        title = (raw_title or "").strip()
+        if not title:
+            logger.info("title_fetch_empty", oc_sid=opencode_session_id, raw=str(raw_title)[:120])
             return None
+        if title.lower().startswith("new "):
+            logger.info("title_fetch_default", oc_sid=opencode_session_id, title=title[:120])
+            return None
+        logger.info("title_fetch_ok", oc_sid=opencode_session_id, title=title[:120])
         return title
-    except Exception:
+    except Exception as exc:
+        logger.warning("title_fetch_exception", oc_sid=opencode_session_id, error=str(exc))
         return None
 
 
