@@ -241,13 +241,34 @@ async def sync_messages_from_opencode(
             for row in new_rows:
                 convo.messages.append(row)
             convo.updated_at = datetime.utcnow()
-            # Auto-title from the first user message if the conversation still
-            # carries the placeholder.
-            if convo.title == "New conversation" and first_user_text:
-                title = first_user_text[:80]
+
+            # Title resolution. Two sources:
+            #   1. OpenCode's LLM-generated session.title (via ensureTitle —
+            #      fires on the first turn and yields a polished phrase).
+            #   2. The truncated first user message (stopgap if OC's title
+            #      isn't ready yet on the first sync).
+            # OC's title is preferred when available. We only auto-update the
+            # title if it's still the placeholder OR exactly equals our own
+            # earlier truncation — so a user's manual rename (via the pencil
+            # icon in the UI) is never overwritten.
+            auto_truncation: Optional[str] = None
+            if first_user_text:
+                auto_truncation = first_user_text[:80]
                 if len(first_user_text) > 80:
-                    title += "..."
-                convo.title = title
+                    auto_truncation += "..."
+
+            if convo.title in ("New conversation", auto_truncation):
+                oc_title = await _fetch_opencode_session_title(
+                    opencode_session_id, convo.user_id
+                )
+                if oc_title:
+                    convo.title = oc_title[:255]
+                elif convo.title == "New conversation" and auto_truncation:
+                    # OC's forked title-gen hasn't completed yet — use our
+                    # stopgap. A later sync will upgrade to OC's title once
+                    # ensureTitle finishes (the check above re-runs each turn).
+                    convo.title = auto_truncation
+
             await session.commit()
 
         logger.info(
@@ -255,6 +276,56 @@ async def sync_messages_from_opencode(
             opencode_session_id=opencode_session_id,
             new_count=len(new_rows),
         )
+
+
+async def _fetch_opencode_session_title(
+    opencode_session_id: str,
+    user_id: str,
+) -> Optional[str]:
+    """Read OpenCode's `session.title` via the per-user OC sidecar HTTP API.
+
+    OpenCode's `ensureTitle` fires a forked LLM call on the first turn of a
+    new session and updates the session's internal title (visible at
+    `GET /session/<id>` as `info.title`). This helper exposes that title to
+    retrace's message-sync so the conversation pill in the UI can show the
+    polished LLM-generated title instead of a truncated user message.
+
+    Returns:
+      - The LLM-generated title (string), or
+      - None if: no OC sidecar is running for this user, the request fails,
+        the response shape is unexpected, or OC's title is still a default
+        placeholder (we skip default-looking strings so we don't adopt one).
+
+    Best-effort — wraps everything in try/except. Sync logic must never block
+    on this; a missing/late title falls through to the truncation stopgap.
+    """
+    try:
+        from app.services.opencode_manager import opencode_manager
+        import httpx
+
+        port = opencode_manager.get_port(user_id)
+        if not port:
+            return None
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            r = await client.get(
+                f"http://127.0.0.1:{port}/session/{opencode_session_id}"
+            )
+            if r.status_code != 200:
+                return None
+            data = r.json()
+        # OC session info may be flat or nested under "info" depending on
+        # endpoint version — accept both.
+        if isinstance(data, dict) and "info" in data and isinstance(data["info"], dict):
+            data = data["info"]
+        title = (data.get("title") or "").strip()
+        # Filter OC's own default-looking titles. OC's `isDefaultTitle`
+        # check considers any title starting with "New " a default; mirror
+        # that here so we don't promote a placeholder.
+        if not title or title.lower().startswith("new "):
+            return None
+        return title
+    except Exception:
+        return None
 
 
 async def link_session(
