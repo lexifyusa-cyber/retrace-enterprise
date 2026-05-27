@@ -257,6 +257,7 @@ async def sync_messages_from_opencode(
                 if len(first_user_text) > 80:
                     auto_truncation += "..."
 
+            scheduled_deferred = False
             if convo.title in ("New conversation", auto_truncation):
                 oc_title = await _fetch_opencode_session_title(
                     opencode_session_id, convo.user_id
@@ -268,6 +269,20 @@ async def sync_messages_from_opencode(
                     # stopgap. A later sync will upgrade to OC's title once
                     # ensureTitle finishes (the check above re-runs each turn).
                     convo.title = auto_truncation
+                # Race-handler: OC's ensureTitle runs in a forked fiber that
+                # may not have completed by the time this sync ran. For one-
+                # turn conversations there's no later sync to upgrade the
+                # title — so schedule a background poll that catches OC's
+                # title once it lands (typically within 1-3s).
+                if not oc_title and first_user_text:
+                    import asyncio
+                    asyncio.create_task(_deferred_title_sync(
+                        opencode_session_id=opencode_session_id,
+                        user_id=convo.user_id,
+                        conversation_id=convo.conversation_id,
+                        expected_auto=auto_truncation,
+                    ))
+                    scheduled_deferred = True
 
             await session.commit()
 
@@ -276,6 +291,69 @@ async def sync_messages_from_opencode(
             opencode_session_id=opencode_session_id,
             new_count=len(new_rows),
         )
+
+
+async def _deferred_title_sync(
+    opencode_session_id: str,
+    user_id: str,
+    conversation_id: str,
+    expected_auto: Optional[str],
+) -> None:
+    """Background poll for OpenCode's LLM-generated title.
+
+    `sync_messages_from_opencode` runs immediately after the agent response
+    stream ends, which races with OC's forked `ensureTitle` fiber. For
+    one-turn conversations there's no later sync to upgrade the title —
+    so we poll here in the background and write the title once it appears.
+
+    Stops early once a non-default OC title is captured. Only updates
+    `convo.title` if it's still in an auto-set state (placeholder or the
+    truncation stopgap set by the original sync); preserves any manual
+    rename the user did via the pencil icon in the UI.
+
+    Best-effort — wraps every step in try/except and never raises. A
+    failed deferred sync just leaves the truncation stopgap in place.
+    """
+    import asyncio
+    delays = (1.0, 1.5, 2.0, 2.5)  # ~7s total polling window
+    for delay in delays:
+        await asyncio.sleep(delay)
+        try:
+            oc_title = await _fetch_opencode_session_title(
+                opencode_session_id, user_id
+            )
+        except Exception:
+            oc_title = None
+        if not oc_title:
+            continue
+        try:
+            async with async_session_maker() as session:
+                result = await session.execute(
+                    select(Conversation).where(
+                        Conversation.conversation_id == conversation_id
+                    )
+                )
+                convo = result.scalar_one_or_none()
+                if not convo:
+                    return
+                if convo.title in ("New conversation", expected_auto):
+                    new_title = oc_title[:255]
+                    if convo.title != new_title:
+                        convo.title = new_title
+                        await session.commit()
+                        logger.info(
+                            "deferred_title_synced",
+                            opencode_session_id=opencode_session_id,
+                            title=new_title,
+                        )
+            return
+        except Exception as exc:
+            logger.warning(
+                "deferred_title_sync_failed",
+                opencode_session_id=opencode_session_id,
+                error=str(exc),
+            )
+            return
 
 
 async def _fetch_opencode_session_title(
