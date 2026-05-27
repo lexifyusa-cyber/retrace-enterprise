@@ -1,0 +1,40 @@
+# Deploy any sub-branch (anything except `main`) to the shared preview app
+# retrace-preview.fly.dev — a throwaway live-preview slot, separate from the
+# real dev app retrace-dev.
+#
+# Model: ONE tester at a time. Every push to a non-main branch redeploys the
+# single shared app, so "last push wins". Deploying here never touches git or
+# retrace-dev — you still merge your branch to `main` the normal way, and that
+# merge auto-deploys to retrace-dev (see fly-deploy.yml).
+#
+# NOTE: retrace-preview has its OWN empty database. A new model field shows up
+# here (create_all builds tables fresh) but can be MISSING on retrace-dev unless
+# a matching ALTER entry was added to _run_migrations(). For schema changes,
+# fork retrace-dev's volume into this app first so the preview is faithful.
+name: Deploy branch to retrace-preview
+
+on:
+  push:
+    branches-ignore:
+      - main
+  workflow_dispatch: {}
+
+# Separate group from fly-deploy-retrace-dev: preview deploys must not block
+# (or be blocked by) deploys to the real retrace-dev app.
+concurrency:
+  group: fly-deploy-retrace-preview
+  cancel-in-progress: false
+
+jobs:
+  preview:
+    name: flyctl deploy -> retrace-preview
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: Deploy to retrace-preview
+        run: |
+          echo "Deploying '${{ github.ref_name }}' to retrace-preview.fly.dev"
+          flyctl deploy --remote-only --app retrace-preview
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
