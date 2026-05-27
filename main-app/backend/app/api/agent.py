@@ -710,6 +710,10 @@ class OpenCodeMessageRequest(BaseModel):
     # the same session can use different agents. None → OC falls back to the
     # session's original agent. The frontend's Build/Plan toggle flows here.
     agent: Optional[str] = None
+    # Per-conversation "Thinking" mode: "off" | "think" | "deep". Drives native
+    # reasoning by regenerating opencode.json (reasoning + interleaved +
+    # enable_thinking) when it changes. None / "off" → no reasoning (default).
+    reasoning: Optional[str] = None
 
 
 @router.post("/opencode/session")
@@ -835,6 +839,16 @@ async def opencode_send_message(
 ):
     """Send a message to an OpenCode session. Streams real-time SSE events."""
     import httpx
+
+    # Apply the per-conversation "Thinking" mode BEFORE resolving the port. When
+    # the mode changed since the last config, this regenerates opencode.json and
+    # reloads the user's OpenCode (so native reasoning takes effect), which may
+    # re-allocate the port — hence we read get_port() afterwards. No-op when
+    # unchanged, so steady-state sends pay nothing.
+    try:
+        await opencode_manager.set_reasoning(current_user.user_id, request.reasoning)
+    except Exception as exc:
+        logger.warning("[OC] set_reasoning failed", user_id=current_user.user_id, error=str(exc))
 
     port = opencode_manager.get_port(current_user.user_id)
     if not port:

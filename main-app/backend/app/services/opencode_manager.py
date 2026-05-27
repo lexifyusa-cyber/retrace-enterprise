@@ -19,6 +19,7 @@ from typing import Any, Dict, Optional
 import structlog
 
 from app.skills.mcp_builder_oc_prompt import MCP_BUILDER_OC_PROMPT
+from app.services import reasoning as reasoning_resolver
 
 logger = structlog.get_logger()
 
@@ -284,10 +285,21 @@ class OpenCodeManager:
         user_id: str,
         team_id: Optional[str] = None,
         model_override: Optional[str] = None,
+        reasoning_mode: Optional[str] = None,
     ) -> Path:
         # Remember how this config was generated so reload_for_user() can
-        # replay the same team/model instead of resetting the user's context.
-        self._start_params[user_id] = {"team_id": team_id, "model_override": model_override}
+        # replay the same team/model/reasoning instead of resetting the user's
+        # context. `reasoning_mode` falls back to the previously-stored value so
+        # callers that don't know it (page mount, session create) preserve it.
+        prev_params = self._start_params.get(user_id, {})
+        if reasoning_mode is None:
+            reasoning_mode = prev_params.get("reasoning_mode", "off")
+        reasoning_mode = reasoning_resolver.normalize_mode(reasoning_mode)
+        self._start_params[user_id] = {
+            "team_id": team_id,
+            "model_override": model_override,
+            "reasoning_mode": reasoning_mode,
+        }
         from datetime import datetime
         from app.db.database import async_session_maker
         from app.api.settings import get_active_llm_settings
@@ -385,6 +397,20 @@ class OpenCodeManager:
                     "cost": {"input": 3.0, "output": 15.0},
                     "limit": {"context": 131072, "output": 16384},
                 }
+
+        # Apply the "Thinking" mode to the agent-facing model entries. For the
+        # current OpenAI-compatible/vLLM setup this sets `reasoning: true`,
+        # `interleaved: {field: "reasoning_content"}`, and `options.enable_thinking`
+        # so the gateway emits a separate reasoning channel that OpenCode renders
+        # as a thinking part. When the mode is 'off' it restores the non-reasoning
+        # baseline. Only patches models that have a custom_models entry (the small
+        # title model is intentionally left without reasoning).
+        for _mn in (model_name, plan_model_name):
+            if _mn and _mn in custom_models:
+                reasoning_resolver.apply_to_model_entry(
+                    custom_models[_mn],
+                    reasoning_resolver.resolve(provider, _mn, reasoning_mode),
+                )
 
         team_description = ""
         if team_id:
@@ -845,6 +871,33 @@ class OpenCodeManager:
         await self.stop_for_user(user_id)
         await self.start_for_user(user_id, team_id=team_id, model_override=model_override)
         return True
+
+    async def set_reasoning(self, user_id: str, mode: Optional[str]) -> bool:
+        """Set the per-user "Thinking" reasoning mode (off/think/deep).
+
+        If it differs from the mode the current opencode.json was generated with,
+        regenerate the config and reload the user's OpenCode so native reasoning
+        (enable_thinking + reasoning_content) takes effect. No-op (returns False)
+        when unchanged — safe to call on every message send.
+        """
+        mode = reasoning_resolver.normalize_mode(mode)
+        params = self._start_params.get(user_id)
+        current = (params or {}).get("reasoning_mode", "off")
+        if mode == current:
+            return False
+        # Persist so the next config generation (reload or cold start) bakes it in.
+        if params is None:
+            self._start_params[user_id] = {"team_id": None, "model_override": None, "reasoning_mode": mode}
+        else:
+            params["reasoning_mode"] = mode
+        logger.info("[OC] set_reasoning", user_id=user_id, mode=mode, previous=current)
+        # Reload only when an instance exists so OC re-reads the regenerated config.
+        proc = self.get_process(user_id)
+        external = bool(os.environ.get("RETRACE_OPENCODE_EXTERNAL_URL", "").strip())
+        running = external or (proc is not None and proc.process is not None and proc.process.returncode is None)
+        if running:
+            return await self.reload_for_user(user_id)
+        return False
 
     async def stop_all(self) -> None:
         for user_id in list(self._processes.keys()):
