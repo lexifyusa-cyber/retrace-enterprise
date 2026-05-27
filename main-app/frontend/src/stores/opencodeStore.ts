@@ -1065,6 +1065,21 @@ export const useOpenCodeStore = create<StoreInternal>((set, get) => ({
                 }
                 return s
               })
+            } else if (data.type === 'conversation.updated') {
+              // Backend emits this from the post-stream sync once OC's
+              // LLM-generated title (e.g. "Greeting") lands — so the
+              // conversation pill can upgrade from the truncation stopgap
+              // ("hello") in the same turn, with no extra refetch heuristic.
+              // Dispatched as a window CustomEvent so Agent.tsx can pick it
+              // up without the store needing a queryClient reference.
+              console.log('[OC] EVT conversation.updated', data)
+              try {
+                window.dispatchEvent(new CustomEvent('retrace:conversation-updated', {
+                  detail: { conversationId: data.conversation_id, title: data.title },
+                }))
+              } catch (e) {
+                console.warn('[OC] conversation.updated dispatch failed', e)
+              }
             } else if (data.type === 'done') {
               console.log('[OC] EVT done', { totalEvents: eventCount, conversationId })
               reader.cancel()

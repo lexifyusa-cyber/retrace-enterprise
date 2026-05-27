@@ -129,7 +129,9 @@ async def find_opencode_session_id(conversation_id: str) -> Optional[str]:
 async def sync_messages_from_opencode(
     opencode_session_id: str,
     messages: List[Dict[str, Any]],
-) -> None:
+    *,
+    wait_for_oc_title_seconds: float = 0.0,
+) -> Optional[Dict[str, Any]]:
     """Persist an OpenCode session's full message log into ReTrace's
     ConversationMessage table.
 
@@ -306,13 +308,34 @@ async def sync_messages_from_opencode(
                 if len(first_user_text) > 80:
                     auto_truncation += "..."
 
-            scheduled_deferred = False
+            title_from_oc = False
             if convo.title in ("New conversation", auto_truncation):
                 oc_title = await _fetch_opencode_session_title(
                     opencode_session_id, convo.user_id
                 )
+                # Inline polling for the streaming-endpoint use case: the
+                # caller is holding an SSE stream open and wants to emit a
+                # `conversation.updated` event with the LLM-generated title
+                # BEFORE closing the stream. Without this, the frontend has
+                # to wait for the deferred background task and a manual
+                # refetch — which it never does for the in-conversation
+                # flow (no page reload). Polls roughly every 0.5s until a
+                # non-default title appears or the budget is exhausted.
+                if not oc_title and wait_for_oc_title_seconds > 0:
+                    import asyncio as _asyncio
+                    elapsed = 0.0
+                    poll_interval = 0.5
+                    while elapsed < wait_for_oc_title_seconds:
+                        await _asyncio.sleep(poll_interval)
+                        elapsed += poll_interval
+                        oc_title = await _fetch_opencode_session_title(
+                            opencode_session_id, convo.user_id
+                        )
+                        if oc_title:
+                            break
                 if oc_title:
                     convo.title = oc_title[:255]
+                    title_from_oc = True
                 elif convo.title == "New conversation" and auto_truncation:
                     # OC's forked title-gen hasn't completed yet — use our
                     # stopgap. A later sync will upgrade to OC's title once
@@ -331,9 +354,14 @@ async def sync_messages_from_opencode(
                         conversation_id=convo.conversation_id,
                         expected_auto=auto_truncation,
                     )
-                    scheduled_deferred = True
 
             await session.commit()
+
+            return {
+                "conversation_id": convo.conversation_id,
+                "title": convo.title,
+                "title_from_oc": title_from_oc,
+            }
 
         logger.info(
             "sync_messages_complete",

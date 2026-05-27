@@ -927,6 +927,10 @@ async def opencode_send_message(
     async def stream_generator():
         event_count = 0
         relayed_count = 0
+        # Set to True after the in-stream post-stream sync runs (in the "stop"
+        # branch below), so the safety-net sync in the `finally` block doesn't
+        # double-run and stomp on the freshly-applied OC title.
+        inline_sync_done = False
         # OpenCode's EventMessagePartUpdated carries only {sessionID, part, time}
         # — no role info. To stop user-message text parts from being forwarded
         # (which would otherwise be appended to the assistant message on the
@@ -1126,6 +1130,32 @@ async def opencode_send_message(
                                 yield f"data: {json.dumps({'type': 'message.completed', 'message': {'id': info_id, 'finish': info.get('finish'), 'cost': info.get('cost'), 'tokens': info.get('tokens')}})}\n\n"
                                 if info.get("finish") == "stop":
                                     logger.info("[OC] stream complete", session_id=session_id, total_events=event_count, relayed=relayed_count)
+                                    # Run post-stream sync INSIDE the stream lifecycle so we
+                                    # can emit a `conversation.updated` event with OC's
+                                    # LLM-generated title before closing the stream. The
+                                    # frontend uses this event to refetch the conversation
+                                    # list and upgrade the pill from the truncation stopgap
+                                    # ("hello") to OC's polished title ("Greeting") in one
+                                    # turn — no extra page load required. Budget the title
+                                    # poll at 4s so a slow `ensureTitle` LLM call doesn't
+                                    # delay the user-visible `done` event noticeably; the
+                                    # deferred background sync still covers the >4s tail.
+                                    try:
+                                        async with httpx.AsyncClient(timeout=15) as sync_client:
+                                            msgs_resp = await sync_client.get(
+                                                f"http://127.0.0.1:{port}/session/{session_id}/message"
+                                            )
+                                            if msgs_resp.status_code == 200:
+                                                sync_result = await sync_messages_from_opencode(
+                                                    session_id,
+                                                    msgs_resp.json(),
+                                                    wait_for_oc_title_seconds=4.0,
+                                                )
+                                                if sync_result and sync_result.get("title_from_oc"):
+                                                    yield f"data: {json.dumps({'type': 'conversation.updated', 'conversation_id': sync_result['conversation_id'], 'title': sync_result['title']})}\n\n"
+                                    except Exception as sync_exc:
+                                        logger.warning("[OC] inline post-stream sync failed", error=str(sync_exc))
+                                    inline_sync_done = True
                                     yield f"data: {json.dumps({'type': 'done'})}\n\n"
                                     return
 
@@ -1231,15 +1261,18 @@ async def opencode_send_message(
                 # Persist OpenCode's full message log into ReTrace's DB so the
                 # conversation (tool calls, thinking, costs, etc.) survives an
                 # OC sidecar restart. Idempotent — only new parts get inserted.
-                try:
-                    async with httpx.AsyncClient(timeout=15) as sync_client:
-                        msgs_resp = await sync_client.get(
-                            f"http://127.0.0.1:{port}/session/{session_id}/message"
-                        )
-                        if msgs_resp.status_code == 200:
-                            await sync_messages_from_opencode(session_id, msgs_resp.json())
-                except Exception as sync_exc:
-                    logger.warning("[OC] post-stream sync failed", error=str(sync_exc))
+                # Skipped if the in-stream "stop" branch already ran the sync
+                # (with inline title polling + `conversation.updated` emit).
+                if not inline_sync_done:
+                    try:
+                        async with httpx.AsyncClient(timeout=15) as sync_client:
+                            msgs_resp = await sync_client.get(
+                                f"http://127.0.0.1:{port}/session/{session_id}/message"
+                            )
+                            if msgs_resp.status_code == 200:
+                                await sync_messages_from_opencode(session_id, msgs_resp.json())
+                    except Exception as sync_exc:
+                        logger.warning("[OC] post-stream sync failed", error=str(sync_exc))
 
             logger.info("[OC] stream ended (no stop event)", session_id=session_id, total_events=event_count, relayed=relayed_count)
             yield f"data: {json.dumps({'type': 'done'})}\n\n"

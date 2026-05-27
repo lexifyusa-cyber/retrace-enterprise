@@ -509,6 +509,20 @@ export default function Agent() {
     }
   }, [selectedTeamId, refetchConversations])
 
+  // Listen for OC's post-stream `conversation.updated` event (dispatched by
+  // opencodeStore when the SSE stream surfaces OC's LLM-generated title).
+  // Without this, the pill stays on the truncation stopgap ("hello") because
+  // sendMessage's `finally` refetches BEFORE the deferred title sync writes
+  // OC's title ("Greeting") to the DB. This handler runs after the inline
+  // title sync — pulling the updated row immediately.
+  useEffect(() => {
+    const handler = () => {
+      refetchConversations()
+    }
+    window.addEventListener('retrace:conversation-updated', handler)
+    return () => window.removeEventListener('retrace:conversation-updated', handler)
+  }, [refetchConversations])
+
   // Rename conversation
   const handleRenameConversation = useCallback(async (conversationId: string) => {
     if (!editTitleValue.trim()) return
