@@ -217,6 +217,7 @@ export default function Agent() {
   // creation — it only affects the next message sent. `preferredReasoning` covers
   // the pre-session window (before an OC session exists for this conversation).
   const [preferredReasoning, setPreferredReasoning] = useState<'off' | 'think' | 'deep'>('off')
+  const [reasoningMenuOpen, setReasoningMenuOpen] = useState(false)
   const displayReasoning: 'off' | 'think' | 'deep' = activeSession?.reasoning ?? preferredReasoning
 
   const handleSetAgent = useCallback((mode: 'build' | 'plan') => {
@@ -225,12 +226,12 @@ export default function Agent() {
     if (activeConversationId) ocStore.setAgent(activeConversationId, mode)
   }, [isRunning, agentLocked, displayAgent, activeConversationId])
 
-  const handleCycleReasoning = useCallback(() => {
+  const handleSetReasoning = useCallback((mode: 'off' | 'think' | 'deep') => {
     if (isRunning) return
-    const next = displayReasoning === 'off' ? 'think' : displayReasoning === 'think' ? 'deep' : 'off'
-    setPreferredReasoning(next)
-    if (activeConversationId) ocStore.setReasoning(activeConversationId, next)
-  }, [isRunning, displayReasoning, activeConversationId])
+    setPreferredReasoning(mode)
+    if (activeConversationId) ocStore.setReasoning(activeConversationId, mode)
+    setReasoningMenuOpen(false)
+  }, [isRunning, activeConversationId])
 
   // Resizable split: chatWidthPct is the left panel's percentage (30–80)
   const [chatWidthPct, setChatWidthPct] = useState(50)
@@ -1610,26 +1611,47 @@ export default function Agent() {
           >
             {displayAgent === 'plan' ? <ClipboardList className="w-4 h-4" /> : <Bot className="w-4 h-4" />}
           </button>
-          <button
-            type="button"
-            onClick={handleCycleReasoning}
-            disabled={isRunning}
-            title={
-              displayReasoning === 'off'
-                ? 'Thinking off — click to enable step-by-step reasoning'
-                : displayReasoning === 'think'
-                  ? 'Thinking: normal (click for Deep)'
-                  : 'Thinking: deep (click to turn off)'
-            }
-            className={`flex-shrink-0 p-2 rounded-lg border transition-all flex items-center gap-1 ${
-              displayReasoning !== 'off'
-                ? 'bg-purple-500/20 border-purple-500/40 text-purple-400'
-                : 'border-rt-border text-rt-text-muted hover:border-rt-text-muted hover:text-rt-text'
-            }`}
-          >
-            <Brain className="w-4 h-4" />
-            {displayReasoning === 'deep' && <span className="text-[10px] font-medium leading-none">Deep</span>}
-          </button>
+          <div className="relative flex-shrink-0">
+            <button
+              type="button"
+              onClick={() => setReasoningMenuOpen(o => !o)}
+              onBlur={() => setTimeout(() => setReasoningMenuOpen(false), 150)}
+              disabled={isRunning}
+              title="Thinking mode"
+              className={`p-2 rounded-lg border transition-all flex items-center gap-1 ${
+                displayReasoning !== 'off'
+                  ? 'bg-purple-500/20 border-purple-500/40 text-purple-400'
+                  : 'border-rt-border text-rt-text-muted hover:border-rt-text-muted hover:text-rt-text'
+              }`}
+            >
+              <Brain className="w-4 h-4" />
+              {displayReasoning !== 'off' && (
+                <span className="text-[10px] font-medium leading-none">{displayReasoning === 'deep' ? 'Deep' : 'Think'}</span>
+              )}
+            </button>
+            {reasoningMenuOpen && (
+              <div className="absolute bottom-full left-0 mb-1 py-1 min-w-[170px] bg-rt-bg-light border border-rt-border rounded-lg shadow-xl z-50">
+                {([
+                  { mode: 'off' as const, label: 'Off' },
+                  { mode: 'think' as const, label: 'Think' },
+                  { mode: 'deep' as const, label: 'Deep Think' },
+                ]).map(opt => (
+                  <button
+                    key={opt.mode}
+                    type="button"
+                    onMouseDown={(e) => { e.preventDefault(); handleSetReasoning(opt.mode) }}
+                    className={`w-full flex items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-rt-surface ${
+                      displayReasoning === opt.mode ? 'text-purple-400' : 'text-rt-text'
+                    }`}
+                  >
+                    <Brain className="w-3.5 h-3.5 flex-shrink-0" />
+                    <span className="flex-1">{opt.label}</span>
+                    {displayReasoning === opt.mode && <Check className="w-3.5 h-3.5 flex-shrink-0" />}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
