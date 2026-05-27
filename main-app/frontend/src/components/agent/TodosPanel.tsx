@@ -25,9 +25,10 @@ interface TodosPanelProps {
  * and works. Surfacing it here gives the user visibility into the agent's
  * intent without forcing them to read the full tool-call stream.
  *
- * Poll strategy: 3s while the agent is actively streaming, 15s while idle.
- * The TODOs change rarely between user prompts, so the slower idle cadence
- * is fine.
+ * Poll strategy: 3s while the agent is actively streaming, 15s while idle —
+ * BUT only when the tab is visible and the user has interacted recently.
+ * An open-but-idle/background tab stops polling entirely, so it can't keep
+ * the (scale-to-zero) backend awake. Polling resumes on return.
  */
 export default function TodosPanel({ opencodeSessionId, isAgentRunning }: TodosPanelProps) {
   const [todos, setTodos] = useState<Todo[]>([])
@@ -40,6 +41,8 @@ export default function TodosPanel({ opencodeSessionId, isAgentRunning }: TodosP
       return
     }
     let cancelled = false
+    let lastActivity = Date.now()
+    const IDLE_MS = 60_000 // after 60s of no interaction (and agent idle), stop polling
 
     const fetchTodos = async () => {
       try {
@@ -57,12 +60,31 @@ export default function TodosPanel({ opencodeSessionId, isAgentRunning }: TodosP
       }
     }
 
+    // Only hit the backend when it's worth it. A forever-polling idle tab kept
+    // fly-proxy from ever seeing the machine idle (defeating scale-to-zero).
+    // Poll while the agent streams; otherwise only while visible AND recently active.
+    const shouldPoll = () => {
+      if (cancelled || document.hidden) return false
+      if (isAgentRunning) return true
+      return Date.now() - lastActivity < IDLE_MS
+    }
+    const tick = () => { if (shouldPoll()) fetchTodos() }
+
+    const markActivity = () => { lastActivity = Date.now() }
+    const onVisibility = () => { if (!document.hidden) { markActivity(); fetchTodos() } }
+    const activityEvents = ['mousemove', 'keydown', 'pointerdown', 'wheel'] as const
+    activityEvents.forEach((e) => window.addEventListener(e, markActivity, { passive: true }))
+    document.addEventListener('visibilitychange', onVisibility)
+
     setLoading(true)
-    fetchTodos()
-    const interval = setInterval(fetchTodos, isAgentRunning ? 3000 : 15000)
+    if (shouldPoll()) fetchTodos()
+    const interval = setInterval(tick, isAgentRunning ? 3000 : 15000)
+
     return () => {
       cancelled = true
       clearInterval(interval)
+      activityEvents.forEach((e) => window.removeEventListener(e, markActivity))
+      document.removeEventListener('visibilitychange', onVisibility)
     }
   }, [opencodeSessionId, isAgentRunning])
 
