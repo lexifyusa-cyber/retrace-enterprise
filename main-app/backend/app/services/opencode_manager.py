@@ -896,7 +896,26 @@ class OpenCodeManager:
         external = bool(os.environ.get("RETRACE_OPENCODE_EXTERNAL_URL", "").strip())
         running = external or (proc is not None and proc.process is not None and proc.process.returncode is None)
         if running:
-            return await self.reload_for_user(user_id)
+            reloaded = await self.reload_for_user(user_id)
+            if reloaded:
+                # reload_for_user restarts OC (stop+start) but returns before the
+                # new server is accepting connections. The send handler POSTs to
+                # OC immediately after this call, so block until OC is listening
+                # to avoid a connection-refused race on the first reasoning turn.
+                await self._wait_until_healthy(user_id)
+            return reloaded
+        return False
+
+    async def _wait_until_healthy(self, user_id: str, attempts: int = 40, delay_s: float = 0.5) -> bool:
+        """Poll the user's OC server until it answers (or times out ~20s)."""
+        proc = self.get_process(user_id)
+        if proc is None:
+            return False
+        for _ in range(attempts):
+            if await proc.is_healthy():
+                return True
+            await asyncio.sleep(delay_s)
+        logger.warning("[OC] _wait_until_healthy: timed out waiting for OpenCode", user_id=user_id)
         return False
 
     async def stop_all(self) -> None:

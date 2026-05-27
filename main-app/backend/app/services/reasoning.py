@@ -79,12 +79,15 @@ def resolve(provider: str, model: str, mode: Optional[str]) -> ReasoningPlan:
         )
 
     # Generic OpenAI-compatible reasoning model on vLLM (Gemma 4, Qwen3, QwQ,
-    # and any custom gateway model the operator marks reasoning-capable). vLLM
-    # only emits reasoning_content when enable_thinking is in the body.
+    # and any custom gateway model the operator marks reasoning-capable).
+    # vLLM only emits reasoning_content when enable_thinking is passed to the
+    # chat template — it MUST be nested under `chat_template_kwargs`. A top-level
+    # `enable_thinking` is accepted (HTTP 200) but silently ignored, so reasoning
+    # would never engage. Verified against the lumenatech gateway.
     return ReasoningPlan(
         enabled=True,
         model_patch={"reasoning": True, "interleaved": {"field": "reasoning_content"}},
-        options_patch={"enable_thinking": True},
+        options_patch={"chat_template_kwargs": {"enable_thinking": True}},
         effort=effort,
     )
 
@@ -101,6 +104,7 @@ def apply_to_model_entry(entry: dict, plan: ReasoningPlan) -> None:
         opts = entry.get("options")
         if isinstance(opts, dict):
             opts.pop("enable_thinking", None)
+            opts.pop("chat_template_kwargs", None)
             opts.pop("reasoningEffort", None)
         return
     entry.update(plan.model_patch)
