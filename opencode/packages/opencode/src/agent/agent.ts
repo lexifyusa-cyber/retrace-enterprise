@@ -250,7 +250,12 @@ export const layer = Layer.effect(
             options: {},
             native: true,
             hidden: true,
-            temperature: 0.5,
+            // No temperature override — reasoning models (Grok-fast-reasoning,
+            // OpenAI o-series) reject custom temperatures, and ensureTitle's
+            // failure is silently swallowed by Effect.ignore, so title-gen
+            // disappears with no log trace. Letting providers use their
+            // defaults keeps title-gen working across both reasoning and
+            // non-reasoning models.
             permission: Permission.merge(
               defaults,
               Permission.fromConfig({
