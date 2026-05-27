@@ -2416,6 +2416,34 @@ async def list_conversations(
         q = q.where(Conversation.team_id == team_id)
     result = await session.execute(q)
     convos = result.scalars().all()
+
+    # Opportunistic title refresh: any conversation still on the "New
+    # conversation" default that has a linked OC session can have its title
+    # upgraded from OpenCode's session.title (set by ensureTitle on the first
+    # turn). Fires fire-and-forget tasks so this listing call returns
+    # immediately; the next listing call (React Query refetch) picks up the
+    # upgraded title. Capped at 5 per call to avoid scheduling bursts.
+    try:
+        from app.services.session_bridge import schedule_deferred_title_sync
+        refreshed = 0
+        for convo in convos:
+            if refreshed >= 5:
+                break
+            if convo.title != "New conversation":
+                continue
+            if not convo.opencode_session_id:
+                continue
+            schedule_deferred_title_sync(
+                opencode_session_id=convo.opencode_session_id,
+                user_id=convo.user_id,
+                conversation_id=convo.conversation_id,
+                expected_auto=None,
+            )
+            refreshed += 1
+    except Exception:
+        # Title refresh is best-effort — never disrupt the listing response.
+        pass
+
     return [c.to_dict(include_messages=False) for c in convos]
 
 
@@ -2460,6 +2488,23 @@ async def get_conversation(
     convo = result.scalar_one_or_none()
     if not convo:
         raise HTTPException(status_code=404, detail="Conversation not found")
+
+    # Opportunistic title refresh — same as list_conversations. When a user
+    # opens a conversation stuck on "New conversation", schedule a background
+    # check against OpenCode's session.title; the next list refetch picks up
+    # the upgraded title.
+    if convo.title == "New conversation" and convo.opencode_session_id:
+        try:
+            from app.services.session_bridge import schedule_deferred_title_sync
+            schedule_deferred_title_sync(
+                opencode_session_id=convo.opencode_session_id,
+                user_id=convo.user_id,
+                conversation_id=convo.conversation_id,
+                expected_auto=None,
+            )
+        except Exception:
+            pass
+
     return convo.to_dict(include_messages=True)
 
 

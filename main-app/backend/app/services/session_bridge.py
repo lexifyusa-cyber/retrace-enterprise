@@ -24,6 +24,40 @@ from app.models.conversation import Conversation, ConversationMessage
 logger = structlog.get_logger()
 
 
+# Strong references to in-flight fire-and-forget background tasks (deferred
+# title sync, opportunistic refresh from list/get endpoints, etc.). Python's
+# `asyncio.create_task` keeps only a WEAK reference to its task — a task with
+# no other reference can be garbage-collected at any time, including mid-
+# execution. We add tasks here on creation and remove them when done.
+_BACKGROUND_TASKS: set = set()
+
+
+def schedule_deferred_title_sync(
+    opencode_session_id: str,
+    user_id: str,
+    conversation_id: str,
+    expected_auto: Optional[str],
+) -> None:
+    """Schedule a fire-and-forget title-refresh task with a strong reference
+    so Python's GC won't kill it before it finishes its ~7-second poll.
+
+    Safe to call from request handlers (FastAPI routes) or from inside the
+    main sync — the helper handles task lifecycle (creation + reference +
+    cleanup) so callers don't have to.
+    """
+    import asyncio
+    task = asyncio.create_task(
+        _deferred_title_sync(
+            opencode_session_id=opencode_session_id,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            expected_auto=expected_auto,
+        )
+    )
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+
+
 async def get_or_create_conversation(
     opencode_session_id: str,
     user_id: str,
@@ -273,15 +307,15 @@ async def sync_messages_from_opencode(
                 # may not have completed by the time this sync ran. For one-
                 # turn conversations there's no later sync to upgrade the
                 # title — so schedule a background poll that catches OC's
-                # title once it lands (typically within 1-3s).
+                # title once it lands (typically within 1-3s). Use the
+                # strong-ref helper so the task isn't GC'd mid-execution.
                 if not oc_title and first_user_text:
-                    import asyncio
-                    asyncio.create_task(_deferred_title_sync(
+                    schedule_deferred_title_sync(
                         opencode_session_id=opencode_session_id,
                         user_id=convo.user_id,
                         conversation_id=convo.conversation_id,
                         expected_auto=auto_truncation,
-                    ))
+                    )
                     scheduled_deferred = True
 
             await session.commit()
