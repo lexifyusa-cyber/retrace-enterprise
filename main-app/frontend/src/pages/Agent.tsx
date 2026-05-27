@@ -4,7 +4,7 @@ import {
   Bot, Loader2, Terminal, FileText, Globe, Monitor,
   Package, Check, ChevronDown, Code, Play, X,
   Plus, MessageSquare, Trash2, Edit2,
-  ClipboardList,
+  ClipboardList, Brain,
   FolderOpen, ListTodo,
   Paperclip, File as FileIcon,
 } from 'lucide-react'
@@ -213,11 +213,24 @@ export default function Agent() {
   const displayAgent: 'build' | 'plan' = activeSession?.agent ?? preferredAgent
   const agentLocked = !!activeSession?.sessionId
 
+  // "Thinking" reasoning mode. Unlike agent mode, it isn't locked after session
+  // creation — it only affects the next message sent. `preferredReasoning` covers
+  // the pre-session window (before an OC session exists for this conversation).
+  const [preferredReasoning, setPreferredReasoning] = useState<'off' | 'think' | 'deep'>('off')
+  const displayReasoning: 'off' | 'think' | 'deep' = activeSession?.reasoning ?? preferredReasoning
+
   const handleSetAgent = useCallback((mode: 'build' | 'plan') => {
     if (isRunning || agentLocked || mode === displayAgent) return
     setPreferredAgent(mode)
     if (activeConversationId) ocStore.setAgent(activeConversationId, mode)
   }, [isRunning, agentLocked, displayAgent, activeConversationId])
+
+  const handleCycleReasoning = useCallback(() => {
+    if (isRunning) return
+    const next = displayReasoning === 'off' ? 'think' : displayReasoning === 'think' ? 'deep' : 'off'
+    setPreferredReasoning(next)
+    if (activeConversationId) ocStore.setReasoning(activeConversationId, next)
+  }, [isRunning, displayReasoning, activeConversationId])
 
   // Resizable split: chatWidthPct is the left panel's percentage (30–80)
   const [chatWidthPct, setChatWidthPct] = useState(50)
@@ -634,6 +647,11 @@ export default function Agent() {
     setPendingMentions([])
     const sendParts = [...currentAttachments, ...currentMentions]
 
+    // Ensure the (possibly just-created) session carries the user's Thinking
+    // choice — makeSession defaults reasoning to 'off', so seed it from the
+    // composer's current selection before sending.
+    ocStore.setReasoning(conversationId, displayReasoning)
+
     try {
       await ocStore.sendMessage(conversationId, taskText, sendParts.length ? sendParts : undefined)
     } catch (err: any) {
@@ -650,7 +668,7 @@ export default function Agent() {
       // message during sync) and message_count update without a manual reload.
       refetchConversations()
     }
-  }, [task, selectedTeamId, isRunning, activeConversationId, displayAgent, refetchConversations, pendingAttachments, pendingMentions])
+  }, [task, selectedTeamId, isRunning, activeConversationId, displayAgent, displayReasoning, refetchConversations, pendingAttachments, pendingMentions])
 
   const handleSubmit = (e: React.FormEvent) => { e.preventDefault(); handleExecute() }
 
@@ -1591,6 +1609,26 @@ export default function Agent() {
             }`}
           >
             {displayAgent === 'plan' ? <ClipboardList className="w-4 h-4" /> : <Bot className="w-4 h-4" />}
+          </button>
+          <button
+            type="button"
+            onClick={handleCycleReasoning}
+            disabled={isRunning}
+            title={
+              displayReasoning === 'off'
+                ? 'Thinking off — click to enable step-by-step reasoning'
+                : displayReasoning === 'think'
+                  ? 'Thinking: normal (click for Deep)'
+                  : 'Thinking: deep (click to turn off)'
+            }
+            className={`flex-shrink-0 p-2 rounded-lg border transition-all flex items-center gap-1 ${
+              displayReasoning !== 'off'
+                ? 'bg-purple-500/20 border-purple-500/40 text-purple-400'
+                : 'border-rt-border text-rt-text-muted hover:border-rt-text-muted hover:text-rt-text'
+            }`}
+          >
+            <Brain className="w-4 h-4" />
+            {displayReasoning === 'deep' && <span className="text-[10px] font-medium leading-none">Deep</span>}
           </button>
           <button
             type="button"
