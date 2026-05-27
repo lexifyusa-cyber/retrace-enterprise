@@ -398,19 +398,24 @@ class OpenCodeManager:
                     "limit": {"context": 131072, "output": 16384},
                 }
 
-        # Apply the "Thinking" mode to the agent-facing model entries. For the
-        # current OpenAI-compatible/vLLM setup this sets `reasoning: true`,
-        # `interleaved: {field: "reasoning_content"}`, and `options.enable_thinking`
-        # so the gateway emits a separate reasoning channel that OpenCode renders
-        # as a thinking part. When the mode is 'off' it restores the non-reasoning
-        # baseline. Only patches models that have a custom_models entry (the small
-        # title model is intentionally left without reasoning).
-        for _mn in (model_name, plan_model_name):
-            if _mn and _mn in custom_models:
-                reasoning_resolver.apply_to_model_entry(
-                    custom_models[_mn],
-                    reasoning_resolver.resolve(provider, _mn, reasoning_mode),
-                )
+        # Reasoning ("Thinking") — reload-free design.
+        #
+        # If the selected model supports native reasoning, make it PERMANENTLY
+        # reasoning-capable at the model level (`reasoning: true` +
+        # `interleaved: {field: "reasoning_content"}`). This is harmless when a
+        # request doesn't ask to think — the gateway just returns no
+        # reasoning_content. Per-message on/off is then toggled WITHOUT any
+        # OpenCode restart by routing the turn to a "<agent>-think" variant that
+        # carries the body flag (e.g. chat_template_kwargs.enable_thinking).
+        # `think_options` is that per-agent options patch (empty for
+        # non-reasoning models, in which case the -think variants are inert).
+        think_options: Dict[str, Any] = {}
+        _rplan = reasoning_resolver.resolve(provider, model_name, "think")
+        if _rplan.enabled:
+            think_options = dict(_rplan.options_patch)
+            for _mn in (model_name, plan_model_name):
+                if _mn and _mn in custom_models:
+                    custom_models[_mn].update(_rplan.model_patch)
 
         team_description = ""
         if team_id:
@@ -591,6 +596,15 @@ class OpenCodeManager:
                 "mcp": "allow",
             },
         }
+
+        # Reload-free "Thinking": define build-think / plan-think agent variants
+        # (same model/prompt/permissions as build/plan, plus the reasoning body
+        # flag via `options`). agent.py routes a Think turn to "<agent>-think".
+        # Always defined so the per-turn agent switch never hits a missing
+        # agent; for non-reasoning models `think_options` is empty, making the
+        # variants behave identically to build/plan.
+        config["agent"]["build-think"] = {**config["agent"]["build"], "options": dict(think_options)}
+        config["agent"]["plan-think"] = {**config["agent"]["plan"], "options": dict(think_options)}
 
         if small_model_name:
             config["small_model"] = f"{provider_id}/{small_model_name}"

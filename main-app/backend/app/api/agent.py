@@ -840,16 +840,6 @@ async def opencode_send_message(
     """Send a message to an OpenCode session. Streams real-time SSE events."""
     import httpx
 
-    # Apply the per-conversation "Thinking" mode BEFORE resolving the port. When
-    # the mode changed since the last config, this regenerates opencode.json and
-    # reloads the user's OpenCode (so native reasoning takes effect), which may
-    # re-allocate the port — hence we read get_port() afterwards. No-op when
-    # unchanged, so steady-state sends pay nothing.
-    try:
-        await opencode_manager.set_reasoning(current_user.user_id, request.reasoning)
-    except Exception as exc:
-        logger.warning("[OC] set_reasoning failed", user_id=current_user.user_id, error=str(exc))
-
     port = opencode_manager.get_port(current_user.user_id)
     if not port:
         logger.error("[OC] send_message: no OpenCode server", user_id=current_user.user_id)
@@ -937,6 +927,15 @@ async def opencode_send_message(
     # would be silently rejected by OC's schema, so guard locally.
     if request.agent in ("build", "plan", "mcp-builder"):
         payload["agent"] = request.agent
+    # "Thinking" (reload-free): route build/plan turns to the matching
+    # "<agent>-think" variant, which carries the reasoning body flag. The
+    # variants always exist in the generated config (inert for non-reasoning
+    # models), so this never selects a missing agent. mcp-builder is excluded
+    # (batch builds don't surface a thinking UI).
+    _think = str(request.reasoning or "").lower() in ("think", "deep")
+    if _think:
+        base = payload.get("agent") if payload.get("agent") in ("build", "plan") else "build"
+        payload["agent"] = f"{base}-think"
 
     async def stream_generator():
         event_count = 0
