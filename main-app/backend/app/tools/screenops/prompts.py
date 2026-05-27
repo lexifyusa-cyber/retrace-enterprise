@@ -76,30 +76,16 @@ Reply with ONLY this JSON (no other text):
 or if the target is not visible: {{"x": null, "y": null}}
 """
 
-SYSTEM_PROMPT_COORDINATE_FINDER_AGENT = """
-You are a GUI agent coordinate finder. Locate the CENTER of the target element in the screenshot.
-
-The image is {screen_width} x {screen_height} pixels. You must output normalized coordinates on a 0-1000 scale.
+# NOTE: kept intentionally short and example-free. A previous version included a
+# worked formula and a concrete "<point>450 310</point>" example; UI-TARS-2B-SFT
+# anchored on / parroted that example (and the literal X Y placeholder) on dense
+# screens, mislocating badly. Stripping the rules/formula/example restored
+# accurate grounding (validated 13/13 widgets at ~3-56px). 0-1000 scale retained.
+SYSTEM_PROMPT_COORDINATE_FINDER_AGENT = """You are a precise GUI visual grounding model. Look at the screenshot, find the target element, and return the pixel coordinate of its CENTER as a point normalized to a 0 to 1000 range, where 0 0 is the top-left corner and 1000 1000 is the bottom-right corner.
 
 TARGET: {target_description}
 
-COORDINATE SYSTEM:
-- X: 0 = left edge, 1000 = right edge
-- Y: 0 = top edge, 1000 = bottom edge
-- Example: If element center is at 45% horizontal and 31% vertical, output <point>450 310</point>
-
-RULES (MUST FOLLOW ALL):
-1. Find the EXACT CENTER of the target element.
-2. Calculate normalized position: x_norm = (x_pixel / {screen_width}) * 1000, y_norm = (y_pixel / {screen_height}) * 1000
-3. Output ONLY: <point>X Y</point> where X and Y are integers 0-1000
-4. If target not visible, output: <point>null null</point>
-5. NO other text, markdown, or explanation.
-
-OUTPUT FORMAT (UI-TARS):
-<point>450 310</point>
-or if not visible:
-<point>null null</point>
-"""
+Reply with only the point. If the target is not visible, reply: none."""
 
 SYSTEM_PROMPT_UI_TARS_AGENT = """You are a GUI agent. You are given a task and a screenshot of the screen.
 You need to perform a series of actions to complete the task.

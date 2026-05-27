@@ -155,18 +155,10 @@ def _get_model_api_key(model: Any) -> str:
     return str(api_key_raw or "")
 
 
-# ---------------------------------------------------------------------------
-# x.ai / Grok vision invoker — uses the Responses API (/v1/responses)
-# ---------------------------------------------------------------------------
-
 def _is_xai_model(model: Any) -> bool:
     """Return True when *model* targets the x.ai API."""
     return "x.ai" in _get_model_base_url(model)
 
-
-# ---------------------------------------------------------------------------
-# Google Gemini vision invoker — uses Chat Completions via OpenAI SDK
-# ---------------------------------------------------------------------------
 
 def _is_google_model(model: Any) -> bool:
     """Return True when *model* targets the Google Gemini API."""
@@ -180,16 +172,7 @@ def _is_google_model(model: Any) -> bool:
 
 
 def _make_google_vision_invoker(model: Any):
-    """Build a vision invoker for Google Gemini via its OpenAI-compatible endpoint.
-
-    Gemini's ``/v1beta/openai/`` compatibility layer requires every element
-    in a multimodal content array to be a typed struct (``{"type": "text", …}``
-    or ``{"type": "image_url", …}``).  Bare strings are rejected with
-    ``INVALID_ARGUMENT: Value is not a struct``.
-
-    This invoker bypasses LangChain and calls the endpoint directly through
-    the OpenAI SDK so we have full control over the wire format.
-    """
+    """Build a vision invoker for Google Gemini via its OpenAI-compatible endpoint."""
     import httpx
     from openai import OpenAI
 
@@ -262,12 +245,7 @@ def _make_google_vision_invoker(model: Any):
 
 
 def _make_xai_vision_invoker(model: Any):
-    """Build a vision invoker for x.ai models.
-
-    x.ai's grok-4 models require the **Responses API** (``/v1/responses``)
-    with ``input_image`` / ``input_text`` content-block types rather than
-    the Chat Completions API with ``image_url`` / ``text``.
-    """
+    """Build a vision invoker for x.ai models (Responses API)."""
     import httpx
     from openai import OpenAI
 
@@ -345,6 +323,11 @@ def _make_xai_vision_invoker(model: Any):
     return invoker
 
 
+def _is_anthropic_api(api_url: str) -> bool:
+    """Check if the API URL is Anthropic's API."""
+    return "anthropic.com" in (api_url or "")
+
+
 # ---------------------------------------------------------------------------
 # Coordinate finder invoker — OpenAI-compatible API (URL + model + API key)
 # ---------------------------------------------------------------------------
@@ -359,12 +342,6 @@ _UI_TARS_MAX_PIXELS = 12_845_056  # Max ~3584×3584
 def _resize_screenshot_for_coord_finder(screenshot_base64: str) -> tuple[str, int, int]:
     """Resize a screenshot for UI-TARS model (Qwen2-VL smart_resize compliance).
 
-    UI-TARS requires:
-    - Both dimensions divisible by 28
-    - Total pixels between 78,400 and 12,845,056
-    - Max aspect ratio 200:1
-    - Recommended: 1120×784 or 1344×756 for desktop
-
     Returns (resized_b64, resized_w, resized_h).
     """
     from PIL import Image as PILImage
@@ -373,23 +350,19 @@ def _resize_screenshot_for_coord_finder(screenshot_base64: str) -> tuple[str, in
     img = PILImage.open(io.BytesIO(raw))
     w, h = img.size
 
-    # Step 1: Scale down if exceeds max pixels
     max_px = _UI_TARS_MAX_PIXELS
     if w * h > max_px:
         scale = (max_px / (w * h)) ** 0.5
         w, h = int(w * scale), int(h * scale)
 
-    # Step 2: Scale up if below min pixels
     min_px = _UI_TARS_MIN_PIXELS
     if w * h < min_px:
         scale = (min_px / (w * h)) ** 0.5
         w, h = int(w * scale), int(h * scale)
 
-    # Step 3: Round to nearest multiple of 28
     w = round(w / _UI_TARS_DIVISOR) * _UI_TARS_DIVISOR
     h = round(h / _UI_TARS_DIVISOR) * _UI_TARS_DIVISOR
 
-    # Ensure minimum 28-divisible size
     if w < _UI_TARS_DIVISOR:
         w = _UI_TARS_DIVISOR
     if h < _UI_TARS_DIVISOR:
@@ -403,29 +376,10 @@ def _resize_screenshot_for_coord_finder(screenshot_base64: str) -> tuple[str, in
     return resized_b64, w, h
 
 
-def _is_anthropic_api(api_url: str) -> bool:
-    """Check if the API URL is Anthropic's API."""
-    return "anthropic.com" in (api_url or "")
-
-
 def _denormalize_ui_tars_coordinates(
     norm_x: int, norm_y: int, resized_w: int, resized_h: int, screen_w: int, screen_h: int
 ) -> tuple[int, int]:
-    """Convert UI-TARS 0-1000 normalized coordinates to screen pixels.
-
-    UI-TARS coordinates are relative to the resized image dimensions and normalized to 0-1000 scale.
-    Steps:
-    1. Denormalize to resized image pixels: px_resized = (norm_x / 1000) * resized_w
-    2. Scale to screen pixels: px_screen = px_resized * (screen_w / resized_w)
-
-    Args:
-        norm_x, norm_y: Normalized 0-1000 coordinates from UI-TARS model
-        resized_w, resized_h: Dimensions of the resized image sent to the model
-        screen_w, screen_h: Actual screen dimensions
-
-    Returns:
-        (pixel_x, pixel_y) clamped to screen bounds
-    """
+    """Convert UI-TARS 0-1000 normalized coordinates to screen pixels."""
     px_resized = (norm_x / 1000.0) * resized_w
     py_resized = (norm_y / 1000.0) * resized_h
     scale_x = screen_w / resized_w
@@ -462,9 +416,7 @@ def _make_coordinate_finder_invoker(
                    resized_image=f"{resized_w}x{resized_h}",
                    screen=f"{screen_width}x{screen_height}")
 
-        # Use appropriate prompt based on API provider
         if is_anthropic:
-            # Anthropic/Claude works better with a concise JSON-format prompt
             system_text = (
                 f"You are a coordinate finder. Given a screenshot, find the x,y pixel coordinates "
                 f"of the center of the described element. Return ONLY a JSON object like "
@@ -472,7 +424,6 @@ def _make_coordinate_finder_invoker(
                 f"The image is {resized_w}x{resized_h} pixels."
             )
         else:
-            # OpenAI-compatible APIs (including UI-TARS models) use the UI-TARS coordinate format
             prompt = get_coordinate_finder_prompt(
                 target_description=target_description,
                 screen_width=resized_w,
@@ -484,8 +435,6 @@ def _make_coordinate_finder_invoker(
             system_text = prompt
 
         if is_anthropic:
-            # Anthropic Messages API format
-            # Detect actual image format from base64 data
             try:
                 img_bytes = base64.b64decode(resized_b64[:32])
                 media_type = "image/png" if img_bytes[:4] == b'\x89PNG' else "image/jpeg"
@@ -518,7 +467,6 @@ def _make_coordinate_finder_invoker(
                 "Content-Type": "application/json",
             }
         else:
-            # OpenAI-compatible format
             payload = {
                 "model": coord_model,
                 "messages": [
@@ -566,7 +514,6 @@ def _make_coordinate_finder_invoker(
         usage = {}
 
         if is_anthropic:
-            # Anthropic response format
             content_blocks = data.get("content", [])
             for block in content_blocks:
                 if block.get("type") == "text":
@@ -580,7 +527,6 @@ def _make_coordinate_finder_invoker(
                     "total_tokens": u.get("input_tokens", 0) + u.get("output_tokens", 0),
                 }
         else:
-            # OpenAI response format
             choice = (data.get("choices") or [None])[0]
             if choice and isinstance(choice.get("message"), dict):
                 text = (choice["message"].get("content") or "").strip()
@@ -596,11 +542,14 @@ def _make_coordinate_finder_invoker(
         coords = {}
         clean_text = text.strip()
 
-        # Try UI-TARS format: <point>452 310</point> (0-1000 scale relative to resized image)
-        point_match = re.search(r'<point>\s*(\d+)\s+(\d+)\s*</point>', clean_text)
+        # Parse the coordinate. UI-TARS-2B-SFT uses the 0-1000 scale but emits it
+        # loosely: as "<point>x y</point>", as "(x,y)" parens, with decimals, or with
+        # trailing text. Grab the first two numbers after an optional <point> (int or
+        # float, space/comma separated) and ignore anything that follows.
+        point_match = re.search(r'(?:<point>\s*)?(-?\d+(?:\.\d+)?)\s*[,\s]\s*(-?\d+(?:\.\d+)?)', clean_text)
         if point_match:
             try:
-                nx, ny = int(point_match.group(1)), int(point_match.group(2))
+                nx, ny = float(point_match.group(1)), float(point_match.group(2))
                 px, py = _denormalize_ui_tars_coordinates(nx, ny, resized_w, resized_h, screen_width, screen_height)
                 coords = {"x": px, "y": py}
                 _debug_log("coord_finder",
@@ -637,7 +586,6 @@ def _make_coordinate_finder_invoker(
 
         if coords.get("x") is not None and coords.get("y") is not None:
             px, py = int(coords["x"]), int(coords["y"])
-            # Clamp to screen bounds
             coords["x"] = max(0, min(px, screen_width - 1))
             coords["y"] = max(0, min(py, screen_height - 1))
             _debug_log("coord_finder",
@@ -646,7 +594,6 @@ def _make_coordinate_finder_invoker(
 
         _debug_log("coord_finder", target=target_description, final_screen_coords=coords)
 
-        # Log to llm_logs table for debugging
         if log_callback:
             _latency = int((time.time() - _call_start) * 1000)
             log_callback(
@@ -679,15 +626,7 @@ def build_screenops_tool(
     screenops_mouse_timeout: int = 30,
     screenops_image_scale: int = 100,
 ) -> Optional[StructuredTool]:
-    """Build the ScreenOps StructuredTool.
-
-    *chat_model* — LangChain ChatModel for the vision step (required).
-    *screenops_api_key* — API key for the coordinate finder (empty = keyboard-only mode).
-    *screenops_model* — Model name for the coordinate finder.
-    *screenops_api_url* — Base URL for the coordinate finder API (OpenAI-compatible).
-    *screenops_mouse_timeout* — Seconds to wait for manual click in keyboard-only mode.
-    *screenops_image_scale* — 25-100, percentage of screenshot size sent to model (reduces tokens).
-    """
+    """Build the ScreenOps StructuredTool."""
     if not chat_model:
         return None
 
