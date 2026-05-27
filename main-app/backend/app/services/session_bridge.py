@@ -31,6 +31,13 @@ logger = structlog.get_logger()
 # execution. We add tasks here on creation and remove them when done.
 _BACKGROUND_TASKS: set = set()
 
+# Per-OC-session dedup so list/get opportunistic refreshes (which can fire
+# many times per minute via TanStack Query refetches) don't stack 4-poll,
+# ~7-second tasks against OpenCode's HTTP API. Without this the OC daemon
+# on :4096 gets a thundering herd of `/session/<id>` GETs that crowd out
+# session-create calls on the same loop.
+_INFLIGHT_TITLE_SYNCS: set = set()
+
 
 def schedule_deferred_title_sync(
     opencode_session_id: str,
@@ -46,6 +53,9 @@ def schedule_deferred_title_sync(
     cleanup) so callers don't have to.
     """
     import asyncio
+    if opencode_session_id in _INFLIGHT_TITLE_SYNCS:
+        return
+    _INFLIGHT_TITLE_SYNCS.add(opencode_session_id)
     task = asyncio.create_task(
         _deferred_title_sync(
             opencode_session_id=opencode_session_id,
@@ -55,7 +65,12 @@ def schedule_deferred_title_sync(
         )
     )
     _BACKGROUND_TASKS.add(task)
-    task.add_done_callback(_BACKGROUND_TASKS.discard)
+
+    def _on_done(t):
+        _BACKGROUND_TASKS.discard(t)
+        _INFLIGHT_TITLE_SYNCS.discard(opencode_session_id)
+
+    task.add_done_callback(_on_done)
 
 
 async def get_or_create_conversation(
