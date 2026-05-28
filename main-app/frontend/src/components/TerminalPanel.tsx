@@ -1,4 +1,5 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
+import { usePageActive } from '@/utils/usePageActive'
 import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
@@ -91,7 +92,12 @@ function getActiveTheme(): string {
   return el.getAttribute('data-theme') || 'dark'
 }
 
-export default function TerminalPanel({ conversationId, isVisible, onToggle }: TerminalPanelProps) {
+export default function TerminalPanel({ conversationId, isVisible: isVisibleProp, onToggle }: TerminalPanelProps) {
+  // Hold the terminal socket only when the panel is shown AND the page is
+  // active; an idle page disconnects (backend keeps the PTY and replays
+  // scrollback on reconnect) so the scale-to-zero backend can suspend.
+  const pageActive = usePageActive()
+  const isVisible = isVisibleProp && pageActive
   const containerRef = useRef<HTMLDivElement>(null)
   const xtermRef = useRef<XTerm | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)

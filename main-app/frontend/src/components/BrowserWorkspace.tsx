@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { usePageActive } from '@/utils/usePageActive'
 import {
   Globe, ArrowLeft, ArrowRight, RotateCw,
   Loader2, MousePointer, Wifi, WifiOff, Plus, X,
@@ -25,7 +26,12 @@ function makeStandaloneId(): string {
   return `standalone_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
 }
 
-export default function BrowserWorkspace({ conversationId, isVisible, isAgentRunning = false }: BrowserWorkspaceProps) {
+export default function BrowserWorkspace({ conversationId, isVisible: isVisibleProp, isAgentRunning = false }: BrowserWorkspaceProps) {
+  // Keep the live browser socket open only when the panel is shown AND the page
+  // is active — or the agent is mid-run (don't cut the live view during agent
+  // navigation). An idle page drops the socket so the backend can suspend.
+  const pageActive = usePageActive()
+  const isVisible = isVisibleProp && (pageActive || isAgentRunning)
   // If no conversation, create a standalone session so user can still browse
   const standaloneIdRef = useRef<string>(makeStandaloneId())
   const effectiveSessionId = conversationId || standaloneIdRef.current

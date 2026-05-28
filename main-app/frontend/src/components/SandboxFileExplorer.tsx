@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { FolderOpen, File, ChevronRight, Download, RefreshCw, ArrowLeft } from 'lucide-react'
+import { usePageActive } from '@/utils/usePageActive'
 
 interface FileEntry {
   name: string
@@ -43,6 +44,7 @@ const authHeaders = () => ({
 })
 
 export default function SandboxFileExplorer({ conversationId }: SandboxFileExplorerProps) {
+  const pageActive = usePageActive()
   const [currentPath, setCurrentPath] = useState('/')
   const [entries, setEntries] = useState<FileEntry[]>([])
   const [rootDir, setRootDir] = useState<string | null>(null)
@@ -72,13 +74,16 @@ export default function SandboxFileExplorer({ conversationId }: SandboxFileExplo
     loadFiles('/')
   }, [loadFiles])
 
-  // Auto-refresh every 5 seconds
+  // Auto-refresh every 5 seconds — only while the tab is visible and the user
+  // is active. An open-but-idle Agent page stops polling the sandbox so the
+  // scale-to-zero backend can suspend; polling resumes on return.
   useEffect(() => {
+    if (!pageActive) return
     const interval = setInterval(() => {
       loadFiles(currentPath)
     }, 5000)
     return () => clearInterval(interval)
-  }, [currentPath, loadFiles])
+  }, [currentPath, loadFiles, pageActive])
 
   const openFile = async (name: string) => {
     const filePath = currentPath === '/' ? `/${name}` : `${currentPath}/${name}`
