@@ -687,9 +687,31 @@ export const useOpenCodeStore = create<StoreInternal>((set, get) => ({
   },
 
   sendMessage: async (conversationId, content, parts) => {
-    const sess = get().sessions[conversationId]
-    if (!sess || !sess.sessionId) throw new Error('No active OpenCode session for this conversation')
-    const sessionId = sess.sessionId
+    let sess = get().sessions[conversationId]
+    let sessionId = sess?.sessionId
+
+    // Heal a dead or missing OpenCode session before prompting. After a sidecar
+    // restart (including a scale-to-zero wake) OpenCode loses its in-memory
+    // sessions, so a stored session id 404s and the prompt fails upstream with
+    // "Session not found" — surfaced to the user as "async failed". Verify the
+    // session exists; if it's gone (404) or was never created, mint a fresh one
+    // (which re-links the conversation) and continue with that session id.
+    let sessionAlive = false
+    if (sessionId) {
+      try {
+        await agentApi.opencode.getSession(sessionId)
+        sessionAlive = true
+      } catch (err: any) {
+        // Only an explicit 404 means dead; transient errors proceed as-is.
+        sessionAlive = err?.response?.status !== 404
+      }
+    }
+    if (!sessionId || !sessionAlive) {
+      console.warn('[OC] sendMessage: no live OpenCode session — creating a fresh one', { conversationId, deadSessionId: sessionId ?? null })
+      sessionId = await get().createSession(conversationId, undefined, sess?.agent)
+      sess = get().sessions[conversationId]
+    }
+    if (!sess || !sessionId) throw new Error('No active OpenCode session for this conversation')
 
     // Always record what the user submitted into the per-session prompt history
     // — even if the message ends up queued. Caps at 50 and ignores empty input.
