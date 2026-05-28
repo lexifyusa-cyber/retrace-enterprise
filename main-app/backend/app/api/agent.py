@@ -710,6 +710,10 @@ class OpenCodeMessageRequest(BaseModel):
     # the same session can use different agents. None → OC falls back to the
     # session's original agent. The frontend's Build/Plan toggle flows here.
     agent: Optional[str] = None
+    # Per-conversation "Thinking" mode: "off" | "think" | "deep". Drives native
+    # reasoning by regenerating opencode.json (reasoning + interleaved +
+    # enable_thinking) when it changes. None / "off" → no reasoning (default).
+    reasoning: Optional[str] = None
 
 
 @router.post("/opencode/session")
@@ -923,6 +927,15 @@ async def opencode_send_message(
     # would be silently rejected by OC's schema, so guard locally.
     if request.agent in ("build", "plan", "mcp-builder"):
         payload["agent"] = request.agent
+    # "Thinking" (reload-free): route build/plan turns to the matching
+    # "<agent>-think" variant, which carries the reasoning body flag. The
+    # variants always exist in the generated config (inert for non-reasoning
+    # models), so this never selects a missing agent. mcp-builder is excluded
+    # (batch builds don't surface a thinking UI).
+    _think = str(request.reasoning or "").lower() in ("think", "deep")
+    if _think:
+        base = payload.get("agent") if payload.get("agent") in ("build", "plan") else "build"
+        payload["agent"] = f"{base}-think"
 
     async def stream_generator():
         event_count = 0

@@ -4,7 +4,7 @@ import {
   Bot, Loader2, Terminal, FileText, Globe, Monitor,
   Package, Check, ChevronDown, Code, Play, X,
   Plus, MessageSquare, Trash2, Edit2,
-  ClipboardList,
+  ClipboardList, Brain,
   FolderOpen, ListTodo,
   Paperclip, File as FileIcon,
 } from 'lucide-react'
@@ -213,11 +213,25 @@ export default function Agent() {
   const displayAgent: 'build' | 'plan' = activeSession?.agent ?? preferredAgent
   const agentLocked = !!activeSession?.sessionId
 
+  // "Thinking" reasoning mode. Unlike agent mode, it isn't locked after session
+  // creation — it only affects the next message sent. `preferredReasoning` covers
+  // the pre-session window (before an OC session exists for this conversation).
+  const [preferredReasoning, setPreferredReasoning] = useState<'off' | 'think'>('off')
+  const [reasoningMenuOpen, setReasoningMenuOpen] = useState(false)
+  const displayReasoning: 'off' | 'think' = activeSession?.reasoning ?? preferredReasoning
+
   const handleSetAgent = useCallback((mode: 'build' | 'plan') => {
     if (isRunning || agentLocked || mode === displayAgent) return
     setPreferredAgent(mode)
     if (activeConversationId) ocStore.setAgent(activeConversationId, mode)
   }, [isRunning, agentLocked, displayAgent, activeConversationId])
+
+  const handleSetReasoning = useCallback((mode: 'off' | 'think') => {
+    if (isRunning) return
+    setPreferredReasoning(mode)
+    if (activeConversationId) ocStore.setReasoning(activeConversationId, mode)
+    setReasoningMenuOpen(false)
+  }, [isRunning, activeConversationId])
 
   // Resizable split: chatWidthPct is the left panel's percentage (30–80)
   const [chatWidthPct, setChatWidthPct] = useState(50)
@@ -648,6 +662,11 @@ export default function Agent() {
     setPendingMentions([])
     const sendParts = [...currentAttachments, ...currentMentions]
 
+    // Ensure the (possibly just-created) session carries the user's Thinking
+    // choice — makeSession defaults reasoning to 'off', so seed it from the
+    // composer's current selection before sending.
+    ocStore.setReasoning(conversationId, displayReasoning)
+
     try {
       await ocStore.sendMessage(conversationId, taskText, sendParts.length ? sendParts : undefined)
     } catch (err: any) {
@@ -664,7 +683,7 @@ export default function Agent() {
       // message during sync) and message_count update without a manual reload.
       refetchConversations()
     }
-  }, [task, selectedTeamId, isRunning, activeConversationId, displayAgent, refetchConversations, pendingAttachments, pendingMentions])
+  }, [task, selectedTeamId, isRunning, activeConversationId, displayAgent, displayReasoning, refetchConversations, pendingAttachments, pendingMentions])
 
   const handleSubmit = (e: React.FormEvent) => { e.preventDefault(); handleExecute() }
 
@@ -1606,6 +1625,46 @@ export default function Agent() {
           >
             {displayAgent === 'plan' ? <ClipboardList className="w-4 h-4" /> : <Bot className="w-4 h-4" />}
           </button>
+          <div className="relative flex-shrink-0">
+            <button
+              type="button"
+              onClick={() => setReasoningMenuOpen(o => !o)}
+              onBlur={() => setTimeout(() => setReasoningMenuOpen(false), 150)}
+              disabled={isRunning}
+              title="Thinking mode"
+              className={`p-2 rounded-lg border transition-all flex items-center gap-1 ${
+                displayReasoning !== 'off'
+                  ? 'bg-purple-500/20 border-purple-500/40 text-purple-400'
+                  : 'border-rt-border text-rt-text-muted hover:border-rt-text-muted hover:text-rt-text'
+              }`}
+            >
+              <Brain className="w-4 h-4" />
+              {displayReasoning !== 'off' && (
+                <span className="text-[10px] font-medium leading-none">Think</span>
+              )}
+            </button>
+            {reasoningMenuOpen && (
+              <div className="absolute bottom-full left-0 mb-1 py-1 min-w-[170px] bg-rt-bg-light border border-rt-border rounded-lg shadow-xl z-50">
+                {([
+                  { mode: 'off' as const, label: 'Off' },
+                  { mode: 'think' as const, label: 'Think' },
+                ]).map(opt => (
+                  <button
+                    key={opt.mode}
+                    type="button"
+                    onMouseDown={(e) => { e.preventDefault(); handleSetReasoning(opt.mode) }}
+                    className={`w-full flex items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-rt-surface ${
+                      displayReasoning === opt.mode ? 'text-purple-400' : 'text-rt-text'
+                    }`}
+                  >
+                    <Brain className="w-3.5 h-3.5 flex-shrink-0" />
+                    <span className="flex-1">{opt.label}</span>
+                    {displayReasoning === opt.mode && <Check className="w-3.5 h-3.5 flex-shrink-0" />}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
