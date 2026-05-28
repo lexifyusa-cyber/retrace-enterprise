@@ -58,7 +58,15 @@ def _ws():
     """Return the configured app.tools.web_search module, importing it on first use."""
     global _ws_module
     if _ws_module is None:
-        from app.tools import web_search as _m
+        # NB: `from app.tools import web_search as _m` AND `import
+        # app.tools.web_search as _m` BOTH resolve to the FUNCTION
+        # re-exported by app/tools/__init__.py, because the package's
+        # `web_search` attribute is shadowed (the function overrode the
+        # submodule binding when __init__.py ran). Use importlib, which
+        # reads from sys.modules and bypasses the package attribute
+        # table entirely — returns the actual submodule.
+        from importlib import import_module
+        _m = import_module("app.tools.web_search")
         _m.configure_web_search(serper_api_key=_SERPER_API_KEY)
         _ws_module = _m
     return _ws_module
