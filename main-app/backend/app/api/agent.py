@@ -141,16 +141,36 @@ _NATIVE_PERM_KEYS: dict[str, str] = {
 # request time (we don't know the names statically).
 _BUILTIN_MCP_NAMES = {"retrace-kb", "retrace-browser", "retrace-screenops", "retrace-search"}
 
+# UI names that refer to INDIVIDUAL tools provided by an MCP server (as
+# opposed to the whole server). The OC permission identifier for an MCP
+# tool is `<sanitized-server>_<sanitized-tool>`, set at registration in
+# opencode/.../mcp/index.ts ("result[sanitize(clientName) + '_' +
+# sanitize(mcpTool.name)] = ..."). Without this mapping the UI toggle
+# silently no-ops: the bare name (e.g. "web_search") doesn't match any
+# native permission key AND isn't in _BUILTIN_MCP_NAMES, so neither the
+# native deny path nor the MCP connect/disconnect path fires.
+#
+# Wiring an entry here makes the toggle work via OC's session permission
+# system — the same gate native tools use. The MCP server itself stays
+# connected, so other tools on it (and future ones we add) keep working.
+_MCP_TOOL_PERM_KEYS: dict[str, str] = {
+    "web_search":   "retrace-search_web_search",
+    "web_advanced": "retrace-search_web_advanced",
+    "web_research": "retrace-search_web_research",
+}
+
 
 def _build_native_permission_ruleset(disabled_names: set[str]) -> list[dict]:
     """Translate the user's disabled-tools list into OC's Permission.Ruleset
     shape — an array of `{permission, pattern, action}`. Emits an EXPLICIT
-    rule for every native tool's OC permission key (deny if the UI name is in
-    disabled_names, otherwise allow). MCP-provided tools are excluded
-    (handled separately via mcp connect/disconnect).
+    rule for every native tool's OC permission key (deny if the UI name is
+    in disabled_names, otherwise allow), plus one rule per individually-
+    togglable MCP tool listed in _MCP_TOOL_PERM_KEYS. Whole-MCP-server
+    toggles (retrace-kb / retrace-browser / retrace-screenops /
+    retrace-search) are still handled separately via connect/disconnect.
 
-    Why emit explicit allows: OC's session PATCH MERGES the new ruleset onto
-    the existing one (Permission.merge = flat concat; evaluator uses
+    Why emit explicit allows: OC's session PATCH MERGES the new ruleset
+    onto the existing one (Permission.merge = flat concat; evaluator uses
     findLast for the effective rule). If we only ever sent denies, toggling
     a tool back ON couldn't un-deny it — the prior deny rule would persist
     forever and findLast would still pick it. Sending an explicit allow on
@@ -165,6 +185,16 @@ def _build_native_permission_ruleset(disabled_names: set[str]) -> list[dict]:
     for ui_name, oc_key in _NATIVE_PERM_KEYS.items():
         action = "deny" if ui_name in disabled_names else "allow"
         # If any UI name disables the key, deny wins regardless of order.
+        if by_key.get(oc_key) != "deny":
+            by_key[oc_key] = action
+    # MCP-provided individual tools — same shape, but the OC permission
+    # key carries the `<server>_<tool>` prefix. Routed through the same
+    # session-level deny/allow PATCH so we don't have to disconnect the
+    # whole MCP server (which would tear down its child process and the
+    # 35-40s LangChain warmup it carries — and would also kill the other
+    # tools sharing that server).
+    for ui_name, oc_key in _MCP_TOOL_PERM_KEYS.items():
+        action = "deny" if ui_name in disabled_names else "allow"
         if by_key.get(oc_key) != "deny":
             by_key[oc_key] = action
     return [
