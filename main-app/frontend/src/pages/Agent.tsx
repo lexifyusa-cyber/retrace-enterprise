@@ -216,9 +216,9 @@ export default function Agent() {
   // "Thinking" reasoning mode. Unlike agent mode, it isn't locked after session
   // creation — it only affects the next message sent. `preferredReasoning` covers
   // the pre-session window (before an OC session exists for this conversation).
-  const [preferredReasoning, setPreferredReasoning] = useState<'off' | 'think' | 'deep'>('off')
+  const [preferredReasoning, setPreferredReasoning] = useState<'off' | 'think'>('off')
   const [reasoningMenuOpen, setReasoningMenuOpen] = useState(false)
-  const displayReasoning: 'off' | 'think' | 'deep' = activeSession?.reasoning ?? preferredReasoning
+  const displayReasoning: 'off' | 'think' = activeSession?.reasoning ?? preferredReasoning
 
   const handleSetAgent = useCallback((mode: 'build' | 'plan') => {
     if (isRunning || agentLocked || mode === displayAgent) return
@@ -226,7 +226,7 @@ export default function Agent() {
     if (activeConversationId) ocStore.setAgent(activeConversationId, mode)
   }, [isRunning, agentLocked, displayAgent, activeConversationId])
 
-  const handleSetReasoning = useCallback((mode: 'off' | 'think' | 'deep') => {
+  const handleSetReasoning = useCallback((mode: 'off' | 'think') => {
     if (isRunning) return
     setPreferredReasoning(mode)
     if (activeConversationId) ocStore.setReasoning(activeConversationId, mode)
@@ -1626,7 +1626,7 @@ export default function Agent() {
             >
               <Brain className="w-4 h-4" />
               {displayReasoning !== 'off' && (
-                <span className="text-[10px] font-medium leading-none">{displayReasoning === 'deep' ? 'Deep' : 'Think'}</span>
+                <span className="text-[10px] font-medium leading-none">Think</span>
               )}
             </button>
             {reasoningMenuOpen && (
@@ -1634,7 +1634,6 @@ export default function Agent() {
                 {([
                   { mode: 'off' as const, label: 'Off' },
                   { mode: 'think' as const, label: 'Think' },
-                  { mode: 'deep' as const, label: 'Deep Think' },
                 ]).map(opt => (
                   <button
                     key={opt.mode}

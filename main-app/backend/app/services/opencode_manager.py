@@ -603,8 +603,28 @@ class OpenCodeManager:
         # Always defined so the per-turn agent switch never hits a missing
         # agent; for non-reasoning models `think_options` is empty, making the
         # variants behave identically to build/plan.
-        config["agent"]["build-think"] = {**config["agent"]["build"], "options": dict(think_options)}
-        config["agent"]["plan-think"] = {**config["agent"]["plan"], "options": dict(think_options)}
+        # Thinking mode must NOT consult the knowledge base — it should reason
+        # from first principles and answer directly. For each -think variant:
+        #   - deny the retrace-kb tools in the agent's permission ruleset (a
+        #     non-matching deny rule is harmless, so this can't break startup), and
+        #   - add a prompt instruction as a reliable backup.
+        _no_kb_note = (
+            "\n\n## Thinking mode\n"
+            "You are in Thinking mode. Do NOT call the knowledge base tools "
+            "(retrace-kb) and do NOT compare against the knowledge base. Reason "
+            "from first principles and answer directly."
+        )
+        for _src, _dst in (("build", "build-think"), ("plan", "plan-think")):
+            _base = config["agent"][_src]
+            config["agent"][_dst] = {
+                **_base,
+                "prompt": (_base.get("prompt") or "") + _no_kb_note,
+                "options": dict(think_options),
+                "permission": {
+                    **(_base.get("permission") or config.get("permission") or {}),
+                    "retrace-kb*": "deny",
+                },
+            }
 
         if small_model_name:
             config["small_model"] = f"{provider_id}/{small_model_name}"

@@ -200,7 +200,7 @@ export interface SessionState {
    * fully backward-compatible); 'think' = normal thinking; 'deep' = exceptional
    * thinking. Threaded into the send body as `reasoning`; the backend resolves it
    * per-model (native reasoning when supported, otherwise a no-op). */
-  reasoning: 'off' | 'think' | 'deep'
+  reasoning: 'off' | 'think'
   /** Messages the user submitted while a run was in-flight. Drained FIFO when
    * the current turn finishes — matches OC's `pendingMessages` / `ui.message.queued`
    * model. Each entry triggers another `sendMessage` call when the head pops.
@@ -298,7 +298,7 @@ interface OpenCodeState {
   setAgent: (conversationId: string, agent: 'build' | 'plan') => void
   /** Set the "Thinking" reasoning mode for a conversation. Unlike `agent`, this
    * can change at any time — it only affects the next message sent. */
-  setReasoning: (conversationId: string, reasoning: 'off' | 'think' | 'deep') => void
+  setReasoning: (conversationId: string, reasoning: 'off' | 'think') => void
   /** Close every local SSE reader. OpenCode continues generating upstream. */
   abortAllStreams: () => void
 }
@@ -787,7 +787,7 @@ export const useOpenCodeStore = create<StoreInternal>((set, get) => ({
       if (sessionAgent === 'plan' || sessionAgent === 'build') bodyObj.agent = sessionAgent
       // Only send `reasoning` when the user has turned Thinking on, so requests
       // are byte-identical to today's when the toggle is off (backward-compatible).
-      if (sessionReasoning === 'think' || sessionReasoning === 'deep') bodyObj.reasoning = sessionReasoning
+      if (sessionReasoning === 'think') bodyObj.reasoning = sessionReasoning
       const body = JSON.stringify(bodyObj)
       console.log('[OC] POST', url, parts ? `(with ${parts.length} attachment(s))` : '')
 
