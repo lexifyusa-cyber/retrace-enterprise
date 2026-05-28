@@ -19,6 +19,7 @@ from typing import Any, Dict, Optional
 import structlog
 
 from app.skills.mcp_builder_oc_prompt import MCP_BUILDER_OC_PROMPT
+from app.services import reasoning as reasoning_resolver
 
 logger = structlog.get_logger()
 
@@ -284,10 +285,21 @@ class OpenCodeManager:
         user_id: str,
         team_id: Optional[str] = None,
         model_override: Optional[str] = None,
+        reasoning_mode: Optional[str] = None,
     ) -> Path:
         # Remember how this config was generated so reload_for_user() can
-        # replay the same team/model instead of resetting the user's context.
-        self._start_params[user_id] = {"team_id": team_id, "model_override": model_override}
+        # replay the same team/model/reasoning instead of resetting the user's
+        # context. `reasoning_mode` falls back to the previously-stored value so
+        # callers that don't know it (page mount, session create) preserve it.
+        prev_params = self._start_params.get(user_id, {})
+        if reasoning_mode is None:
+            reasoning_mode = prev_params.get("reasoning_mode", "off")
+        reasoning_mode = reasoning_resolver.normalize_mode(reasoning_mode)
+        self._start_params[user_id] = {
+            "team_id": team_id,
+            "model_override": model_override,
+            "reasoning_mode": reasoning_mode,
+        }
         from datetime import datetime
         from app.db.database import async_session_maker
         from app.api.settings import get_active_llm_settings
@@ -385,6 +397,25 @@ class OpenCodeManager:
                     "cost": {"input": 3.0, "output": 15.0},
                     "limit": {"context": 131072, "output": 16384},
                 }
+
+        # Reasoning ("Thinking") — reload-free design.
+        #
+        # If the selected model supports native reasoning, make it PERMANENTLY
+        # reasoning-capable at the model level (`reasoning: true` +
+        # `interleaved: {field: "reasoning_content"}`). This is harmless when a
+        # request doesn't ask to think — the gateway just returns no
+        # reasoning_content. Per-message on/off is then toggled WITHOUT any
+        # OpenCode restart by routing the turn to a "<agent>-think" variant that
+        # carries the body flag (e.g. chat_template_kwargs.enable_thinking).
+        # `think_options` is that per-agent options patch (empty for
+        # non-reasoning models, in which case the -think variants are inert).
+        think_options: Dict[str, Any] = {}
+        _rplan = reasoning_resolver.resolve(provider, model_name, "think")
+        if _rplan.enabled:
+            think_options = dict(_rplan.options_patch)
+            for _mn in (model_name, plan_model_name):
+                if _mn and _mn in custom_models:
+                    custom_models[_mn].update(_rplan.model_patch)
 
         team_description = ""
         if team_id:
@@ -565,6 +596,35 @@ class OpenCodeManager:
                 "mcp": "allow",
             },
         }
+
+        # Reload-free "Thinking": define build-think / plan-think agent variants
+        # (same model/prompt/permissions as build/plan, plus the reasoning body
+        # flag via `options`). agent.py routes a Think turn to "<agent>-think".
+        # Always defined so the per-turn agent switch never hits a missing
+        # agent; for non-reasoning models `think_options` is empty, making the
+        # variants behave identically to build/plan.
+        # Thinking mode must NOT consult the knowledge base — it should reason
+        # from first principles and answer directly. For each -think variant:
+        #   - deny the retrace-kb tools in the agent's permission ruleset (a
+        #     non-matching deny rule is harmless, so this can't break startup), and
+        #   - add a prompt instruction as a reliable backup.
+        _no_kb_note = (
+            "\n\n## Thinking mode\n"
+            "You are in Thinking mode. Do NOT call the knowledge base tools "
+            "(retrace-kb) and do NOT compare against the knowledge base. Reason "
+            "from first principles and answer directly."
+        )
+        for _src, _dst in (("build", "build-think"), ("plan", "plan-think")):
+            _base = config["agent"][_src]
+            config["agent"][_dst] = {
+                **_base,
+                "prompt": (_base.get("prompt") or "") + _no_kb_note,
+                "options": dict(think_options),
+                "permission": {
+                    **(_base.get("permission") or config.get("permission") or {}),
+                    "retrace-kb*": "deny",
+                },
+            }
 
         if small_model_name:
             config["small_model"] = f"{provider_id}/{small_model_name}"
@@ -845,6 +905,52 @@ class OpenCodeManager:
         await self.stop_for_user(user_id)
         await self.start_for_user(user_id, team_id=team_id, model_override=model_override)
         return True
+
+    async def set_reasoning(self, user_id: str, mode: Optional[str]) -> bool:
+        """Set the per-user "Thinking" reasoning mode (off/think/deep).
+
+        If it differs from the mode the current opencode.json was generated with,
+        regenerate the config and reload the user's OpenCode so native reasoning
+        (enable_thinking + reasoning_content) takes effect. No-op (returns False)
+        when unchanged — safe to call on every message send.
+        """
+        mode = reasoning_resolver.normalize_mode(mode)
+        params = self._start_params.get(user_id)
+        current = (params or {}).get("reasoning_mode", "off")
+        if mode == current:
+            return False
+        # Persist so the next config generation (reload or cold start) bakes it in.
+        if params is None:
+            self._start_params[user_id] = {"team_id": None, "model_override": None, "reasoning_mode": mode}
+        else:
+            params["reasoning_mode"] = mode
+        logger.info("[OC] set_reasoning", user_id=user_id, mode=mode, previous=current)
+        # Reload only when an instance exists so OC re-reads the regenerated config.
+        proc = self.get_process(user_id)
+        external = bool(os.environ.get("RETRACE_OPENCODE_EXTERNAL_URL", "").strip())
+        running = external or (proc is not None and proc.process is not None and proc.process.returncode is None)
+        if running:
+            reloaded = await self.reload_for_user(user_id)
+            if reloaded:
+                # reload_for_user restarts OC (stop+start) but returns before the
+                # new server is accepting connections. The send handler POSTs to
+                # OC immediately after this call, so block until OC is listening
+                # to avoid a connection-refused race on the first reasoning turn.
+                await self._wait_until_healthy(user_id)
+            return reloaded
+        return False
+
+    async def _wait_until_healthy(self, user_id: str, attempts: int = 40, delay_s: float = 0.5) -> bool:
+        """Poll the user's OC server until it answers (or times out ~20s)."""
+        proc = self.get_process(user_id)
+        if proc is None:
+            return False
+        for _ in range(attempts):
+            if await proc.is_healthy():
+                return True
+            await asyncio.sleep(delay_s)
+        logger.warning("[OC] _wait_until_healthy: timed out waiting for OpenCode", user_id=user_id)
+        return False
 
     async def stop_all(self) -> None:
         for user_id in list(self._processes.keys()):
