@@ -454,7 +454,7 @@ class OpenCodeManager:
             "\n## Long-running, monitoring, and scheduled tasks (IMPORTANT)\n"
             "Four primitives for work that shouldn't block the conversation. Pick by intent:\n"
             "- **A) `task(background=true)`** — ONE continuous job that produces ONE final result (a long build/test, a multi-step research dive, 'run a 10-min stress test and report the average'). Output arrives in ONE block at the end. Do NOT use it for 'watch/monitor/sample/tail X' — that needs live updates (use C). The subagent is an LLM, so write its `prompt` as an instruction naming the tool + args + expected return (e.g. 'Run this via the bash tool and return stdout verbatim: …'), not a bare snippet.\n"
-            "- **B) `schedule_followup`/`schedule_interval`/`schedule_cron`** (+ `list_followups`/`cancel_followup`) — wake the agent for a FRESH agentic turn at future/recurring times ('remind me in 30 min', 'every weekday 9am post a summary'). Each fire re-reasons; use when you want a new agent turn, not raw output diffs.\n"
+            "- **B) `schedule_followup`/`schedule_interval`/`schedule_cron`** (managed via `agent_status` / `cancel`) — wake the agent for a FRESH agentic turn at future/recurring times ('remind me in 30 min', 'every weekday 9am post a summary'). Each fire re-reasons; use when you want a new agent turn, not raw output diffs.\n"
             "- **C) `monitor_tool(target={kind:...}, duration, ...)`** — watch something server-side and wake ONLY when it changes / matches `fire_when`. THIS is the answer for any 'watch/monitor/sample X for N time' or 'tell me when X changes' request. Zero LLM cost while quiet; each fire is a live bubble. See the monitor_tool tool description for the full per-kind guide. Quick routing of `kind`:\n"
             "    • shell metric/log snapshot (command exits each run) → kind='command'. THRESHOLDS ('alert when CPU>80'): pipe to a bare number + fire_when='value > 80' (fires on crossings, not every tick).\n"
             "    • live follow-style command (tail -f, journalctl -f, kubectl logs -f) → kind='stream'.\n"
@@ -462,8 +462,8 @@ class OpenCodeManager:
             "    • 'watch the screen' / live dashboard / SPA / animated counter → kind='browser' (reads the live post-JS DOM of the open tab; navigate there first).\n"
             "    • live price/score push feed ('watch the live BTC price') → kind='websocket' (polling can't subscribe).\n"
             "    • output of an installed MCP extension (ServiceNow, Linear) → kind='mcp'.\n"
-            "  Manage with `list_monitors(kind?)` / `cancel_monitor(id)`.\n"
-            "- **D) `create_remote_trigger(prompt_template)`** (+ list/cancel) — react to an EXTERNAL event (CI finishes, Slack/ticket webhook). Returns a URL; anything that POSTs to it wakes the agent with the body. No polling.\n"
+            "  See everything active with `agent_status`; stop any item with `cancel(id)`.\n"
+            "- **D) `create_remote_trigger(prompt_template)`** (managed via `agent_status` / `cancel`) — react to an EXTERNAL event (CI finishes, Slack/ticket webhook). Returns a URL; anything that POSTs to it wakes the agent with the body. No polling.\n"
             "Anti-patterns: ❌ never use `task(background=true)` for a 'watch/sample/tail' request or to loop-sample a metric (that's C). ❌ never claim you're 'monitoring' or 'will check back' unless you actually called a `schedule_*`, `monitor_tool`, or `create_remote_trigger`. ❌ don't call `task` synchronously for anything >30s.\n"
         )
         if team_description:

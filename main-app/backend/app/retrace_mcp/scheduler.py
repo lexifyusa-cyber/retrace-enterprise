@@ -14,8 +14,9 @@ Tools:
   - schedule_followup(prompt, when, ...)   one-shot
   - schedule_interval(prompt, every, unit, ...)   recurring at fixed interval
   - schedule_cron(prompt, expression, ...)        recurring at cron times
-  - list_followups()                              what's pending
-  - cancel_followup(followup_id)                  cancel one
+  - monitor_tool(...) / create_remote_trigger(...)  watch / webhook
+  - agent_status()                                what's active (all kinds)
+  - cancel(id)                                    cancel any item by id
 
 Required env (injected by opencode_manager.generate_config):
   RETRACE_USER_ID, RETRACE_BACKEND_URL, RETRACE_INTERNAL_TOKEN
@@ -142,14 +143,14 @@ def schedule_followup(
       when: When to fire. Either a relative offset ("in 5 minutes", "in 2 hours",
             "in 1 day") OR an ISO-8601 UTC timestamp ("2026-05-28T22:30:00Z").
       description: Optional short human label for the schedule (shows up in
-                   list_followups). Defaults to a truncation of `prompt`.
+                   agent_status). Defaults to a truncation of `prompt`.
       conversation_id: Optional — defaults to the conversation this agent is
                    currently running in. Specify only if scheduling into a
                    different conversation.
 
     Returns:
       A description of the scheduled follow-up including its `followup_id`
-      (used to cancel it via cancel_followup).
+      (used to cancel it via cancel(id)).
     """
     run_at = _resolve_run_at(when)
     if not run_at:
@@ -179,7 +180,7 @@ def schedule_followup(
         f"Scheduled one-shot follow-up at {run_at} (UTC).\n"
         f"followup_id: {result.get('followup_id')}\n"
         f"description: {result.get('description', desc)}\n"
-        f"Cancel with: cancel_followup(followup_id={result.get('followup_id')!r})"
+        f"Cancel with: cancel(id={result.get('followup_id')!r})"
     )
 
 
@@ -205,7 +206,7 @@ def schedule_interval(
               time; the agent re-derives intent from it).
       every: Numeric interval (e.g. 10).
       unit: One of 'seconds', 'minutes', 'hours', 'days'. Default 'minutes'.
-      description: Optional short label for list_followups.
+      description: Optional short label (shown in agent_status).
       conversation_id: Defaults to the current conversation.
       stop_after: Optional auto-cancel deadline. Either a relative offset
                   ("in 15 minutes", "in 1 hour") OR an ISO-8601 UTC
@@ -222,7 +223,7 @@ def schedule_interval(
 
     Notes:
       - First fire happens after `every <unit>` (not immediately).
-      - Cancel any time with cancel_followup.
+      - Cancel any time with cancel(id).
       - Avoid intervals shorter than 1 minute unless the work is fast — each
         fire costs LLM tokens.
       - "Every 30 seconds for 2 minutes" → every=30, unit='seconds',
@@ -266,7 +267,7 @@ def schedule_interval(
         f"Scheduled recurring follow-up every {every} {unit}{stop_msg}.\n"
         f"followup_id: {result.get('followup_id')}\n"
         f"description: {result.get('description', desc)}\n"
-        f"Cancel with: cancel_followup(followup_id={result.get('followup_id')!r})"
+        f"Cancel with: cancel(id={result.get('followup_id')!r})"
     )
 
 
@@ -291,7 +292,7 @@ def schedule_cron(
     Args:
       prompt: The prompt the agent will see on each fire.
       expression: 5-field cron expression.
-      description: Optional short label for list_followups.
+      description: Optional short label (shown in agent_status).
       conversation_id: Defaults to the current conversation.
     """
     parts = (expression or "").split()
@@ -318,72 +319,16 @@ def schedule_cron(
         f"Scheduled cron follow-up '{expression}' (UTC).\n"
         f"followup_id: {result.get('followup_id')}\n"
         f"description: {result.get('description', desc)}\n"
-        f"Cancel with: cancel_followup(followup_id={result.get('followup_id')!r})"
+        f"Cancel with: cancel(id={result.get('followup_id')!r})"
     )
-
-
-@mcp.tool()
-def list_followups() -> str:
-    """List the user's active scheduled follow-ups.
-
-    Returns a formatted list with followup_id, schedule, description, last
-    fire time, and fire count for each. Use this when the user asks "what's
-    pending" or before scheduling something that might overlap.
-    """
-    result = _post("followups/list", {"user_id": _USER_ID})
-    if "error" in result:
-        return f"Error listing follow-ups: {result['error']}"
-    rows = result.get("followups", []) or []
-    if not rows:
-        return "No active scheduled follow-ups."
-    lines = [f"Active follow-ups ({len(rows)}):"]
-    for r in rows:
-        cfg = r.get("trigger_config", {}) or {}
-        tt = r.get("trigger_type")
-        if tt == "once":
-            schedule = f"once at {cfg.get('run_at')}"
-        elif tt == "interval":
-            schedule = f"every {cfg.get('every')} {cfg.get('unit', 'minutes')}"
-        elif tt == "cron":
-            schedule = f"cron: {cfg.get('expression')}"
-        else:
-            schedule = tt or "unknown"
-        last = r.get("last_fired_at") or "never"
-        err = r.get("last_error")
-        line = (
-            f"  - {r.get('followup_id')}: {schedule}  "
-            f"(fires={r.get('fire_count', 0)}, last={last})\n"
-            f"    desc: {r.get('description', '')!r}"
-        )
-        if err:
-            line += f"\n    LAST ERROR: {err}"
-        lines.append(line)
-    return "\n".join(lines)
-
-
-@mcp.tool()
-def cancel_followup(followup_id: str) -> str:
-    """Cancel a scheduled follow-up by its id.
-
-    Get the id from list_followups or from the return value of the
-    schedule_* tool that created it.
-    """
-    if not followup_id:
-        return "Error: followup_id is required."
-    result = _post("followups/cancel", {"user_id": _USER_ID, "followup_id": followup_id})
-    if "error" in result:
-        return f"Error cancelling follow-up: {result['error']}"
-    if result.get("cancelled"):
-        return f"Cancelled follow-up {followup_id}."
-    return f"No active follow-up found for id {followup_id} (already cancelled or never existed)."
 
 
 # ─── Monitors (server-side change watches) ─────────────────────────────────
 # Same MCP server as the follow-up tools — all scheduling primitives. The
 # watch loop runs server-side with no LLM cost per check; the agent is only
 # woken when the fire_when condition is met (or the window ends). One generic
-# `monitor_tool` covers every target kind; list_monitors / cancel_monitor
-# manage them.
+# `monitor_tool` covers every target kind; agent_status lists them and
+# cancel(id) cancels them.
 
 
 _DURATION_PATTERN = re.compile(r"^\s*(\d+)\s*(second|minute|hour|day)s?\s*$", re.IGNORECASE)
@@ -448,45 +393,6 @@ def _render_tool_monitor(r: dict) -> str:
     return line
 
 
-@mcp.tool()
-def list_monitors(kind: str = "all") -> str:
-    """List active change-monitors for this user, in one call.
-
-    Args:
-      kind: Filter — 'all' (default), 'url', 'command', 'browser', 'builtin',
-            or 'mcp'. Use 'all' when the user asks "what am I watching?".
-    """
-    kind = (kind or "all").strip().lower()
-    valid = ("all", "url", "command", "browser", "builtin", "mcp", "stream", "websocket")
-    if kind not in valid:
-        return f"Error: kind must be one of {valid}; got {kind!r}"
-
-    rows = _post("tool-monitors/list", {"user_id": _USER_ID}).get("monitors", []) or []
-    if kind != "all":
-        rows = [r for r in rows if _monitor_display_kind(r) == kind]
-
-    if not rows:
-        return "No active monitors." if kind == "all" else f"No active {kind} monitors."
-
-    sections = [f"Active monitors ({len(rows)} total):"]
-    for r in rows:
-        sections.append(_render_tool_monitor(r))
-    return "\n".join(sections)
-
-
-@mcp.tool()
-def cancel_monitor(monitor_id: str) -> str:
-    """Cancel any monitor by id, regardless of kind. The id is whatever was
-    returned by monitor_tool (or shown in list_monitors).
-    """
-    if not monitor_id:
-        return "Error: monitor_id is required."
-    result = _post("tool-monitors/cancel", {"user_id": _USER_ID, "monitor_id": monitor_id})
-    if "error" not in result and result.get("cancelled"):
-        return f"Cancelled monitor {monitor_id}."
-    return f"No active monitor found for id {monitor_id} (already cancelled or never existed)."
-
-
 # ─── Generic monitor (one tool, any kind) ──────────────────────────────────
 # Single entry point that routes any target kind through the same unified
 # backend the per-kind tools use. Prefer the specific monitor_* tools above
@@ -544,7 +450,7 @@ def monitor_tool(
     output), 'contains:TEXT', 'not_contains:TEXT', 'matches:REGEX',
     'not_seen_for:Ns'. `every` = poll cadence; `debounce` = live-kind coalesce
     window; `duration` = total watch window. Returns monitor_id (cancel via
-    cancel_monitor). conversation_id defaults to the current conversation.
+    cancel(id)). conversation_id defaults to the current conversation.
     """
     if not isinstance(target, dict) or not target.get("kind"):
         return "Error: target must be a dict with a 'kind' field."
@@ -623,7 +529,7 @@ def monitor_tool(
         f"expires at {result.get('expires_at')} (UTC).\n"
         f"fire_when: {result.get('fire_when', fire_when)}\n"
         f"description: {result.get('description', desc)}\n"
-        f"Cancel with: cancel_monitor(monitor_id={result.get('monitor_id')!r})"
+        f"Cancel with: cancel(id={result.get('monitor_id')!r})"
     )
 
 
@@ -668,7 +574,7 @@ def create_remote_trigger(
                        BAD (we strip these literals; don't bother):
                          'CI finished. Payload: {{payload}}'
                          'New event: {payload}'
-      description: Optional short label for list_remote_triggers.
+      description: Optional short label (shown in agent_status).
       conversation_id: Defaults to the current conversation.
 
     Returns:
@@ -715,55 +621,41 @@ def create_remote_trigger(
         f"Test it now with:\n"
         f"  curl -X POST -H 'Content-Type: application/json' -d '{{\"hello\":\"world\"}}' '{url}'\n"
         f"{note}"
-        f"Cancel anytime with: cancel_remote_trigger(trigger_id={trigger_id!r})"
-    )
-
-
-@mcp.tool()
-def list_remote_triggers() -> str:
-    """List active remote triggers (webhooks) for this user.
-
-    Returns trigger_id + description + fire count + last-fire time. The
-    URL token is NOT echoed back here — once handed out, the URL is the
-    secret; the agent shouldn't re-expose it in chat history. To get the
-    URL again you'd need to create a new trigger.
-    """
-    result = _post("triggers/list", {"user_id": _USER_ID})
-    if "error" in result:
-        return f"Error listing remote triggers: {result['error']}"
-    rows = result.get("triggers", []) or []
-    if not rows:
-        return "No active remote triggers."
-    lines = [f"Active remote triggers ({len(rows)}):"]
-    for r in rows:
-        line = (
-            f"  - {r.get('trigger_id')}: {r.get('description', '')!r}\n"
-            f"    fires={r.get('fire_count', 0)}, last={r.get('last_fired_at') or 'never'}"
-        )
-        err = r.get("last_error")
-        if err:
-            line += f"\n    LAST ERROR: {err}"
-        lines.append(line)
-    return "\n".join(lines)
-
-
-@mcp.tool()
-def cancel_remote_trigger(trigger_id: str) -> str:
-    """Disable a remote trigger by id. After cancellation any further
-    POSTs to its URL will receive HTTP 404."""
-    if not trigger_id:
-        return "Error: trigger_id is required."
-    result = _post("triggers/cancel", {"user_id": _USER_ID, "trigger_id": trigger_id})
-    if "error" in result:
-        return f"Error cancelling remote trigger: {result['error']}"
-    return (
-        f"Cancelled remote trigger {trigger_id}."
-        if result.get("cancelled")
-        else f"No active remote trigger found for id {trigger_id}."
+        f"Cancel anytime with: cancel(id={trigger_id!r})"
     )
 
 
 # ─── Unified status (Tier 5) ───────────────────────────────────────────────
+
+
+@mcp.tool()
+def cancel(id: str) -> str:
+    """Cancel ANY async item you set up — a monitor, a scheduled follow-up,
+    or a remote trigger — by its id. (Replaces the per-type cancel tools.)
+
+    The id is whatever was returned when the item was created, or shown in
+    agent_status. ids are globally unique, so this routes to the right one
+    automatically. Returns what was cancelled, or a not-found note.
+    """
+    if not id:
+        return "Error: id is required."
+    # ids are globally-unique UUIDs, so at most one family owns a given id.
+    # Try each in turn; the tool-monitors endpoint itself routes poll- vs
+    # stream/websocket-monitors by target_kind.
+    r = _post("tool-monitors/cancel", {"user_id": _USER_ID, "monitor_id": id})
+    if "error" not in r and r.get("cancelled"):
+        return f"Cancelled monitor {id}."
+    r = _post("followups/cancel", {"user_id": _USER_ID, "followup_id": id})
+    if "error" not in r and r.get("cancelled"):
+        return f"Cancelled scheduled follow-up {id}."
+    r = _post("triggers/cancel", {"user_id": _USER_ID, "trigger_id": id})
+    if "error" not in r and r.get("cancelled"):
+        return f"Cancelled remote trigger {id} (its webhook URL will now 404)."
+    return (
+        f"No active monitor, follow-up, or remote trigger found for id {id} "
+        "(already cancelled, expired, or never existed). "
+        "Use agent_status to see what's currently active."
+    )
 
 
 @mcp.tool()
