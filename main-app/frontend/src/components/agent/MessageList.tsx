@@ -45,6 +45,7 @@ import ReactMarkdown from 'react-markdown'
 import type { OCMessage, SOPPart, DocPart } from '@/stores/opencodeStore'
 import ThinkingBlock from './ThinkingBlock'
 import ToolCallBlock from './ToolCallBlock'
+import SyntheticEventChip from './SyntheticEventChip'
 import SchedulePicker from './SchedulePicker'
 
 export interface MessageListActions {
@@ -238,6 +239,16 @@ function UserMessage({ msg, actions }: { msg: OCMessage; actions?: MessageListAc
     : content.startsWith('[remote-trigger:') ? 'remote-trigger'
     : content.startsWith('Background task completed:') || content.startsWith('Background task failed:') ? 'system'
     : 'scheduled'
+
+  // System-injected (synthetic) turns — monitor/stream fires, background-task
+  // completions, scheduled + webhook injections — render as a compact amber
+  // tool-call-style chip (one glanceable line; click to expand the raw
+  // payload) instead of a full user bubble. The chip self-classifies from
+  // `content`, so it also handles `[stream:` fires that the source-prefix
+  // check above labels as 'scheduled'.
+  if (isSynthetic) {
+    return <SyntheticEventChip content={content} />
+  }
 
   const canMutate = !msg.isLegacy && !msg.id.startsWith('msg-') && !msg.id.startsWith('db-')
   const canRevert = canMutate && !!actions?.onRevertTo

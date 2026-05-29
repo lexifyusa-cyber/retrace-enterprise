@@ -657,6 +657,10 @@ class ToolMonitorService:
             ext = target.get("extension_name") or target.get("extension_id")
             loc = f"Tool: {ext}:{target.get('tool')}\n"
         cond = "" if fire_when in ("", "changed") else f"(condition: {fire_when})\n"
+        # Agent-authored prompt_on_change templates often include {value}/{output}
+        # tokens expecting substitution; fill them with the captured snippet so
+        # they don't leak into the conversation as literal placeholders.
+        base_prompt = (base_prompt or "").replace("{value}", snippet).replace("{output}", snippet)
         return (
             f"[monitor:{monitor_id}] '{description}' fired.\n"
             f"{loc}{cond}\n"
