@@ -228,6 +228,17 @@ function UserMessage({ msg, actions }: { msg: OCMessage; actions?: MessageListAc
   if (!text || text.type !== 'text') return null
   const content = text.text
 
+  // A "synthetic" user message was injected by retrace's fire handlers
+  // (scheduled followup / monitor change / remote-trigger webhook) or by
+  // OC's own task.inject for background-task completion. Labelled visually
+  // so the user can tell at a glance "this came from the system, not me."
+  const isSynthetic = text.type === 'text' && (text as any).synthetic === true
+  const syntheticSource: 'monitor' | 'remote-trigger' | 'scheduled' | 'system' =
+    content.startsWith('[monitor:') || content.startsWith('[stream:') || content.startsWith('[browser-monitor:') ? 'monitor'
+    : content.startsWith('[remote-trigger:') ? 'remote-trigger'
+    : content.startsWith('Background task completed:') || content.startsWith('Background task failed:') ? 'system'
+    : 'scheduled'
+
   const canMutate = !msg.isLegacy && !msg.id.startsWith('msg-') && !msg.id.startsWith('db-')
   const canRevert = canMutate && !!actions?.onRevertTo
   const canFork = canMutate && !!actions?.onForkAt
@@ -287,15 +298,37 @@ function UserMessage({ msg, actions }: { msg: OCMessage; actions?: MessageListAc
         </div>
       )}
       <div className="flex gap-2 items-end max-w-[85%]">
-        <div className="flex-1 min-w-0 rounded-2xl rounded-br-md bg-rt-primary/8 px-4 py-3 text-[15px] leading-relaxed whitespace-pre-wrap">
+        <div
+          className={
+            isSynthetic
+              ? "flex-1 min-w-0 rounded-2xl rounded-br-md bg-amber-500/10 border border-amber-500/30 px-4 py-3 text-[15px] leading-relaxed whitespace-pre-wrap"
+              : "flex-1 min-w-0 rounded-2xl rounded-br-md bg-rt-primary/8 px-4 py-3 text-[15px] leading-relaxed whitespace-pre-wrap"
+          }
+        >
+          {isSynthetic && (
+            <div className="flex items-center gap-1.5 mb-1.5 text-[10px] uppercase tracking-wide font-semibold text-amber-400/80">
+              <svg className="w-3 h-3" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                <path d="M8 1.5a1 1 0 0 1 1 1V3a4 4 0 0 1 3 3.874v3.376l1.6 1.6a.5.5 0 0 1-.354.854H2.754a.5.5 0 0 1-.354-.854L4 10.25V6.874A4 4 0 0 1 7 3V2.5a1 1 0 0 1 1-1Zm0 12.5a2 2 0 0 1-1.732-1H9.732A2 2 0 0 1 8 14Z" />
+              </svg>
+              <span>{
+                syntheticSource === 'monitor' ? 'monitor'
+                : syntheticSource === 'remote-trigger' ? 'webhook'
+                : syntheticSource === 'system' ? 'background task'
+                : 'scheduled'
+              }</span>
+            </div>
+          )}
           {content}
         </div>
         <div
           className="w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-semibold flex-shrink-0 mb-1"
-          style={{ backgroundColor: avatar.bg, color: avatar.fg }}
-          title={user?.display_name || user?.email || 'You'}
+          style={isSynthetic
+            ? { backgroundColor: 'rgb(245 158 11 / 0.2)', color: 'rgb(245 158 11)' }
+            : { backgroundColor: avatar.bg, color: avatar.fg }
+          }
+          title={isSynthetic ? `System-injected (${syntheticSource})` : (user?.display_name || user?.email || 'You')}
         >
-          {avatar.initials}
+          {isSynthetic ? '⚙' : avatar.initials}
         </div>
       </div>
       {/* Hover-revealed inline buttons. Match OC exactly:

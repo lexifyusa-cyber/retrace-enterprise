@@ -4,7 +4,7 @@ conversation persistence, and Learn This (Q&A training).
 """
 
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
@@ -48,6 +48,17 @@ _active_streams: dict[tuple[str, str], asyncio.Event] = {}
 # would create its own Chromium (whatever id the LLM made up) and the user
 # would never see the navigation in the right panel.
 _active_browser_conv: dict[str, str] = {}
+
+# Last conversation each user drove the agent in. Unlike _active_browser_conv
+# (popped at turn-end so the browser bridge can't target a stale session),
+# this is set on every turn and NEVER popped. The retrace-scheduler MCP's
+# conversation resolution falls back to it: a monitor/follow-up tool call can
+# arrive at the resolution endpoint AFTER the turn's relay `finally` already
+# cleared _active_browser_conv, so relying on _active_browser_conv alone made
+# `_conversation_id_from_env()` return null mid-turn (observed: monitor_* tools
+# failing with "no conversation_id"). _last_active_conv is the stable answer to
+# "which conversation should this user's monitor fire into".
+_last_active_conv: dict[str, str] = {}
 
 
 def get_active_browser_conv(user_id: str) -> Optional[str]:
@@ -139,7 +150,7 @@ _NATIVE_PERM_KEYS: dict[str, str] = {
 # UI names that refer to entire MCP servers — toggled via /mcp/<name>/connect|
 # disconnect rather than session permission. user-* extensions resolve at
 # request time (we don't know the names statically).
-_BUILTIN_MCP_NAMES = {"retrace-kb", "retrace-browser", "retrace-screenops", "retrace-search"}
+_BUILTIN_MCP_NAMES = {"retrace-kb", "retrace-browser", "retrace-screenops", "retrace-search", "retrace-scheduler"}
 
 # UI names that refer to INDIVIDUAL tools provided by an MCP server (as
 # opposed to the whole server). The OC permission identifier for an MCP
@@ -900,6 +911,7 @@ async def opencode_send_message(
         if convo_for_browser and convo_for_browser.conversation_id:
             real_conv_id = convo_for_browser.conversation_id
             _active_browser_conv[user_id] = real_conv_id
+            _last_active_conv[user_id] = real_conv_id  # stable; not popped at turn-end
             logger.debug(
                 "[OC] browser_bridge: active conv set",
                 user_id=user_id,
@@ -1324,6 +1336,60 @@ async def opencode_send_message(
         stream_generator(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.get("/opencode/conversation-events/{conversation_id}")
+async def opencode_conversation_events(
+    conversation_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Long-lived SSE that delivers OpenCode events for fire-triggered turns
+    (scheduled followups, monitor change-detection, remote webhooks).
+
+    The frontend opens this for the active conversation and keeps it open
+    as long as the agent page is mounted. When retrace fires a synthetic
+    turn into that conversation, every OC event for it (message.updated,
+    message.part.updated text deltas, finish=stop) gets fanned out here,
+    so the open browser tab renders the fired turn live. Typed turns don't
+    broadcast here — opencode_send_message has its own per-turn SSE stream,
+    so a tab consuming both never sees duplicate events.
+
+    Ownership: the conversation must belong to current_user. Otherwise 403.
+    """
+    from app.services.conv_event_publisher import conv_event_publisher
+    from app.models.conversation import Conversation
+    from fastapi.responses import StreamingResponse
+    from sqlalchemy import select as _select
+
+    async with async_session_maker() as session:
+        result = await session.execute(
+            _select(Conversation).where(Conversation.conversation_id == conversation_id)
+        )
+        convo = result.scalar_one_or_none()
+    if not convo:
+        raise HTTPException(status_code=404, detail="conversation not found")
+    if convo.user_id and convo.user_id != current_user.user_id:
+        raise HTTPException(status_code=403, detail="not your conversation")
+
+    async def event_stream():
+        yield ": connected\n\n"
+        try:
+            async for line in conv_event_publisher.subscribe(conversation_id):
+                # `line` already has the `data: ` prefix from OC; just re-emit
+                # with the SSE record terminator.
+                yield f"{line}\n\n"
+        except asyncio.CancelledError:
+            raise
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
@@ -4363,3 +4429,318 @@ async def internal_get_active_team(
             logger.warning("active_team_db_lookup_failed", user_id=body.user_id, error=str(exc))
 
     return {"team_id": team_id}
+
+# ────────────────────────────────────────────────────────────────────────────
+# Internal endpoints: scheduled agent follow-ups (Option B).
+# Called by `app/retrace_mcp/scheduler.py` to schedule, list, and cancel
+# future agent turns. Same X-Internal-Token auth as the active-team lookup.
+# Fire-time is owned by the FollowupScheduler service; these endpoints just
+# create/delete rows and register/unregister jobs.
+# ────────────────────────────────────────────────────────────────────────────
+
+
+class _FollowupScheduleBody(BaseModel):
+    user_id: str
+    conversation_id: Optional[str] = None
+    prompt: str
+    trigger_type: str  # 'once' | 'interval' | 'cron'
+    trigger_config: Dict[str, Any]
+    description: Optional[str] = None
+
+
+class _FollowupCancelBody(BaseModel):
+    user_id: str
+    followup_id: str
+
+
+class _FollowupListBody(BaseModel):
+    user_id: str
+
+
+class _ActiveConvBody(BaseModel):
+    user_id: str
+
+
+@router.post("/internal/active-conversation", include_in_schema=False)
+async def internal_get_active_conversation(
+    body: _ActiveConvBody,
+    x_internal_token: Optional[str] = Header(None, alias="X-Internal-Token"),
+):
+    """Return the user's currently-active conversation_id, set by
+    `opencode_send_message` on every user turn. Used by the retrace-scheduler
+    MCP to default `conversation_id` when the agent schedules a follow-up
+    without specifying which conversation it should fire into.
+    """
+    from app.api.browser_ws import _check_internal_token
+    _check_internal_token(x_internal_token)
+
+    # 1) Live turn mapping. 2) Last conversation this user drove (survives the
+    # turn's relay finally). 3) DB fallback: the user's most-recently-updated
+    # conversation (survives a backend restart, when both dicts are empty).
+    conv = _active_browser_conv.get(body.user_id) or _last_active_conv.get(body.user_id)
+    if not conv:
+        try:
+            from sqlalchemy import select as _sa_select
+            from app.db.database import async_session_maker
+            from app.models.conversation import Conversation
+            async with async_session_maker() as session:
+                row = (await session.execute(
+                    _sa_select(Conversation.conversation_id)
+                    .where(Conversation.user_id == body.user_id)
+                    .order_by(Conversation.updated_at.desc())
+                    .limit(1)
+                )).scalar_one_or_none()
+                if row:
+                    conv = row
+        except Exception as exc:
+            logger.debug("active_conversation_db_fallback_failed", error=str(exc))
+    return {"conversation_id": conv}
+
+
+@router.post("/internal/followups/schedule", include_in_schema=False)
+async def internal_schedule_followup(
+    body: _FollowupScheduleBody,
+    x_internal_token: Optional[str] = Header(None, alias="X-Internal-Token"),
+):
+    from app.api.browser_ws import _check_internal_token
+    _check_internal_token(x_internal_token)
+    from app.services.followup_scheduler import followup_scheduler
+
+    try:
+        result = await followup_scheduler.add(
+            user_id=body.user_id,
+            conversation_id=body.conversation_id,
+            prompt=body.prompt,
+            trigger_type=body.trigger_type,
+            trigger_config=body.trigger_config,
+            description=body.description,
+        )
+    except ValueError as exc:
+        # Bad trigger_type / shape — surface as 400 so the MCP tool can
+        # report a usable error to the LLM.
+        raise HTTPException(status_code=400, detail=str(exc))
+    return result
+
+
+@router.post("/internal/followups/cancel", include_in_schema=False)
+async def internal_cancel_followup(
+    body: _FollowupCancelBody,
+    x_internal_token: Optional[str] = Header(None, alias="X-Internal-Token"),
+):
+    from app.api.browser_ws import _check_internal_token
+    _check_internal_token(x_internal_token)
+    from app.services.followup_scheduler import followup_scheduler
+
+    cancelled = await followup_scheduler.cancel(body.followup_id, body.user_id)
+    return {"cancelled": cancelled}
+
+
+@router.post("/internal/followups/list", include_in_schema=False)
+async def internal_list_followups(
+    body: _FollowupListBody,
+    x_internal_token: Optional[str] = Header(None, alias="X-Internal-Token"),
+):
+    from app.api.browser_ws import _check_internal_token
+    _check_internal_token(x_internal_token)
+    from app.services.followup_scheduler import followup_scheduler
+
+    return {"followups": await followup_scheduler.list_for_user(body.user_id)}
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Shared request bodies for the monitor endpoints. The unified tool-monitor
+# endpoints below reuse these. (The legacy per-kind url/command monitor
+# endpoints were removed once everything migrated onto the unified service.)
+# ────────────────────────────────────────────────────────────────────────────
+
+
+class _MonitorCancelBody(BaseModel):
+    user_id: str
+    monitor_id: str
+
+
+class _MonitorListBody(BaseModel):
+    user_id: str
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Internal endpoints: unified tool monitors (generic monitor primitive).
+# Supersedes the url/command/browser monitors above — one row watches any
+# tool's output (target_kind + target_json), with a fire_when predicate that
+# decides server-side whether a tick wakes the agent. See
+# app/services/tool_monitor.py and app/services/monitor_predicate.py.
+# ────────────────────────────────────────────────────────────────────────────
+
+
+class _ToolMonitorAddBody(BaseModel):
+    user_id: str
+    conversation_id: str
+    target_kind: str
+    target_json: Dict[str, Any]
+    every_seconds: int = 0
+    duration_seconds: int
+    prompt_on_change: str
+    fire_when: str = "changed"
+    debounce_seconds: int = 5  # stream targets only
+    description: Optional[str] = None
+
+
+@router.post("/internal/tool-monitors/add", include_in_schema=False)
+async def internal_add_tool_monitor(
+    body: _ToolMonitorAddBody,
+    x_internal_token: Optional[str] = Header(None, alias="X-Internal-Token"),
+):
+    from app.api.browser_ws import _check_internal_token
+    _check_internal_token(x_internal_token)
+
+    try:
+        # Stream + websocket targets (persistent connections, line/message-by-
+        # message) are owned by the StreamMonitorService (long-lived asyncio
+        # task, not APScheduler).
+        if body.target_kind == "stream":
+            from app.services.stream_monitor import stream_monitor_service
+            tj = body.target_json or {}
+            return await stream_monitor_service.add(
+                user_id=body.user_id,
+                conversation_id=body.conversation_id,
+                command=tj.get("command", ""),
+                duration_seconds=body.duration_seconds,
+                prompt_on_change=body.prompt_on_change,
+                fire_when=body.fire_when,
+                debounce_seconds=tj.get("debounce_seconds", body.debounce_seconds),
+                description=body.description,
+            )
+        if body.target_kind == "websocket":
+            from app.services.stream_monitor import stream_monitor_service
+            tj = body.target_json or {}
+            return await stream_monitor_service.add_websocket(
+                user_id=body.user_id,
+                conversation_id=body.conversation_id,
+                url=tj.get("url", ""),
+                duration_seconds=body.duration_seconds,
+                prompt_on_change=body.prompt_on_change,
+                subscribe=tj.get("subscribe"),
+                headers=tj.get("headers"),
+                fire_when=body.fire_when,
+                debounce_seconds=tj.get("debounce_seconds", body.debounce_seconds),
+                description=body.description,
+            )
+        from app.services.tool_monitor import tool_monitor_service
+        return await tool_monitor_service.add(
+            user_id=body.user_id,
+            conversation_id=body.conversation_id,
+            target_kind=body.target_kind,
+            target_json=body.target_json,
+            every_seconds=body.every_seconds,
+            duration_seconds=body.duration_seconds,
+            prompt_on_change=body.prompt_on_change,
+            fire_when=body.fire_when,
+            description=body.description,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/internal/tool-monitors/cancel", include_in_schema=False)
+async def internal_cancel_tool_monitor(
+    body: _MonitorCancelBody,
+    x_internal_token: Optional[str] = Header(None, alias="X-Internal-Token"),
+):
+    from app.api.browser_ws import _check_internal_token
+    _check_internal_token(x_internal_token)
+    from sqlalchemy import select
+    from app.db.database import async_session_maker
+    from app.models.tool_monitor import ToolMonitor
+
+    # Route to the owning service by the row's target_kind (stream rows are
+    # managed by StreamMonitorService and need their asyncio task cancelled).
+    async with async_session_maker() as session:
+        row = (await session.execute(
+            select(ToolMonitor.target_kind).where(
+                ToolMonitor.monitor_id == body.monitor_id,
+                ToolMonitor.user_id == body.user_id,
+            )
+        )).scalar_one_or_none()
+
+    if row in ("stream", "websocket"):
+        from app.services.stream_monitor import stream_monitor_service
+        return {"cancelled": await stream_monitor_service.cancel(body.monitor_id, body.user_id)}
+    from app.services.tool_monitor import tool_monitor_service
+    return {"cancelled": await tool_monitor_service.cancel(body.monitor_id, body.user_id)}
+
+
+@router.post("/internal/tool-monitors/list", include_in_schema=False)
+async def internal_list_tool_monitors(
+    body: _MonitorListBody,
+    x_internal_token: Optional[str] = Header(None, alias="X-Internal-Token"),
+):
+    from app.api.browser_ws import _check_internal_token
+    _check_internal_token(x_internal_token)
+    from app.services.tool_monitor import tool_monitor_service
+
+    return {"monitors": await tool_monitor_service.list_for_user(body.user_id)}
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Internal endpoints: remote triggers / webhooks (Tier 4).
+# Used by the retrace-scheduler MCP to create/list/cancel webhook entries.
+# The public webhook handler that fires on POST lives in app/api/triggers.py
+# (no internal-token auth there — the URL token IS the secret).
+# ────────────────────────────────────────────────────────────────────────────
+
+
+class _TriggerCreateBody(BaseModel):
+    user_id: str
+    conversation_id: str
+    prompt_template: str
+    description: Optional[str] = None
+
+
+class _TriggerCancelBody(BaseModel):
+    user_id: str
+    trigger_id: str
+
+
+class _TriggerListBody(BaseModel):
+    user_id: str
+
+
+@router.post("/internal/triggers/create", include_in_schema=False)
+async def internal_create_trigger(
+    body: _TriggerCreateBody,
+    x_internal_token: Optional[str] = Header(None, alias="X-Internal-Token"),
+):
+    from app.api.browser_ws import _check_internal_token
+    _check_internal_token(x_internal_token)
+    from app.services.remote_trigger import remote_trigger_service
+
+    return await remote_trigger_service.create(
+        user_id=body.user_id,
+        conversation_id=body.conversation_id,
+        prompt_template=body.prompt_template,
+        description=body.description,
+    )
+
+
+@router.post("/internal/triggers/cancel", include_in_schema=False)
+async def internal_cancel_trigger(
+    body: _TriggerCancelBody,
+    x_internal_token: Optional[str] = Header(None, alias="X-Internal-Token"),
+):
+    from app.api.browser_ws import _check_internal_token
+    _check_internal_token(x_internal_token)
+    from app.services.remote_trigger import remote_trigger_service
+
+    return {"cancelled": await remote_trigger_service.cancel(body.trigger_id, body.user_id)}
+
+
+@router.post("/internal/triggers/list", include_in_schema=False)
+async def internal_list_triggers(
+    body: _TriggerListBody,
+    x_internal_token: Optional[str] = Header(None, alias="X-Internal-Token"),
+):
+    from app.api.browser_ws import _check_internal_token
+    _check_internal_token(x_internal_token)
+    from app.services.remote_trigger import remote_trigger_service
+
+    return {"triggers": await remote_trigger_service.list_for_user(body.user_id)}

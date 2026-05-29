@@ -185,6 +185,15 @@ async def sync_messages_from_opencode(
                     if first_user_text is None:
                         first_user_text = user_text
                     continue
+                # OC stamps `synthetic: true` on parts injected by retrace's
+                # fire handlers (scheduled followup / monitor / remote-trigger
+                # webhook) and by OC's own task.inject for background-task
+                # completion. Persist it so a page reload still renders the
+                # bubble with the system badge instead of the user avatar.
+                is_synthetic = any(
+                    p.get("type") == "text" and p.get("synthetic") is True
+                    for p in parts
+                )
                 position += 1
                 new_rows.append(ConversationMessage(
                     message_id=msg_id,
@@ -192,6 +201,7 @@ async def sync_messages_from_opencode(
                     msg_type="user",
                     content=user_text,
                     position=position,
+                    meta_json=({"synthetic": True} if is_synthetic else None),
                 ))
                 existing_ids.add(msg_id)
                 if first_user_text is None:

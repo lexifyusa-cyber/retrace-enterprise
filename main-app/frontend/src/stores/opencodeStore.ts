@@ -50,6 +50,11 @@ export type TextPart = {
   type: 'text'
   id: string
   text: string
+  /** Set when this user-role part was injected by retrace (scheduled
+   * followup, monitor, remote-trigger webhook) or by OC's own task.inject
+   * for completion notifications. Renders with a "system" badge instead of
+   * the user's avatar. Absent (= undefined) on user-typed messages. */
+  synthetic?: boolean
 }
 
 export type ToolPart = {
@@ -573,12 +578,22 @@ export const useOpenCodeStore = create<StoreInternal>((set, get) => ({
 
         if (row.type === 'user') {
           pendingToolMsg = null
+          // Restore the `synthetic` flag persisted by session_bridge so
+          // fire-injected user bubbles (scheduled / monitor / webhook /
+          // task-completion) render with the system badge after a reload,
+          // not as user-typed.
+          const isSyntheticRow = meta.synthetic === true
           mapped.push({
             id,
             role: 'user',
             // OC part id isn't stored separately for user messages, so use the
             // DB row id as a stable synthetic part id.
-            parts: [{ type: 'text', id: `${id}:text`, text: row.content }],
+            parts: [{
+              type: 'text',
+              id: `${id}:text`,
+              text: row.content,
+              ...(isSyntheticRow ? { synthetic: true } : {}),
+            }],
             isLegacy: true,
           })
         } else if (row.type === 'answer') {
@@ -1271,7 +1286,16 @@ export const useOpenCodeStore = create<StoreInternal>((set, get) => ({
           const parts: Part[] = []
           for (const p of rawParts) {
             if (p.type === 'text') {
-              parts.push({ type: 'text', id: p.id || `p-${++_msgCounter}`, text: p.text || '' })
+              // Preserve OC's `synthetic` marker so fire-injected user
+              // bubbles keep their system badge after a refreshMessages
+              // overwrite (handleFiredEvent calls refreshMessages on
+              // finish=stop; without this the flag we just streamed in is wiped).
+              parts.push({
+                type: 'text',
+                id: p.id || `p-${++_msgCounter}`,
+                text: p.text || '',
+                ...(p.synthetic === true ? { synthetic: true } : {}),
+              })
             }
           }
           if (parts.length > 0) {

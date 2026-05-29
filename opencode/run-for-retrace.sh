@@ -78,6 +78,14 @@ echo
 export OPENCODE_CONFIG_DIR="$CONFIG_DIR"
 export RETRACE_USER_ID="$USER_ID"
 export RETRACE_BACKEND_URL="${RETRACE_BACKEND_URL:-http://127.0.0.1:8000}"
+# Enable OC's experimental background-subagents support so the agent can:
+#   - launch a subagent with `task(background=true)` and get back a task_id
+#     immediately (instead of blocking until completion);
+#   - poll its status via `task_status(task_id, wait=false)`.
+# Without this flag, monitoring/long-running tool calls have to be held
+# open synchronously inside the agent — bad UX and burns LLM tokens
+# waiting. See opencode/.../tool/task.ts:113 and tool/task_status.ts:114.
+export OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=1
 if [ -z "$RETRACE_INTERNAL_TOKEN" ] && [ -f "$HOME/.local/share/retrace/internal-token" ]; then
   export RETRACE_INTERNAL_TOKEN="$(cat "$HOME/.local/share/retrace/internal-token")"
 fi

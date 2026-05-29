@@ -58,6 +58,185 @@ function saveAgentSession(state: Record<string, any>) {
 // Component
 // ---------------------------------------------------------------------------
 
+// ─── Off-tab notification state (item #5 of the UX polish list) ────────────
+// Tracks fired turns that landed while the tab wasn't focused. The agent
+// page wires up `document.visibilitychange` / `focus` listeners that clear
+// `_unreadFires` and restore the original document title. `handleFiredEvent`
+// calls `notifyOffTabFire` when a fire's assistant reply finishes — the
+// helper no-ops if the tab is focused, otherwise updates the title and
+// optionally shows a Notification API toast.
+let _unreadFires = 0
+let _originalTitle = ''
+
+function tabIsFocused(): boolean {
+  // hasFocus covers "browser is minimised / another app is forward"; hidden
+  // covers "tab is in background". Either disqualifies "focused".
+  if (typeof document === 'undefined') return true
+  if (document.hidden) return false
+  if (typeof document.hasFocus === 'function' && !document.hasFocus()) return false
+  return true
+}
+
+function clearOffTabFires() {
+  _unreadFires = 0
+  if (typeof document !== 'undefined' && _originalTitle) {
+    document.title = _originalTitle
+  }
+}
+
+function notifyOffTabFire(promptText: string) {
+  if (typeof document === 'undefined') return
+  if (tabIsFocused()) return
+  _unreadFires += 1
+  if (!_originalTitle) _originalTitle = document.title
+  document.title = `(${_unreadFires}) ${_originalTitle || 'ReTrace'}`
+  // OS notification — only when the user has previously granted permission.
+  // We don't request mid-flow; the agent page requests at mount with a single
+  // permission ask. If denied, the title flash is the sole signal.
+  try {
+    if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+      new Notification('ReTrace — scheduled message', {
+        body: promptText.slice(0, 140),
+        // Tag dedups stacked OS notifications when multiple fires arrive
+        // before the user looks at the tab — the OS shows just one,
+        // refreshed with the latest body.
+        tag: 'retrace-fired-turn',
+      })
+    }
+  } catch {
+    // Notification constructor can throw in some browsers if service-worker
+    // backed; we silently ignore — title flash is the fallback.
+  }
+}
+
+
+/** Dispatcher for raw OpenCode events arriving over the fired-turn SSE
+ * (`GET /opencode/conversation-events/<id>`). We handle just enough event
+ * shapes to render streaming text — for the structured parts (tool calls,
+ * permission requests, etc.) the consumer calls `refreshMessages` once the
+ * turn finishes so a clean re-fetch from OC populates everything.
+ *
+ * OC event shapes we care about:
+ *   - `message.updated` with role=user → synthetic prompt landed; append a
+ *     user bubble so the user sees "the scheduler asked me to do X".
+ *   - `message.part.updated` with type=text → agent's reply text streams
+ *     in token-by-token; merge into the assistant message we're building.
+ *   - `message.updated` with role=assistant and finish=stop → turn done;
+ *     finalize the bubble and trigger a refreshMessages to pull anything
+ *     the streaming path didn't render (tool outputs, attachments, etc.).
+ */
+function handleFiredEvent(conversationId: string, payload: any) {
+  const inner = payload?.payload ?? payload ?? {}
+  const evtType = inner?.type
+  const props = inner?.properties ?? {}
+  const store = useOpenCodeStore.getState()
+  // Only process events for the conversation we're actually viewing — the
+  // backend already filters by session, but the user could navigate away
+  // mid-fire and the stream's reader may still flush a few buffered events.
+  if (store.activeConversationId && store.activeConversationId !== conversationId) return
+
+  if (evtType === 'message.updated') {
+    const info = props.info ?? {}
+    const role = info.role
+    const msgId = info.id
+    const finish = info.finish
+    if (!msgId) return
+
+    if (role === 'user') {
+      // Synthetic prompt from a fire (scheduler / monitor / trigger). Add
+      // a user bubble if we haven't already. The prompt text isn't on the
+      // message.updated event itself — it's on a separate part.updated.
+      // Pre-create the bubble with empty parts so the part.updated below
+      // can fill it in.
+      store._patchSession(conversationId, (s: any) => {
+        if (s.messages.find((m: any) => m.id === msgId)) return s
+        return {
+          ...s,
+          messages: [
+            ...s.messages,
+            { id: msgId, role: 'user', parts: [], isStreaming: false },
+          ],
+        }
+      })
+    } else if (role === 'assistant') {
+      // Add or refresh the assistant bubble.
+      store._patchSession(conversationId, (s: any) => {
+        const exists = s.messages.find((m: any) => m.id === msgId)
+        const next = exists
+          ? s.messages.map((m: any) =>
+              m.id === msgId ? { ...m, isStreaming: finish !== 'stop' } : m
+            )
+          : [
+              ...s.messages,
+              { id: msgId, role: 'assistant', parts: [], isStreaming: finish !== 'stop' },
+            ]
+        return { ...s, messages: next, isRunning: finish !== 'stop' }
+      })
+      // On finish=stop, re-fetch from OC to pick up structured parts
+      // (tool calls, attachments, etc.) that the streaming path doesn't
+      // assemble incrementally. Idempotent — refreshMessages dedups by ID.
+      if (finish === 'stop') {
+        store.refreshMessages(conversationId).catch(() => undefined)
+        // Off-tab notification: surface a title flash + OS toast (if
+        // permitted) when the user isn't actively viewing this tab. We
+        // notify with the synthetic prompt text — that's what triggered
+        // the turn and tells the user why they're being notified.
+        const sess = store.sessions[conversationId]
+        const lastSyntheticUser = sess?.messages
+          ? [...sess.messages].reverse().find(
+              (m: any) => m.role === 'user' && m.parts.some((p: any) => p.synthetic)
+            )
+          : null
+        const textPart = lastSyntheticUser?.parts.find((p: any) => p.type === 'text') as any
+        const syntheticText: string | undefined = textPart?.text
+        notifyOffTabFire(syntheticText || 'A scheduled / triggered turn just landed.')
+      }
+    }
+    return
+  }
+
+  if (evtType === 'message.part.updated') {
+    const part = props.part ?? {}
+    const partId = part.id
+    const messageId = part.messageID
+    if (!partId || !messageId) return
+    if (part.type === 'text') {
+      const text: string = part.text ?? ''
+      // Preserve OC's `synthetic` marker so the bubble can render with a
+      // system badge instead of the user's avatar. Fire handlers POST
+      // with synthetic=true; user-typed turns leave it absent.
+      const synthetic: boolean = part.synthetic === true
+      store._patchSession(conversationId, (s: any) => {
+        const messages = s.messages.map((m: any) => {
+          if (m.id !== messageId) return m
+          const existing = m.parts.find((p: any) => p.id === partId)
+          if (existing) {
+            return {
+              ...m,
+              parts: m.parts.map((p: any) =>
+                p.id === partId ? { ...p, text, ...(synthetic ? { synthetic: true } : {}) } : p
+              ),
+            }
+          }
+          return {
+            ...m,
+            parts: [
+              ...m.parts,
+              { type: 'text', id: partId, text, ...(synthetic ? { synthetic: true } : {}) },
+            ],
+          }
+        })
+        return { ...s, messages }
+      })
+    }
+    // Non-text parts (tool, thinking, file, etc.) get rendered after
+    // finish=stop via refreshMessages — they don't stream incrementally
+    // in a way the simple consumer handles.
+    return
+  }
+}
+
+
 export default function Agent() {
   const queryClient = useQueryClient()
   const _saved = loadAgentSession()
@@ -536,6 +715,98 @@ export default function Agent() {
     window.addEventListener('retrace:conversation-updated', handler)
     return () => window.removeEventListener('retrace:conversation-updated', handler)
   }, [refetchConversations])
+
+  // Off-tab notification wiring (item #5 of the UX polish list).
+  // - Request Notification permission once at mount (single prompt; user
+  //   can deny — title-flash still works).
+  // - Clear the unread badge whenever the tab regains focus / visibility.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+      // Best-effort. If denied, the title flash still notifies.
+      try { Notification.requestPermission().catch(() => undefined) } catch { /* ignore */ }
+    }
+    const onFocus = () => clearOffTabFires()
+    const onVisibility = () => { if (!document.hidden) clearOffTabFires() }
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      window.removeEventListener('focus', onFocus)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [])
+
+  // Long-lived SSE for FIRED turns (scheduled followups, URL monitor change
+  // detection, remote-trigger webhooks). The backend's broadcaster
+  // (`conv_event_publisher`) fans out OC's raw events for this conversation
+  // whenever a fire handler runs `_inject_prompt`. We render the streaming
+  // agent text incrementally and run a full `refreshMessages` on
+  // finish=stop so tool calls and other structured parts land.
+  // Typed turns go through `ocStore.sendMessage`'s own SSE response and do
+  // NOT broadcast — no duplicate-event problem.
+  useEffect(() => {
+    if (!activeConversationId) return
+    const ctrl = new AbortController()
+    let cancelled = false
+
+    const consume = async () => {
+      const token = localStorage.getItem('rt_access_token') || ''
+      let response: Response
+      try {
+        response = await fetch(
+          `/api/v1/agent/opencode/conversation-events/${activeConversationId}`,
+          {
+            method: 'GET',
+            headers: {
+              Accept: 'text/event-stream',
+              ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            },
+            signal: ctrl.signal,
+          }
+        )
+      } catch (err: any) {
+        if (err?.name !== 'AbortError') console.warn('[fired-events] fetch failed', err)
+        return
+      }
+      if (!response.ok || !response.body) {
+        console.warn('[fired-events] non-OK response', response.status)
+        return
+      }
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      while (!cancelled) {
+        const { done, value } = await reader.read().catch(() => ({ done: true, value: undefined }))
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        let nl
+        while ((nl = buffer.indexOf('\n\n')) !== -1) {
+          const frame = buffer.slice(0, nl)
+          buffer = buffer.slice(nl + 2)
+          for (const line of frame.split('\n')) {
+            if (!line.startsWith('data:')) continue
+            const payloadStr = line.slice(5).trim()
+            if (!payloadStr) continue
+            try {
+              const payload = JSON.parse(payloadStr)
+              handleFiredEvent(activeConversationId, payload)
+            } catch (e) {
+              console.warn('[fired-events] parse error', e)
+            }
+          }
+        }
+      }
+    }
+
+    consume().catch(err => {
+      if (err?.name !== 'AbortError') console.warn('[fired-events] consume error', err)
+    })
+
+    return () => {
+      cancelled = true
+      ctrl.abort()
+    }
+  }, [activeConversationId])
 
   // Rename conversation
   const handleRenameConversation = useCallback(async (conversationId: string) => {

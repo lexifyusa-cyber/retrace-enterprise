@@ -51,6 +51,9 @@ from app.models import tenant as tenant_model  # noqa: F401
 from app.models import user_session as user_session_model  # noqa: F401
 from app.models import team_access as team_access_model  # noqa: F401
 from app.models import audit_log as audit_log_model  # noqa: F401
+from app.models import scheduled_followup as scheduled_followup_model  # noqa: F401  – registers ScheduledFollowup table
+from app.models import tool_monitor as tool_monitor_model  # noqa: F401  – registers ToolMonitor table (unified)
+from app.models import remote_trigger as remote_trigger_model  # noqa: F401  – registers RemoteTrigger table
 from app.api import auth as auth_api
 from app.api import mcp_builder as mcp_builder_api
 from app.api import mcp_extensions as mcp_extensions_api
@@ -601,6 +604,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     await automation_scheduler.start()
     logger.info("Automation scheduler started")
 
+    # Start follow-up scheduler (Option B — agent-scheduled future turns)
+    from app.services.followup_scheduler import followup_scheduler
+    await followup_scheduler.start()
+    logger.info("Follow-up scheduler started")
+
+    # Start unified tool monitor service (generic monitor primitive — watches
+    # any tool's output, url/command/builtin/mcp, with a fire_when predicate;
+    # zero LLM cost during quiet windows).
+    from app.services.tool_monitor import tool_monitor_service
+    await tool_monitor_service.start()
+    logger.info("Tool monitor service started")
+
+    # Start stream monitor service (live process-stream + websocket watches;
+    # one persistent asyncio task per monitor). Gated by RETRACE_ENABLE_STREAM_MONITOR.
+    from app.services.stream_monitor import stream_monitor_service
+    await stream_monitor_service.start()
+    logger.info("Stream monitor service started")
+
     # Start WebSocket server in background
     asyncio.create_task(websocket_manager.start_server())
     logger.info("WebSocket server starting", port=settings.WEBSOCKET_PORT)
@@ -653,6 +674,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     pty_manager.destroy_all()
     from app.services.scheduler_service import automation_scheduler
     await automation_scheduler.stop()
+    from app.services.followup_scheduler import followup_scheduler
+    await followup_scheduler.stop()
+    from app.services.tool_monitor import tool_monitor_service
+    await tool_monitor_service.stop()
+    from app.services.stream_monitor import stream_monitor_service
+    await stream_monitor_service.stop()
     from app.services.email_poller import email_poller as _ep
     await _ep.stop()
     from app.services.mcp_client_service import mcp_client_manager as _mcp_mgr
@@ -731,6 +758,12 @@ app.include_router(email_api.team_email_router, prefix="/api/v1/products", tags=
 # RAG team-assistant router
 from app.rag.api import router as rag_router
 app.include_router(rag_router, prefix="/api/v1/team-assistant", tags=["Team Assistant"])
+
+# Remote-trigger webhook router (Tier 4). The /api/v1/triggers/<token> path
+# is intentionally unauth — the token in the URL IS the secret. See
+# app/api/triggers.py and app/services/remote_trigger.py.
+from app.api import triggers as triggers_api
+app.include_router(triggers_api.router, tags=["Remote Triggers"])
 
 # ── Serve built React frontend (production only) ────────────────────
 _static_dir = Path(__file__).parent.parent / "static"

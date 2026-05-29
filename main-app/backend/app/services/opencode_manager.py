@@ -148,6 +148,10 @@ class OpenCodeProcess:
         env["RETRACE_BACKEND_URL"] = os.environ.get("RETRACE_BACKEND_URL", "http://127.0.0.1:8000")
         if os.environ.get("RETRACE_INTERNAL_TOKEN"):
             env["RETRACE_INTERNAL_TOKEN"] = os.environ["RETRACE_INTERNAL_TOKEN"]
+        # Enable OC's experimental background-subagents support so
+        # `task(background=true)` returns a task_id immediately (option A of the
+        # build_prompt's async guidance) instead of blocking the turn.
+        env["OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS"] = "1"
 
         self.process = await asyncio.create_subprocess_exec(
             bin_path,
@@ -447,6 +451,20 @@ class OpenCodeManager:
             "- Use the browser tool when you need to access web content or web applications\n"
             "- Create SOPs for repeatable processes the user describes\n"
             "- Be thorough but concise in your responses\n"
+            "\n## Long-running, monitoring, and scheduled tasks (IMPORTANT)\n"
+            "Four primitives for work that shouldn't block the conversation. Pick by intent:\n"
+            "- **A) `task(background=true)`** — ONE continuous job that produces ONE final result (a long build/test, a multi-step research dive, 'run a 10-min stress test and report the average'). Output arrives in ONE block at the end. Do NOT use it for 'watch/monitor/sample/tail X' — that needs live updates (use C). The subagent is an LLM, so write its `prompt` as an instruction naming the tool + args + expected return (e.g. 'Run this via the bash tool and return stdout verbatim: …'), not a bare snippet.\n"
+            "- **B) `schedule_followup`/`schedule_interval`/`schedule_cron`** (+ `list_followups`/`cancel_followup`) — wake the agent for a FRESH agentic turn at future/recurring times ('remind me in 30 min', 'every weekday 9am post a summary'). Each fire re-reasons; use when you want a new agent turn, not raw output diffs.\n"
+            "- **C) `monitor_tool(target={kind:...}, duration, ...)`** — watch something server-side and wake ONLY when it changes / matches `fire_when`. THIS is the answer for any 'watch/monitor/sample X for N time' or 'tell me when X changes' request. Zero LLM cost while quiet; each fire is a live bubble. See the monitor_tool tool description for the full per-kind guide. Quick routing of `kind`:\n"
+            "    • shell metric/log snapshot (command exits each run) → kind='command'. THRESHOLDS ('alert when CPU>80'): pipe to a bare number + fire_when='value > 80' (fires on crossings, not every tick).\n"
+            "    • live follow-style command (tail -f, journalctl -f, kubectl logs -f) → kind='stream'.\n"
+            "    • server-rendered page / JSON API → kind='url'. NEVER for JS-rendered SPAs (TradingView, Twitter, dashboards) — use kind='browser'.\n"
+            "    • 'watch the screen' / live dashboard / SPA / animated counter → kind='browser' (reads the live post-JS DOM of the open tab; navigate there first).\n"
+            "    • live price/score push feed ('watch the live BTC price') → kind='websocket' (polling can't subscribe).\n"
+            "    • output of an installed MCP extension (ServiceNow, Linear) → kind='mcp'.\n"
+            "  Manage with `list_monitors(kind?)` / `cancel_monitor(id)`.\n"
+            "- **D) `create_remote_trigger(prompt_template)`** (+ list/cancel) — react to an EXTERNAL event (CI finishes, Slack/ticket webhook). Returns a URL; anything that POSTs to it wakes the agent with the body. No polling.\n"
+            "Anti-patterns: ❌ never use `task(background=true)` for a 'watch/sample/tail' request or to loop-sample a metric (that's C). ❌ never claim you're 'monitoring' or 'will check back' unless you actually called a `schedule_*`, `monitor_tool`, or `create_remote_trigger`. ❌ don't call `task` synchronously for anything >30s.\n"
         )
         if team_description:
             build_prompt += (
@@ -501,6 +519,11 @@ class OpenCodeManager:
             "RETRACE_TEAM_ID": team_id or "",
             "RETRACE_BACKEND_URL": backend_url,
             "RETRACE_INTERNAL_TOKEN": internal_token,
+            # Public-facing hostname for webhook URLs surfaced by the
+            # retrace-scheduler MCP's create_remote_trigger. Backend RPCs
+            # (MCP → backend) always use RETRACE_BACKEND_URL; this only affects
+            # the user-visible webhook URL. Set on the host to the public domain.
+            "RETRACE_PUBLIC_BASE_URL": (os.environ.get("RETRACE_PUBLIC_BASE_URL") or "").rstrip("/"),
         }
 
         config: Dict[str, Any] = {
@@ -580,6 +603,12 @@ class OpenCodeManager:
                         "RETRACE_LLM_BASE_URL": api_url or "",
                         "RETRACE_LLM_MODEL": model_name or "",
                     },
+                },
+                "retrace-scheduler": {
+                    "type": "local",
+                    "enabled": True,
+                    "command": [sys.executable, "-m", "app.retrace_mcp.scheduler"],
+                    "environment": {**mcp_env_base},
                 },
                 # retrace-bash MCP removed — OC's forked shell.ts now routes
                 # directly through the PTY bridge (see opencode/.../tool/shell.ts).
@@ -665,7 +694,7 @@ class OpenCodeManager:
             "multiEdit": "edit", "glob": "glob", "grep": "grep", "task": "task",
             "web_fetch": "webfetch", "todo_write": "todowrite",
         }
-        _RETRACE_MCP_NAMES = {"retrace-kb", "retrace-browser", "retrace-screenops", "retrace-search"}
+        _RETRACE_MCP_NAMES = {"retrace-kb", "retrace-browser", "retrace-screenops", "retrace-search", "retrace-scheduler"}
         for name in disabled_names:
             if name in _NATIVE_PERM_MAP:
                 config["permission"][_NATIVE_PERM_MAP[name]] = "deny"
