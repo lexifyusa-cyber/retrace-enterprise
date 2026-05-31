@@ -101,8 +101,15 @@ COPY main-app/backend/ /app/
 # Built SPA -> /app/static (app.main serves it when this dir exists).
 COPY --from=frontend /fe/dist/ /app/static/
 
+# cloudflared — Cloudflare Tunnel client. Started by CMD only when CF_TUNNEL_TOKEN
+# is set, so the image stays usable via the public IP / fly proxy without it.
+RUN curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+      -o /usr/local/bin/cloudflared \
+ && chmod +x /usr/local/bin/cloudflared
+
 EXPOSE 8000
 
 # xvfb-run provides a virtual DISPLAY so GUI-automation imports don't crash on
-# a headless VM. PORT defaults to 8000 (overridable via env / fly.toml).
-CMD ["sh", "-c", "xvfb-run -a uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# a headless VM. cloudflared starts first (only if CF_TUNNEL_TOKEN is set) so
+# the Cloudflare tunnel comes up alongside the app. PORT defaults to 8000.
+CMD ["sh", "-c", "if [ -n \"$CF_TUNNEL_TOKEN\" ]; then cloudflared --no-autoupdate tunnel run --token \"$CF_TUNNEL_TOKEN\" & fi; xvfb-run -a uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
