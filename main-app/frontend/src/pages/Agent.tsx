@@ -919,8 +919,18 @@ export default function Agent() {
         } else {
           await ocStore.createSession(conversationId, selectedTeamId || undefined, displayAgent)
         }
-      } catch {
-        toast.error('Failed to create OpenCode session')
+      } catch (err: any) {
+        // Most often a cold start — the agent engine (OpenCode) hasn't finished
+        // booting when the first message is sent. Say so clearly (instead of a
+        // generic failure) and log the real error for diagnosis.
+        console.error('[Agent] could not start OpenCode session', err)
+        const status = err?.response?.status
+        const engineNotReady = status === undefined || status >= 500
+        toast.error(
+          engineNotReady
+            ? 'Agent engine is still starting — please wait a moment and try again.'
+            : `Could not start the agent session: ${err?.message || 'unknown error'}`,
+        )
         return
       }
     }

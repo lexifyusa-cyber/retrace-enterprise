@@ -460,7 +460,22 @@ export const useOpenCodeStore = create<StoreInternal>((set, get) => ({
   // ── Per-conversation actions ──────────────────────────────────────────
   createSession: async (conversationId, teamId, agent) => {
     const mode: 'build' | 'plan' = agent ?? get().sessions[conversationId]?.agent ?? 'build'
-    const result = await agentApi.opencode.createSession(teamId, conversationId, mode === 'plan' ? 'plan' : undefined)
+    // Cold-start resilience: right after opening the agent the engine (OpenCode)
+    // may still be booting, so the first create can fail transiently (5xx / no
+    // response). Retry a few times — the engine usually warms within a couple
+    // seconds — so a startup race self-heals instead of surfacing an error.
+    let result!: Awaited<ReturnType<typeof agentApi.opencode.createSession>>
+    for (let attempt = 0; ; attempt++) {
+      try {
+        result = await agentApi.opencode.createSession(teamId, conversationId, mode === 'plan' ? 'plan' : undefined)
+        break
+      } catch (err: any) {
+        const status = err?.response?.status
+        const engineWarming = status === undefined || status >= 500
+        if (!engineWarming || attempt >= 3) throw err
+        await new Promise(resolve => setTimeout(resolve, 800 * (attempt + 1)))
+      }
+    }
     // Preserve any legacy messages already loaded into the view (e.g. via
     // loadFromDb after a SESSION_NOT_FOUND). Non-legacy messages are wiped
     // because they belonged to the dead/previous OC session.
