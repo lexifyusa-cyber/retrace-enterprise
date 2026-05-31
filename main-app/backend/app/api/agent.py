@@ -1762,7 +1762,14 @@ async def opencode_session_cost(
                 total_input += tokens.get("input", 0) or 0
                 total_output += tokens.get("output", 0) or 0
                 total_reasoning += tokens.get("reasoning", 0) or 0
-                total_cache += tokens.get("cache", 0) or 0
+                cache = tokens.get("cache") or 0
+                # OpenCode reports cache as {"read", "write"} (the same shape the
+                # llm_logs path already handles, ~L624). Sum the two rather than
+                # adding the dict as a number — the latter 500s this endpoint.
+                total_cache += (
+                    int(cache.get("read", 0) or 0) + int(cache.get("write", 0) or 0)
+                    if isinstance(cache, dict) else int(cache or 0)
+                )
 
         return {
             "session_id": session_id,
