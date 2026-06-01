@@ -13,6 +13,7 @@ import { WebFetchTool } from "./webfetch"
 import { WriteTool } from "./write"
 import { InvalidTool } from "./invalid"
 import { SkillTool } from "./skill"
+import { ToolSearchTool } from "./tool-search"
 import * as Tool from "./tool"
 import { Config } from "@/config/config"
 import { type ToolContext as PluginToolContext, type ToolDefinition } from "@opencode-ai/plugin"
@@ -133,6 +134,7 @@ export const layer: Layer.Layer<
     const greptool = yield* GrepTool
     const patchtool = yield* ApplyPatchTool
     const skilltool = yield* SkillTool
+    const toolSearch = yield* ToolSearchTool
     const agent = yield* Agent.Service
 
     const state = yield* InstanceState.make<State>(
@@ -244,12 +246,14 @@ export const layer: Layer.Layer<
           question: Tool.init(question),
           lsp: Tool.init(lsptool),
           plan: Tool.init(plan),
+          tool_search: Tool.init(toolSearch),
         })
 
         return {
           custom,
           builtin: [
             tool.invalid,
+            ...(flags.experimentalToolSearch ? [tool.tool_search] : []),
             ...(questionEnabled ? [tool.question] : []),
             tool.shell,
             tool.read,

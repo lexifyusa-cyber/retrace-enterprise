@@ -52,6 +52,8 @@ import { TaskTool, type TaskPromptOps } from "@/tool/task"
 import { SessionRunState } from "./run-state"
 import { EffectBridge } from "@/effect/bridge"
 import { RuntimeFlags } from "@/effect/runtime-flags"
+import { ToolActivation } from "@/session/tool-activation"
+import { buildMenu } from "@/tool/tool-search-clusters"
 import { EventV2 } from "@opencode-ai/core/event"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionEvent } from "@opencode-ai/core/session-event"
@@ -695,6 +697,15 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           )
         tools[key] = item
       }
+
+      if (flags.experimentalToolSearch)
+        ToolActivation.setCatalog(
+          input.session.id,
+          Object.entries(tools).map(([id, t]) => ({
+            id,
+            description: typeof t.description === "string" ? t.description : "",
+          })),
+        )
 
       return tools
     })
@@ -1825,6 +1836,10 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               MessageV2.toModelMessagesEffect(msgs, model),
             ])
             const system = [...env, ...instructions, ...(skills ? [skills] : [])]
+            if (flags.experimentalToolSearch) {
+              const menu = buildMenu(ToolActivation.getCatalog(sessionID), ToolActivation.activatedClusters(sessionID))
+              if (menu) system.push(menu)
+            }
             const format = lastUser.format ?? { type: "text" as const }
             if (format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
             const result = yield* handle.process({

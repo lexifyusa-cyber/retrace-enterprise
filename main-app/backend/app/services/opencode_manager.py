@@ -152,6 +152,12 @@ class OpenCodeProcess:
         # `task(background=true)` returns a task_id immediately (option A of the
         # build_prompt's async guidance) instead of blocking the turn.
         env["OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS"] = "1"
+        # Experimental on-demand tool loading (tool_search). Defers the bulky MCP
+        # tool families out of the per-call tool payload; the agent loads them via
+        # tool_search when needed — see docs/tool-search-plan.md. OFF by default;
+        # opt in per-deploy with RETRACE_ENABLE_TOOL_SEARCH=1 (dev first).
+        if os.environ.get("RETRACE_ENABLE_TOOL_SEARCH", "").strip().lower() in ("1", "true", "yes", "on"):
+            env["OPENCODE_EXPERIMENTAL_TOOL_SEARCH"] = "1"
 
         self.process = await asyncio.create_subprocess_exec(
             bin_path,

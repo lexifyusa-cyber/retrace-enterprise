@@ -22,6 +22,8 @@ import { Auth } from "@/auth"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { EffectBridge } from "@/effect/bridge"
 import { RuntimeFlags } from "@/effect/runtime-flags"
+import { ToolActivation } from "@/session/tool-activation"
+import { clusterOf, isAlwaysOn } from "@/tool/tool-search-clusters"
 import * as Option from "effect/Option"
 import * as OtelTracer from "@effect/opentelemetry/Tracer"
 
@@ -334,6 +336,12 @@ const live: Layer.Layer<
         agentName: input.agent.name,
       }
 
+      // Tool-search deferral: when enabled, advertise only core tools + tools
+      // whose cluster has been activated this session (see tool-search-clusters).
+      const advertisedClusters = flags.experimentalToolSearch
+        ? ToolActivation.activatedClusters(input.sessionID)
+        : undefined
+
       return streamText({
         onError(error) {
           l.error("stream error", {
@@ -366,7 +374,12 @@ const live: Layer.Layer<
         topP: params.topP,
         topK: params.topK,
         providerOptions: ProviderTransform.providerOptions(input.model, params.options),
-        activeTools: Object.keys(sortedTools).filter((x) => x !== "invalid"),
+        activeTools: Object.keys(sortedTools).filter((x) => {
+          if (x === "invalid") return false
+          if (!flags.experimentalToolSearch) return true
+          if (isAlwaysOn(x)) return true
+          return advertisedClusters?.has(clusterOf(x)) ?? false
+        }),
         tools: sortedTools,
         toolChoice: input.toolChoice,
         maxOutputTokens: params.maxOutputTokens,
