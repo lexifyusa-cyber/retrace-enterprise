@@ -1,3 +1,15 @@
+// Retrace: redirect cwd to the per-user workspace so pwd/ls/bash tools don't
+// expose the OpenCode source directory in agent responses. Falls back silently
+// if RETRACE_WORKSPACE is unset (so running OpenCode standalone still works).
+if (process.env.RETRACE_WORKSPACE) {
+  try {
+    require("node:fs").mkdirSync(process.env.RETRACE_WORKSPACE, { recursive: true })
+    process.chdir(process.env.RETRACE_WORKSPACE)
+  } catch (e) {
+    console.error("[retrace] workspace chdir failed:", (e as Error).message)
+  }
+}
+
 import yargs from "yargs"
 import { hideBin } from "yargs/helpers"
 import { RunCommand } from "./cli/cmd/run"

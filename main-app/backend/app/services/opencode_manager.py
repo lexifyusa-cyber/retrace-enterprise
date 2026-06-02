@@ -114,11 +114,27 @@ class OpenCodeProcess:
         self._log_task: Optional[asyncio.Task] = None
 
     async def start(self) -> None:
+        # Per-user workspace: hides /opt/opencode from pwd/ls/bash tool output.
+        # OpenCode's src/index.ts preamble reads RETRACE_WORKSPACE and chdir's
+        # before the routing middleware reads process.cwd(). Ephemeral on Fly
+        # (rebuilt on each deploy) — no persistence guarantees here.
+        workspace = Path("/workspace") / self.user_id
+        try:
+            workspace.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            # Likely a permissions issue on a host where / is read-only (e.g.
+            # certain CI sandboxes). Fall back to a tmp dir so the agent at
+            # least doesn't crash; the path will still be branded enough.
+            logger.warning("workspace_mkdir_failed", error=str(exc), path=str(workspace))
+            workspace = Path("/tmp/retrace-workspace") / self.user_id
+            workspace.mkdir(parents=True, exist_ok=True)
+
         # External mode: don't spawn anything. Retrace will route HTTP calls
         # to `external_url` and we trust the dev has OC running there.
         if self.external_url:
             cmd = (
                 f"OPENCODE_CONFIG_DIR={self.config_dir} "
+                f"RETRACE_WORKSPACE={workspace} "
                 f"bun run --cwd packages/opencode --conditions=browser "
                 f"src/index.ts serve --port {self.port} --hostname 127.0.0.1"
             )
@@ -127,6 +143,7 @@ class OpenCodeProcess:
                 user_id=self.user_id,
                 url=self.external_url,
                 config_dir=str(self.config_dir),
+                workspace=str(workspace),
                 run_this_in_your_terminal=cmd,
             )
             return
@@ -148,6 +165,9 @@ class OpenCodeProcess:
         env["RETRACE_BACKEND_URL"] = os.environ.get("RETRACE_BACKEND_URL", "http://127.0.0.1:8000")
         if os.environ.get("RETRACE_INTERNAL_TOKEN"):
             env["RETRACE_INTERNAL_TOKEN"] = os.environ["RETRACE_INTERNAL_TOKEN"]
+        # Branded per-user workspace; OC's index.ts preamble chdir's here at
+        # startup so pwd/bash/ls don't leak /opt/opencode in tool responses.
+        env["RETRACE_WORKSPACE"] = str(workspace)
         # Enable OC's experimental background-subagents support so
         # `task(background=true)` returns a task_id immediately (option A of the
         # build_prompt's async guidance) instead of blocking the turn.
