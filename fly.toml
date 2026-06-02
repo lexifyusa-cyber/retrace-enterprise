@@ -23,6 +23,11 @@ primary_region = "iad"
   # Managed OpenCode: the backend spawns one OC server per user by running
   # this wrapper (bun run src/index.ts serve ...). Unset = managed mode.
   RETRACE_OPENCODE_BIN = "/opt/opencode/run-from-source.sh"
+  # Tool-search deferral: OC advertises a small core toolset and loads the rest
+  # on demand via tool_search, trimming per-call tool-definition tokens.
+  # opencode_manager translates this to OPENCODE_EXPERIMENTAL_TOOL_SEARCH=1 per
+  # spawned OC. Enabled 2026-06-02 after the 8 GB bump (mirrors retrace-trial).
+  RETRACE_ENABLE_TOOL_SEARCH = "1"
 
 [http_service]
   internal_port = 8000
