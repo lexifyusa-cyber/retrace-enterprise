@@ -52,8 +52,10 @@ primary_region = "iad"
   destination = "/data"
 
 # Single machine (required: the volume binds to one machine). Heavy stack
-# (LangChain, PyMuPDF, numpy, uvicorn) PLUS per-user Bun OpenCode processes —
-# give it 4 GB.
+# (LangChain, PyMuPDF, numpy, uvicorn) PLUS per-user Bun OpenCode processes
+# (each with ~5 MCP subprocesses). Bumped shared-cpu-2x:4 GB -> performance-4x:8 GB
+# (2026-06-02) for headroom under concurrent managed-mode load — 4 GB risked OOM;
+# mirrors retrace-trial. (Fly has no auto RAM-scaling, so this is a fixed size.)
 [[vm]]
-  size = "shared-cpu-2x"
-  memory = "4096"
+  size = "performance-4x"
+  memory = "8192"
