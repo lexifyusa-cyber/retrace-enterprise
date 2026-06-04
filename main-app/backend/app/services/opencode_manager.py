@@ -28,6 +28,13 @@ _MAX_RESTARTS = 3
 _RESTART_DELAY_S = 5
 _HEALTH_INTERVAL_S = 30
 _HEALTH_TIMEOUT_S = 5
+# Startup grace: OC cold-starts from source (Bun transpile + ~5 MCP subprocesses),
+# which can exceed _HEALTH_INTERVAL_S on small VMs. The health loop must NOT restart
+# OC during this window — otherwise it kills the boot before it finishes and OC
+# never reaches healthy (the restart loop that breaks the first message). Poll until
+# first-healthy, up to this long, before any restart is allowed.
+_STARTUP_GRACE_S = float(os.environ.get("RETRACE_OC_STARTUP_GRACE_S", "150"))
+_STARTUP_POLL_S = 2
 
 _opencode_bin: Optional[str] = None
 
@@ -246,6 +253,31 @@ class OpenCodeProcess:
             return False
 
     async def _health_loop(self) -> None:
+        # Phase 1 — startup grace. Wait for OC to become healthy the FIRST time
+        # before we are ever allowed to restart it. OC cold-starts from source
+        # (Bun transpile + ~5 MCP servers) and can take longer than
+        # _HEALTH_INTERVAL_S; restarting it mid-boot is exactly what made it loop
+        # and never come up. Poll frequently so we catch "ready" quickly.
+        loop = asyncio.get_running_loop()
+        grace_deadline = loop.time() + _STARTUP_GRACE_S
+        ready = False
+        while loop.time() < grace_deadline:
+            if self.process and self.process.returncode is not None:
+                logger.warning("opencode_process_died", user_id=self.user_id, returncode=self.process.returncode, phase="startup")
+                await self.restart()
+                return
+            if await self.is_healthy():
+                ready = True
+                logger.info("opencode_healthy", user_id=self.user_id, port=self.port)
+                break
+            await asyncio.sleep(_STARTUP_POLL_S)
+        if not ready:
+            logger.warning("opencode_startup_timeout", user_id=self.user_id, grace_s=_STARTUP_GRACE_S)
+            await self.restart()
+            return
+
+        # Phase 2 — steady-state monitor. OC is up; restart it only if it dies or
+        # goes unhealthy after having been healthy.
         while True:
             await asyncio.sleep(_HEALTH_INTERVAL_S)
             if self.process and self.process.returncode is not None:
