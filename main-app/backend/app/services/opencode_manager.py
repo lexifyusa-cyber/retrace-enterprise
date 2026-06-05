@@ -639,6 +639,12 @@ class OpenCodeManager:
                     "command": [sys.executable, "-m", "app.retrace_mcp.browser"],
                     "environment": {**mcp_env_base},
                 },
+                "retrace-localbrowser": {
+                    "type": "local",
+                    "enabled": True,
+                    "command": [sys.executable, "-m", "app.retrace_mcp.localbrowser"],
+                    "environment": {**mcp_env_base},
+                },
                 "retrace-screenops": {
                     "type": "local",
                     "enabled": True,
@@ -752,7 +758,7 @@ class OpenCodeManager:
             "multiEdit": "edit", "glob": "glob", "grep": "grep", "task": "task",
             "web_fetch": "webfetch", "todo_write": "todowrite",
         }
-        _RETRACE_MCP_NAMES = {"retrace-kb", "retrace-browser", "retrace-screenops", "retrace-search", "retrace-scheduler"}
+        _RETRACE_MCP_NAMES = {"retrace-kb", "retrace-browser", "retrace-localbrowser", "retrace-screenops", "retrace-search", "retrace-scheduler"}
         for name in disabled_names:
             if name in _NATIVE_PERM_MAP:
                 config["permission"][_NATIVE_PERM_MAP[name]] = "deny"
