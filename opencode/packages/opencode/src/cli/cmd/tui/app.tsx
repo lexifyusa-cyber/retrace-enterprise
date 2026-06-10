@@ -38,6 +38,7 @@ import { useConnected } from "@tui/component/use-connected"
 import { DialogMcp } from "@tui/component/dialog-mcp"
 import { DialogStatus } from "@tui/component/dialog-status"
 import { DialogThemeList } from "@tui/component/dialog-theme-list"
+import { DialogBtw } from "@tui/component/dialog-btw"
 import { DialogHelp } from "./ui/dialog-help"
 import { DialogAgent } from "@tui/component/dialog-agent"
 import { DialogSessionList } from "@tui/component/dialog-session-list"
@@ -643,6 +644,16 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         slashName: "status",
         run: () => {
           dialog.replace(() => <DialogStatus />)
+        },
+        category: "System",
+      },
+      {
+        name: "btw.ask",
+        title: "Ask a side question (ephemeral)",
+        slashName: "btw",
+        run: () => {
+          const current = route.data
+          dialog.replace(() => <DialogBtw sessionID={current.type === "session" ? current.sessionID : undefined} />)
         },
         category: "System",
       },
