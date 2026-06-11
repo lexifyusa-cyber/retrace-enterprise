@@ -42,6 +42,7 @@ function _avatarFor(emailOrName: string): { bg: string; fg: string; initials: st
   return { ...palette, initials }
 }
 import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import type { OCMessage, SOPPart, DocPart } from '@/stores/opencodeStore'
 import ThinkingBlock from './ThinkingBlock'
 import ToolCallBlock from './ToolCallBlock'
@@ -733,7 +734,7 @@ function TextPart({ text }: { text: string }) {
   return (
     <div className="relative group/textpart">
       <div className="prose prose-agent max-w-none text-rt-text">
-        <ReactMarkdown components={_MARKDOWN_COMPONENTS}>{text}</ReactMarkdown>
+        <ReactMarkdown remarkPlugins={[remarkGfm]} components={_MARKDOWN_COMPONENTS}>{text}</ReactMarkdown>
       </div>
       <button
         type="button"
@@ -794,7 +795,7 @@ function SOPCard({ part, actions }: { part: SOPPart; actions?: MessageListAction
         {sopApproved && <span className="ml-auto inline-flex items-center gap-1 text-rt-success"><CheckCircle2 className="w-3.5 h-3.5" />Approved</span>}
       </div>
       <div className="prose prose-sm max-w-none">
-        <ReactMarkdown>{part.content}</ReactMarkdown>
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{part.content}</ReactMarkdown>
       </div>
       <div className="mt-3 pt-2 border-t border-emerald-500/20 flex flex-wrap items-center gap-2">
         {sopApproved ? (
@@ -892,7 +893,7 @@ function DocCard({ part, actions }: { part: DocPart; actions?: MessageListAction
         {docApproved && <span className="ml-auto inline-flex items-center gap-1 text-rt-success"><CheckCircle2 className="w-3.5 h-3.5" />Approved</span>}
       </div>
       <div className="prose prose-sm max-w-none">
-        <ReactMarkdown>{part.content}</ReactMarkdown>
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{part.content}</ReactMarkdown>
       </div>
       <div className="mt-3 pt-2 border-t border-blue-500/20 flex flex-wrap items-center gap-2">
         {docApproved ? (
