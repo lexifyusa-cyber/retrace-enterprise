@@ -632,7 +632,7 @@ function AssistantTurn({ turn, messages, actions, isLatestLiveTurn }: {
             return null
           })
         )}
-        {(turnCost > 0 || turnToolCount >= 3) && (
+        {(turnTokens > 0 || turnToolCount >= 3) && (
           <div className="flex items-center gap-2 text-[10px] text-rt-text-muted/40 flex-wrap">
             {turnToolCount >= 3 && (
               <span className="flex items-center gap-1">
@@ -640,11 +640,10 @@ function AssistantTurn({ turn, messages, actions, isLatestLiveTurn }: {
                 {turnToolCount} tools used
               </span>
             )}
-            {turnCost > 0 && turnToolCount >= 3 && <span className="text-rt-text-muted/30">·</span>}
-            {turnCost > 0 && (
+            {turnTokens > 0 && turnToolCount >= 3 && <span className="text-rt-text-muted/30">·</span>}
+            {turnTokens > 0 && (
               <span>
-                Cost: ${turnCost.toFixed(4)}
-                {turnTokens > 0 && ` · ${turnTokens} tokens`}
+                {turnTokens} tokens
               </span>
             )}
           </div>
