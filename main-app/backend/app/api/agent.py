@@ -974,10 +974,36 @@ async def opencode_send_message(
     # variants always exist in the generated config (inert for non-reasoning
     # models), so this never selects a missing agent. mcp-builder is excluded
     # (batch builds don't surface a thinking UI).
-    _think = str(request.reasoning or "").lower() in ("think", "deep")
-    if _think:
-        base = payload.get("agent") if payload.get("agent") in ("build", "plan") else "build"
-        payload["agent"] = f"{base}-think"
+    # Per-turn write-tool gating — makes Plan mode TRULY read-only.
+    #
+    # OC merges the per-prompt `tools` map into session.permission (a deny rule
+    # per false, allow per true) and the evaluator is last-match-wins. The
+    # session already carries a tool baseline (seeded at create, kept in sync by
+    # PATCH /opencode/tools) that lists edit/bash as ALLOW by default — which,
+    # being later in the merge, would otherwise override the plan agent's own
+    # edit/bash deny. By re-asserting the correct edit/bash state HERE, every
+    # turn, we win that race deterministically: there's no stateful "restore on
+    # switch back to Build" to forget, because the map is sent unconditionally.
+    #
+    # Plan forces edit+bash OFF server-side, regardless of what the client sent —
+    # read-only is a safety boundary, not a client hint. Build reflects the
+    # user's individual tool toggles (so "Build but bash off" still works).
+    # edit/write/multiEdit collapse to OC's "edit" permission key.
+    _is_plan = payload.get("agent") == "plan"
+    _disabled: set[str] = set()
+    try:
+        from app.api.settings import get_active_llm_settings
+        from app.db.database import async_session_maker as _settings_session_maker
+        async with _settings_session_maker() as _settings_session:
+            _llm = await get_active_llm_settings(_settings_session)
+        _disabled = set((_llm.get("agent_tools_config") or {}).get("disabled") or [])
+    except Exception as exc:
+        # Best-effort: a failed read must not silently grant write access in
+        # Plan. Plan-off below does not depend on _disabled, so it still holds.
+        logger.warning("per-turn tool gate: settings read failed", error=str(exc))
+    _edit_off = _is_plan or bool({"edit", "write", "multiEdit"} & _disabled)
+    _bash_off = _is_plan or ("bash" in _disabled)
+    payload["tools"] = {"edit": not _edit_off, "bash": not _bash_off}
 
     async def stream_generator():
         event_count = 0

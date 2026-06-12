@@ -4,7 +4,7 @@ import {
   Bot, Loader2, Terminal, FileText, Globe, Monitor,
   Package, Check, ChevronDown, Code, Play, X,
   Plus, MessageSquare, Trash2, Edit2,
-  ClipboardList, Brain,
+  ClipboardList,
   FolderOpen, ListTodo,
   Paperclip, File as FileIcon,
 } from 'lucide-react'
@@ -385,32 +385,20 @@ export default function Agent() {
   const pendingPermission = activeSession?.pendingPermission ?? null
   const isRunning = activeSession?.isRunning ?? false
 
-  // Agent mode: set at OpenCode session create time and locked thereafter.
-  // `preferredAgent` is the mode applied to the NEXT session we create when
-  // the active conversation doesn't have an OC session yet.
+  // Agent mode is forwarded per-turn on each prompt — OC merges the chosen
+  // agent's permission ruleset per request, so switching to Plan applies its
+  // edit/bash deny on the very next message (no session recreation needed).
+  // Only blocked mid-generation (isRunning). `preferredAgent` covers the
+  // pre-session window before an OC session exists for this conversation;
+  // once it exists, activeSession.agent wins.
   const [preferredAgent, setPreferredAgent] = useState<'build' | 'plan'>('build')
   const displayAgent: 'build' | 'plan' = activeSession?.agent ?? preferredAgent
-  const agentLocked = !!activeSession?.sessionId
-
-  // "Thinking" reasoning mode. Unlike agent mode, it isn't locked after session
-  // creation — it only affects the next message sent. `preferredReasoning` covers
-  // the pre-session window (before an OC session exists for this conversation).
-  const [preferredReasoning, setPreferredReasoning] = useState<'off' | 'think'>('off')
-  const [reasoningMenuOpen, setReasoningMenuOpen] = useState(false)
-  const displayReasoning: 'off' | 'think' = activeSession?.reasoning ?? preferredReasoning
 
   const handleSetAgent = useCallback((mode: 'build' | 'plan') => {
-    if (isRunning || agentLocked || mode === displayAgent) return
+    if (isRunning || mode === displayAgent) return
     setPreferredAgent(mode)
     if (activeConversationId) ocStore.setAgent(activeConversationId, mode)
-  }, [isRunning, agentLocked, displayAgent, activeConversationId])
-
-  const handleSetReasoning = useCallback((mode: 'off' | 'think') => {
-    if (isRunning) return
-    setPreferredReasoning(mode)
-    if (activeConversationId) ocStore.setReasoning(activeConversationId, mode)
-    setReasoningMenuOpen(false)
-  }, [isRunning, activeConversationId])
+  }, [isRunning, displayAgent, activeConversationId])
 
   // Resizable split: chatWidthPct is the left panel's percentage (30–80)
   const [chatWidthPct, setChatWidthPct] = useState(50)
@@ -943,11 +931,6 @@ export default function Agent() {
     setPendingMentions([])
     const sendParts = [...currentAttachments, ...currentMentions]
 
-    // Ensure the (possibly just-created) session carries the user's Thinking
-    // choice — makeSession defaults reasoning to 'off', so seed it from the
-    // composer's current selection before sending.
-    ocStore.setReasoning(conversationId, displayReasoning)
-
     try {
       await ocStore.sendMessage(conversationId, taskText, sendParts.length ? sendParts : undefined)
     } catch (err: any) {
@@ -964,7 +947,7 @@ export default function Agent() {
       // message during sync) and message_count update without a manual reload.
       refetchConversations()
     }
-  }, [task, selectedTeamId, isRunning, activeConversationId, displayAgent, displayReasoning, refetchConversations, pendingAttachments, pendingMentions])
+  }, [task, selectedTeamId, isRunning, activeConversationId, displayAgent, refetchConversations, pendingAttachments, pendingMentions])
 
   const handleSubmit = (e: React.FormEvent) => { e.preventDefault(); handleExecute() }
 
@@ -1317,6 +1300,12 @@ export default function Agent() {
   const fileOpsToolNames = new Set(['read', 'write', 'edit', 'multiEdit', 'glob', 'grep'])
   const fileOpsTools = tools.filter(t => fileOpsToolNames.has(t.name))
   const standaloneTools = tools.filter(t => !fileOpsToolNames.has(t.name))
+  // Plan mode is read-only: edit/write/multiEdit/bash are forced off + locked in
+  // the UI to mirror the backend's per-turn gating (agent.py forces these tools
+  // off whenever the turn's agent is "plan"). Read/search stay available and
+  // togglable; switching back to Build restores write/bash to the user's prefs.
+  const planLockedTools = new Set(['edit', 'write', 'multiEdit', 'bash'])
+  const toolsLockedByPlan = displayAgent === 'plan'
 
   // ── Render ───────────────────────────────────────────────────────
   return (
@@ -1329,8 +1318,8 @@ export default function Agent() {
         <h1 className="text-lg font-display font-bold cursor-default select-none">Agent</h1>
         <div className="flex items-center rounded-lg border border-rt-border overflow-hidden">
           <button type="button" onClick={() => handleSetAgent('build')}
-            disabled={isRunning || agentLocked}
-            title={agentLocked ? 'Agent mode is locked for this conversation. Start a new conversation to change it.' : 'Build mode'}
+            disabled={isRunning}
+            title={isRunning ? 'Finish the current run to switch modes' : 'Build mode — full access'}
             className={`flex items-center gap-1 px-2.5 py-1 text-xs font-medium transition-colors ${
               displayAgent === 'build'
                 ? 'bg-rt-primary/15 text-rt-primary'
@@ -1339,8 +1328,8 @@ export default function Agent() {
             <Bot className="w-3 h-3" /> Build
           </button>
           <button type="button" onClick={() => handleSetAgent('plan')}
-            disabled={isRunning || agentLocked}
-            title={agentLocked ? 'Agent mode is locked for this conversation. Start a new conversation to change it.' : 'Plan mode (read-only analysis)'}
+            disabled={isRunning}
+            title={isRunning ? 'Finish the current run to switch modes' : 'Plan mode — read-only analysis'}
             className={`flex items-center gap-1 px-2.5 py-1 text-xs font-medium transition-colors border-l border-rt-border ${
               displayAgent === 'plan'
                 ? 'bg-blue-500/15 text-blue-400'
@@ -1510,8 +1499,9 @@ export default function Agent() {
                     <div className="text-[10px] font-semibold text-rt-text-muted uppercase tracking-wide mb-2 px-1.5">File Operations</div>
                     {fileOpsTools.map((t) => {
                       const displayName = t.name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
-                      const isEnabled = t.available && (t.enabled !== false)
-                      const canToggle = t.available
+                      const lockedByPlan = toolsLockedByPlan && planLockedTools.has(t.name)
+                      const isEnabled = !lockedByPlan && t.available && (t.enabled !== false)
+                      const canToggle = t.available && !lockedByPlan
                       return (
                         <div key={t.name} className="flex items-center justify-between gap-2 py-1.5 px-1.5 rounded hover:bg-rt-surface/50">
                           <span className="text-xs text-rt-text">{displayName}</span>
@@ -1519,6 +1509,7 @@ export default function Agent() {
                             type="button"
                             onClick={() => canToggle && handleToolToggle(t.name, isEnabled)}
                             disabled={!canToggle || updateToolsMutation.isPending}
+                            title={lockedByPlan ? 'Read-only in Plan mode' : undefined}
                             className={`text-xs px-2 py-0.5 rounded ${isEnabled ? 'bg-rt-primary/20 text-rt-primary' : 'bg-rt-surface text-rt-text-muted'}`}
                           >
                             {isEnabled ? 'On' : 'Off'}
@@ -1535,8 +1526,9 @@ export default function Agent() {
               const displayName = getToolLabel(t.name)
               const shortHint = t.description ? `${t.description.slice(0, 42)}${t.description.length > 42 ? '…' : ''}` : ''
               const kbNoTeam = (t.name === 'knowledge_base' || t.name === 'search_knowledge_base') && !selectedTeamId
-              const isEnabled = !kbNoTeam && t.available && (t.enabled !== false)
-              const canToggle = t.available && !kbNoTeam
+              const lockedByPlan = toolsLockedByPlan && planLockedTools.has(t.name)
+              const isEnabled = !kbNoTeam && !lockedByPlan && t.available && (t.enabled !== false)
+              const canToggle = t.available && !kbNoTeam && !lockedByPlan
               return (
                 <button key={t.name} type="button"
                   onClick={() => canToggle && handleToolToggle(t.name, isEnabled)}
@@ -1548,6 +1540,7 @@ export default function Agent() {
                     <div className="font-medium text-rt-text">{displayName}</div>
                     {shortHint && <div className="text-rt-text-muted mt-1 break-words">{shortHint}</div>}
                     {canToggle && <div className="text-rt-text-muted/80 mt-0.5">{isEnabled ? 'Click: off' : 'Click: on'}</div>}
+                    {lockedByPlan && <div className="text-rt-text-muted/80 mt-0.5">Read-only in Plan</div>}
                     <div className="absolute top-full left-1/2 -translate-x-1/2 -mt-px"><div className="w-1.5 h-1.5 bg-rt-bg-light border-r border-b border-rt-border rotate-45" /></div>
                   </div>
                 </button>
@@ -1890,10 +1883,10 @@ export default function Agent() {
           <button
             type="button"
             onClick={() => handleSetAgent(displayAgent === 'build' ? 'plan' : 'build')}
-            disabled={isRunning || agentLocked}
+            disabled={isRunning}
             title={
-              agentLocked
-                ? `Agent mode locked to ${displayAgent} for this conversation`
+              isRunning
+                ? 'Finish the current run to switch modes'
                 : displayAgent === 'plan'
                   ? 'Plan mode — read-only analysis (click for Build)'
                   : 'Build mode — full access (click for Plan)'
@@ -1906,46 +1899,6 @@ export default function Agent() {
           >
             {displayAgent === 'plan' ? <ClipboardList className="w-4 h-4" /> : <Bot className="w-4 h-4" />}
           </button>
-          <div className="relative flex-shrink-0">
-            <button
-              type="button"
-              onClick={() => setReasoningMenuOpen(o => !o)}
-              onBlur={() => setTimeout(() => setReasoningMenuOpen(false), 150)}
-              disabled={isRunning}
-              title="Thinking mode"
-              className={`p-2 rounded-lg border transition-all flex items-center gap-1 ${
-                displayReasoning !== 'off'
-                  ? 'bg-purple-500/20 border-purple-500/40 text-purple-400'
-                  : 'border-rt-border text-rt-text-muted hover:border-rt-text-muted hover:text-rt-text'
-              }`}
-            >
-              <Brain className="w-4 h-4" />
-              {displayReasoning !== 'off' && (
-                <span className="text-[10px] font-medium leading-none">Think</span>
-              )}
-            </button>
-            {reasoningMenuOpen && (
-              <div className="absolute bottom-full left-0 mb-1 py-1 min-w-[170px] bg-rt-bg-light border border-rt-border rounded-lg shadow-xl z-50">
-                {([
-                  { mode: 'off' as const, label: 'Off' },
-                  { mode: 'think' as const, label: 'Think' },
-                ]).map(opt => (
-                  <button
-                    key={opt.mode}
-                    type="button"
-                    onMouseDown={(e) => { e.preventDefault(); handleSetReasoning(opt.mode) }}
-                    className={`w-full flex items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-rt-surface ${
-                      displayReasoning === opt.mode ? 'text-purple-400' : 'text-rt-text'
-                    }`}
-                  >
-                    <Brain className="w-3.5 h-3.5 flex-shrink-0" />
-                    <span className="flex-1">{opt.label}</span>
-                    {displayReasoning === opt.mode && <Check className="w-3.5 h-3.5 flex-shrink-0" />}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}

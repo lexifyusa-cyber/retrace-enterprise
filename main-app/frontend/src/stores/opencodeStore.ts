@@ -199,13 +199,8 @@ export interface SessionState {
   sessionCost: SessionCost | null
   canUndo: boolean
   canRedo: boolean
-  /** Agent mode for THIS conversation — set at OpenCode session create, immutable after */
+  /** Agent mode for THIS conversation — forwarded per-turn, switchable mid-conversation */
   agent: 'build' | 'plan'
-  /** Reasoning/"Thinking" mode for THIS conversation. 'off' = no thinking (default,
-   * fully backward-compatible); 'think' = normal thinking; 'deep' = exceptional
-   * thinking. Threaded into the send body as `reasoning`; the backend resolves it
-   * per-model (native reasoning when supported, otherwise a no-op). */
-  reasoning: 'off' | 'think'
   /** Messages the user submitted while a run was in-flight. Drained FIFO when
    * the current turn finishes — matches OC's `pendingMessages` / `ui.message.queued`
    * model. Each entry triggers another `sendMessage` call when the head pops.
@@ -228,7 +223,6 @@ function makeSession(conversationId: string, agent: 'build' | 'plan' = 'build'):
     canUndo: false,
     canRedo: false,
     agent,
-    reasoning: 'off',
     queuedMessages: [],
     recentPrompts: [],
   }
@@ -301,9 +295,6 @@ interface OpenCodeState {
   /** Dismiss the pending question — the agent will see a tool error. */
   rejectQuestion: (conversationId: string) => Promise<void>
   setAgent: (conversationId: string, agent: 'build' | 'plan') => void
-  /** Set the "Thinking" reasoning mode for a conversation. Unlike `agent`, this
-   * can change at any time — it only affects the next message sent. */
-  setReasoning: (conversationId: string, reasoning: 'off' | 'think') => void
   /** Close every local SSE reader. OpenCode continues generating upstream. */
   abortAllStreams: () => void
 }
@@ -833,13 +824,9 @@ export const useOpenCodeStore = create<StoreInternal>((set, get) => ({
       // on each prompt_async — same session, different agent per turn — no
       // session recreation needed for mid-conversation switches).
       const sessionAgent = get().sessions[conversationId]?.agent
-      const sessionReasoning = get().sessions[conversationId]?.reasoning
-      const bodyObj: { content: string; parts?: SendPart[]; agent?: string; reasoning?: string } = { content }
+      const bodyObj: { content: string; parts?: SendPart[]; agent?: string } = { content }
       if (parts && parts.length > 0) bodyObj.parts = parts
       if (sessionAgent === 'plan' || sessionAgent === 'build') bodyObj.agent = sessionAgent
-      // Only send `reasoning` when the user has turned Thinking on, so requests
-      // are byte-identical to today's when the toggle is off (backward-compatible).
-      if (sessionReasoning === 'think') bodyObj.reasoning = sessionReasoning
       const body = JSON.stringify(bodyObj)
       console.log('[OC] POST', url, parts ? `(with ${parts.length} attachment(s))` : '')
 
@@ -1562,17 +1549,10 @@ export const useOpenCodeStore = create<StoreInternal>((set, get) => ({
   },
 
   setAgent: (conversationId, agent) => {
-    // Agent mode is set at session creation; changing it requires a new
-    // OpenCode session. We just update the stored mode here — caller is
-    // expected to recreate the session if it already exists.
+    // Agent mode is forwarded per-turn (threaded into the request body as
+    // `agent`), so it can change mid-session without recreating the OpenCode
+    // session — the next message uses the newly stored mode.
     get()._patchSession(conversationId, s => ({ ...s, agent }))
-  },
-
-  setReasoning: (conversationId, reasoning) => {
-    // Reasoning mode only affects the next message sent (threaded into the
-    // request body), so unlike agent mode it can change mid-session without
-    // recreating the OpenCode session.
-    get()._patchSession(conversationId, s => ({ ...s, reasoning }))
   },
 }))
 

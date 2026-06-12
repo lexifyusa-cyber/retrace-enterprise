@@ -460,21 +460,14 @@ class OpenCodeManager:
                     "limit": {"context": 131072, "output": 16384},
                 }
 
-        # Reasoning ("Thinking") — reload-free design.
-        #
-        # If the selected model supports native reasoning, make it PERMANENTLY
-        # reasoning-capable at the model level (`reasoning: true` +
-        # `interleaved: {field: "reasoning_content"}`). This is harmless when a
-        # request doesn't ask to think — the gateway just returns no
-        # reasoning_content. Per-message on/off is then toggled WITHOUT any
-        # OpenCode restart by routing the turn to a "<agent>-think" variant that
-        # carries the body flag (e.g. chat_template_kwargs.enable_thinking).
-        # `think_options` is that per-agent options patch (empty for
-        # non-reasoning models, in which case the -think variants are inert).
-        think_options: Dict[str, Any] = {}
+        # Native reasoning capability. If the selected model supports native
+        # reasoning, make it reasoning-capable at the model level (`reasoning:
+        # true` + `interleaved: {field: "reasoning_content"}`) so genuine
+        # reasoning_content surfaces in the UI. Harmless otherwise — the gateway
+        # just returns no reasoning_content. (The old per-message build-think /
+        # plan-think variants were removed; they weren't real reasoning.)
         _rplan = reasoning_resolver.resolve(provider, model_name, "think")
         if _rplan.enabled:
-            think_options = dict(_rplan.options_patch)
             for _mn in (model_name, plan_model_name):
                 if _mn and _mn in custom_models:
                     custom_models[_mn].update(_rplan.model_patch)
@@ -690,34 +683,6 @@ class OpenCodeManager:
             },
         }
 
-        # Reload-free "Thinking": define build-think / plan-think agent variants
-        # (same model/prompt/permissions as build/plan, plus the reasoning body
-        # flag via `options`). agent.py routes a Think turn to "<agent>-think".
-        # Always defined so the per-turn agent switch never hits a missing
-        # agent; for non-reasoning models `think_options` is empty, making the
-        # variants behave identically to build/plan.
-        # Thinking mode must NOT consult the knowledge base — it should reason
-        # from first principles and answer directly. For each -think variant:
-        #   - deny the retrace-kb tools in the agent's permission ruleset (a
-        #     non-matching deny rule is harmless, so this can't break startup), and
-        #   - add a prompt instruction as a reliable backup.
-        _no_kb_note = (
-            "\n\n## Thinking mode\n"
-            "You are in Thinking mode. Do NOT call the knowledge base tools "
-            "(retrace-kb) and do NOT compare against the knowledge base. Reason "
-            "from first principles and answer directly."
-        )
-        for _src, _dst in (("build", "build-think"), ("plan", "plan-think")):
-            _base = config["agent"][_src]
-            config["agent"][_dst] = {
-                **_base,
-                "prompt": (_base.get("prompt") or "") + _no_kb_note,
-                "options": dict(think_options),
-                "permission": {
-                    **(_base.get("permission") or config.get("permission") or {}),
-                    "retrace-kb*": "deny",
-                },
-            }
 
         if small_model_name:
             config["small_model"] = f"{provider_id}/{small_model_name}"
