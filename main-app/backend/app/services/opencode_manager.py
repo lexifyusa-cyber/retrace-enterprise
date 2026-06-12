@@ -531,6 +531,30 @@ class OpenCodeManager:
             "Use the knowledge base and browser tools to gather information as needed.\n"
         )
 
+        # Ask mode: exploratory research + prototyping. Reads the workspace freely
+        # and can run shell, but ALL file edits are hard-scoped (via the agent's
+        # path-scoped `edit` permission, defined in the config below) to a per-user
+        # scratch dir — it can never modify real project files. The scratch dir is
+        # PER-USER (not a shared /tmp path) so one user's drafts aren't readable by
+        # another user's ask agent on the same multi-tenant host.
+        ask_scratch = f"/tmp/retrace-ask-scratch/{user_id}"
+        try:
+            os.makedirs(ask_scratch, exist_ok=True)
+        except Exception:
+            pass
+        ask_prompt = (
+            f"You are ReTrace Ask Agent, an exploratory research and prototyping assistant. Today is {today}.\n\n"
+            "You help users explore ideas, draft solutions, and prototype changes WITHOUT modifying their real "
+            "project files. You can use the knowledge base, browser, screen automation, SOPs, email, web search, "
+            "and shell, and you may read freely from the project workspace to understand context.\n\n"
+            f"CRITICAL: You do NOT have permission to modify files in the project workspace. ALL file edits, writes, "
+            f"and new files MUST go under `{ask_scratch}/`. To change an existing file, FIRST copy it into "
+            f"`{ask_scratch}/` (read the original, then write the copy there), then edit the copy. Never edit project "
+            f"files directly — the user reviews your scratch work and copies what they want into the real project "
+            f"themselves.\n\n"
+            "Be thorough but concise.\n"
+        )
+
         plan_model = plan_model_name or model_name
 
         # MCP server processes (retrace_mcp/*.py) call into ReTrace's domain
@@ -601,6 +625,30 @@ class OpenCodeManager:
                     "permission": {
                         "edit": "deny",
                         "bash": "deny",
+                    },
+                },
+                "ask": {
+                    "model": f"{provider_id}/{model_name}",
+                    "prompt": ask_prompt,
+                    "maxSteps": max_steps,
+                    # Edit is PATH-SCOPED: denied everywhere, allowed only under the
+                    # per-user scratch dir. This is the hard guarantee behind Ask
+                    # mode. For it to win at the execution `ask`, the session tool
+                    # baseline must NOT emit a blanket {edit,*,allow} (see
+                    # _build_native_permission_ruleset in agent.py — edit/bash are
+                    # excluded there) and agent.py's per-turn `tools` map must NOT
+                    # send a boolean `edit` for ask (it omits it).
+                    "permission": {
+                        "edit": {
+                            "*": "deny",
+                            f"{ask_scratch}/**": "allow",
+                            f"**/retrace-ask-scratch/{user_id}/**": "allow",
+                        },
+                        "bash": "allow",
+                        "external_directory": {
+                            "*": "deny",
+                            f"{ask_scratch}/**": "allow",
+                        },
                     },
                 },
                 # MCP Builder runs as its own OC agent. The forked shell.ts

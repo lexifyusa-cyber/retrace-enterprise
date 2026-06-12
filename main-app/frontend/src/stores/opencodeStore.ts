@@ -200,7 +200,7 @@ export interface SessionState {
   canUndo: boolean
   canRedo: boolean
   /** Agent mode for THIS conversation — forwarded per-turn, switchable mid-conversation */
-  agent: 'build' | 'plan'
+  agent: 'build' | 'plan' | 'ask'
   /** Messages the user submitted while a run was in-flight. Drained FIFO when
    * the current turn finishes — matches OC's `pendingMessages` / `ui.message.queued`
    * model. Each entry triggers another `sendMessage` call when the head pops.
@@ -211,7 +211,7 @@ export interface SessionState {
   recentPrompts: string[]
 }
 
-function makeSession(conversationId: string, agent: 'build' | 'plan' = 'build'): SessionState {
+function makeSession(conversationId: string, agent: 'build' | 'plan' | 'ask' = 'build'): SessionState {
   return {
     conversationId,
     sessionId: null,
@@ -255,7 +255,7 @@ interface OpenCodeState {
   setActiveConversation: (conversationId: string | null) => void
 
   // ── Per-conversation actions ──────────────────────────────────────────
-  createSession: (conversationId: string, teamId?: string, agent?: 'build' | 'plan') => Promise<string>
+  createSession: (conversationId: string, teamId?: string, agent?: 'build' | 'plan' | 'ask') => Promise<string>
   loadSession: (conversationId: string, opencodeSessionId: string) => Promise<void>
   /** Load the conversation's persisted messages from ReTrace's DB into the
    * session view. Marks them all as `isLegacy: true` so a subsequent
@@ -294,7 +294,7 @@ interface OpenCodeState {
   replyToQuestion: (conversationId: string, answers: string[][]) => Promise<void>
   /** Dismiss the pending question — the agent will see a tool error. */
   rejectQuestion: (conversationId: string) => Promise<void>
-  setAgent: (conversationId: string, agent: 'build' | 'plan') => void
+  setAgent: (conversationId: string, agent: 'build' | 'plan' | 'ask') => void
   /** Close every local SSE reader. OpenCode continues generating upstream. */
   abortAllStreams: () => void
 }
@@ -450,7 +450,7 @@ export const useOpenCodeStore = create<StoreInternal>((set, get) => ({
 
   // ── Per-conversation actions ──────────────────────────────────────────
   createSession: async (conversationId, teamId, agent) => {
-    const mode: 'build' | 'plan' = agent ?? get().sessions[conversationId]?.agent ?? 'build'
+    const mode: 'build' | 'plan' | 'ask' = agent ?? get().sessions[conversationId]?.agent ?? 'build'
     // Cold-start resilience: right after opening the agent the engine (OpenCode)
     // may still be booting, so the first create can fail transiently (5xx / no
     // response). Retry a few times — the engine usually warms within a couple
@@ -826,7 +826,7 @@ export const useOpenCodeStore = create<StoreInternal>((set, get) => ({
       const sessionAgent = get().sessions[conversationId]?.agent
       const bodyObj: { content: string; parts?: SendPart[]; agent?: string } = { content }
       if (parts && parts.length > 0) bodyObj.parts = parts
-      if (sessionAgent === 'plan' || sessionAgent === 'build') bodyObj.agent = sessionAgent
+      if (sessionAgent === 'plan' || sessionAgent === 'build' || sessionAgent === 'ask') bodyObj.agent = sessionAgent
       const body = JSON.stringify(bodyObj)
       console.log('[OC] POST', url, parts ? `(with ${parts.length} attachment(s))` : '')
 

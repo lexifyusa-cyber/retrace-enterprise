@@ -391,10 +391,10 @@ export default function Agent() {
   // Only blocked mid-generation (isRunning). `preferredAgent` covers the
   // pre-session window before an OC session exists for this conversation;
   // once it exists, activeSession.agent wins.
-  const [preferredAgent, setPreferredAgent] = useState<'build' | 'plan'>('build')
-  const displayAgent: 'build' | 'plan' = activeSession?.agent ?? preferredAgent
+  const [preferredAgent, setPreferredAgent] = useState<'build' | 'plan' | 'ask'>('build')
+  const displayAgent: 'build' | 'plan' | 'ask' = activeSession?.agent ?? preferredAgent
 
-  const handleSetAgent = useCallback((mode: 'build' | 'plan') => {
+  const handleSetAgent = useCallback((mode: 'build' | 'plan' | 'ask') => {
     if (isRunning || mode === displayAgent) return
     setPreferredAgent(mode)
     if (activeConversationId) ocStore.setAgent(activeConversationId, mode)
@@ -1337,6 +1337,16 @@ export default function Agent() {
             }`}>
             <ClipboardList className="w-3 h-3" /> Plan
           </button>
+          <button type="button" onClick={() => handleSetAgent('ask')}
+            disabled={isRunning}
+            title={isRunning ? 'Finish the current run to switch modes' : 'Ask mode — research & prototype in a scratch space (never edits project files)'}
+            className={`flex items-center gap-1 px-2.5 py-1 text-xs font-medium transition-colors border-l border-rt-border ${
+              displayAgent === 'ask'
+                ? 'bg-amber-500/15 text-amber-400'
+                : 'bg-rt-surface/50 text-rt-text-muted/50 hover:text-rt-text-muted'
+            }`}>
+            <Code className="w-3 h-3" /> Ask
+          </button>
         </div>
         <CostBadge cost={ocSessionCost} />
 
@@ -1882,22 +1892,26 @@ export default function Agent() {
         <form onSubmit={handleSubmit} className="max-w-3xl mx-auto flex gap-2 items-end">
           <button
             type="button"
-            onClick={() => handleSetAgent(displayAgent === 'build' ? 'plan' : 'build')}
+            onClick={() => handleSetAgent(displayAgent === 'build' ? 'plan' : displayAgent === 'plan' ? 'ask' : 'build')}
             disabled={isRunning}
             title={
               isRunning
                 ? 'Finish the current run to switch modes'
                 : displayAgent === 'plan'
-                  ? 'Plan mode — read-only analysis (click for Build)'
-                  : 'Build mode — full access (click for Plan)'
+                  ? 'Plan mode — read-only analysis (click for Ask)'
+                  : displayAgent === 'ask'
+                    ? 'Ask mode — prototype in a scratch space (click for Build)'
+                    : 'Build mode — full access (click for Plan)'
             }
             className={`flex-shrink-0 p-2 rounded-lg border transition-all ${
               displayAgent === 'plan'
                 ? 'bg-blue-500/20 border-blue-500/40 text-blue-400'
-                : 'border-rt-border text-rt-text-muted hover:border-rt-text-muted hover:text-rt-text'
+                : displayAgent === 'ask'
+                  ? 'bg-amber-500/20 border-amber-500/40 text-amber-400'
+                  : 'border-rt-border text-rt-text-muted hover:border-rt-text-muted hover:text-rt-text'
             }`}
           >
-            {displayAgent === 'plan' ? <ClipboardList className="w-4 h-4" /> : <Bot className="w-4 h-4" />}
+            {displayAgent === 'plan' ? <ClipboardList className="w-4 h-4" /> : displayAgent === 'ask' ? <Code className="w-4 h-4" /> : <Bot className="w-4 h-4" />}
           </button>
           <button
             type="button"
@@ -2016,6 +2030,9 @@ export default function Agent() {
         </form>
         {displayAgent === 'plan' && (
           <p className="text-[11px] text-blue-400/70 mt-1.5 pl-1">Plan mode — read-only analysis (no file edits or commands)</p>
+        )}
+        {displayAgent === 'ask' && (
+          <p className="text-[11px] text-amber-400/70 mt-1.5 pl-1">Ask mode — research & prototype in a scratch space (never edits your project files)</p>
         )}
       </div>
       </div>{/* end chat panel */}

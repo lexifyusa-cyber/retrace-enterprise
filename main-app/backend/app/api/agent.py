@@ -208,9 +208,16 @@ def _build_native_permission_ruleset(disabled_names: set[str]) -> list[dict]:
         action = "deny" if ui_name in disabled_names else "allow"
         if by_key.get(oc_key) != "deny":
             by_key[oc_key] = action
+    # edit/bash are MODE-governed, not baseline-governed: Build/Plan get a
+    # deterministic per-turn `tools` map (see send_message) and Ask relies on its
+    # path-scoped agent `edit` permission (edit allowed only in its scratch dir).
+    # Emitting a blanket {edit,*,allow} here would — being merged last — override
+    # both Plan's deny and Ask's scratch scoping. So exclude them from the
+    # session baseline; the baseline governs only the other toggleable tools.
     return [
         {"permission": key, "pattern": "*", "action": action}
         for key, action in by_key.items()
+        if key not in ("edit", "bash")
     ]
 
 
@@ -967,7 +974,7 @@ async def opencode_send_message(
     # Forward per-turn agent so OC uses the right system prompt + permissions
     # (e.g. plan denies edit/bash). Only forward known names; unknown values
     # would be silently rejected by OC's schema, so guard locally.
-    if request.agent in ("build", "plan", "mcp-builder"):
+    if request.agent in ("build", "plan", "ask", "mcp-builder"):
         payload["agent"] = request.agent
     # "Thinking" (reload-free): route build/plan turns to the matching
     # "<agent>-think" variant, which carries the reasoning body flag. The
@@ -989,7 +996,9 @@ async def opencode_send_message(
     # read-only is a safety boundary, not a client hint. Build reflects the
     # user's individual tool toggles (so "Build but bash off" still works).
     # edit/write/multiEdit collapse to OC's "edit" permission key.
-    _is_plan = payload.get("agent") == "plan"
+    _agent = payload.get("agent")
+    _is_plan = _agent == "plan"
+    _is_ask = _agent == "ask"
     _disabled: set[str] = set()
     try:
         from app.api.settings import get_active_llm_settings
@@ -1001,9 +1010,47 @@ async def opencode_send_message(
         # Best-effort: a failed read must not silently grant write access in
         # Plan. Plan-off below does not depend on _disabled, so it still holds.
         logger.warning("per-turn tool gate: settings read failed", error=str(exc))
-    _edit_off = _is_plan or bool({"edit", "write", "multiEdit"} & _disabled)
     _bash_off = _is_plan or ("bash" in _disabled)
-    payload["tools"] = {"edit": not _edit_off, "bash": not _bash_off}
+    _tools: dict = {"bash": not _bash_off}
+    # Ask mode's edit is PATH-SCOPED to its scratch dir via the agent permission.
+    # A boolean edit here (pattern "*") would clobber that scoping, so for Ask we
+    # OMIT edit entirely and let the agent ruleset be the last word. Build reflects
+    # the user's edit toggle; Plan forces edit off.
+    if not _is_ask:
+        _edit_off = _is_plan or bool({"edit", "write", "multiEdit"} & _disabled)
+        _tools["edit"] = not _edit_off
+    payload["tools"] = _tools
+
+    # Ask mode: re-assert the path-scoped edit rules on the SESSION every ask turn.
+    # The per-turn `tools` map is boolean-only (can't express "edit only in
+    # scratch"), and sessions created before Ask existed still carry a baked-in
+    # {edit,*,allow} in their permission — so on launch day the very first Ask
+    # click lands on an "old" session. We PATCH the two edit rules here (OC merges
+    # = append, evaluator = findLast → last match wins) to make scratch-only the
+    # last word on EVERY session, old or new. Idempotent re-assert (a later
+    # Build/Plan turn's per-turn edit appends after and overrides). external_directory
+    # already resolves via the agent ruleset (baseline never emitted it); bash goes
+    # through the tools map. Runs before stream_generator POSTs the prompt.
+    if _is_ask:
+        _ask_scratch = f"/tmp/retrace-ask-scratch/{user_id}"
+        _ask_edit_rules = [
+            {"permission": "edit", "pattern": "*", "action": "deny"},
+            {"permission": "edit", "pattern": f"{_ask_scratch}/**", "action": "allow"},
+        ]
+        try:
+            async with httpx.AsyncClient(timeout=10) as _ask_client:
+                _ask_resp = await _ask_client.patch(
+                    f"http://127.0.0.1:{port}/session/{session_id}",
+                    json={"permission": _ask_edit_rules},
+                )
+                if _ask_resp.status_code not in (200, 204):
+                    logger.warning(
+                        "ask edit-scope PATCH failed",
+                        status=_ask_resp.status_code,
+                        session_id=session_id,
+                    )
+        except Exception as exc:
+            logger.warning("ask edit-scope PATCH errored", error=str(exc))
 
     async def stream_generator():
         event_count = 0
