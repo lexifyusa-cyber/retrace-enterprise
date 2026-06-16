@@ -700,9 +700,10 @@ async def train_team(
             detail="Team has no folder groups to train"
         )
 
-    # Collect all active folder paths (with optional connection_id for remote sources)
-    # Each item is (absolute_path, connection_id_or_None).
-    folder_specs: list[tuple[str, Optional[str]]] = []
+    # Collect all active folder paths with pod_id, connection_id, and group_type.
+    # pod_id determines whether training stages locally, via a connector (SFTP/S3),
+    # or through a connected POD agent's RPC.
+    folder_specs: list[dict] = []
     group_ids: list[str] = []
     for group in team.folder_groups:
         if group.training_status == "training":
@@ -710,7 +711,14 @@ async def train_team(
         group_ids.append(group.group_id)
         for fp in group.folder_paths:
             if fp.is_active:
-                folder_specs.append((fp.absolute_path, fp.connection_id))
+                folder_specs.append({
+                    "path": fp.absolute_path,
+                    "connection_id": fp.connection_id,
+                    "pod_id": group.pod_id,
+                    "group_type": group.group_type,
+                    "group_id": group.group_id,
+                    "namespace": group.namespace,
+                })
 
     if not folder_specs:
         raise HTTPException(
@@ -1055,20 +1063,23 @@ async def list_team_chunks(
 
 async def _train_with_remote_staging(
     team_id: str,
-    folder_specs: list[tuple[str, Optional[str]]],
+    folder_specs: list[dict],
     group_ids: list[str],
     team_name: str,
     team_description: Optional[str],
     force_full: bool,
 ):
-    """Stage remote-source paths into a tenant-local temp dir, then run the
-    standard local pipeline against the staged copies.
+    """Dispatch training based on the source of each folder path.
 
-    For each (absolute_path, connection_id):
-      - connection_id is None  → the path is local; pass it through unchanged.
-      - connection_id is set   → look up the Connection, create a connector,
-                                 download the path into a temp staging dir,
-                                 and pass the staged local path to the pipeline.
+    Three categories:
+      - POD-based  (pod_id set, not __local__):  stage files from the POD
+        via ``list_directory`` / ``read_file`` RPC into a temp dir.
+      - Connector  (connection_id set):          download files into a temp
+        staging dir via the appropriate connector (SFTP / S3 / …).
+      - Local      (neither of the above):        pass through unchanged.
+
+    All staged and local paths are fed into the standard backend pipeline
+    so the team's KB store is populated and searchable by the agent.
     """
     import tempfile, asyncio as _aio
     from app.db.database import async_session_maker
@@ -1076,63 +1087,167 @@ async def _train_with_remote_staging(
     from app.services.sources import get_connector, decrypt_config
     from app.rag.pipeline import run_team_training as _run_local
 
-    staging_root = tempfile.mkdtemp(prefix=f"retrace-train-{team_id[:8]}-")
-    local_paths: list[str] = []
+    # --- separate specs -------------------------------------------------
+    pod_specs: list[dict] = []
+    conn_specs: list[dict] = []
+    local_specs: list[dict] = []
 
-    # Cache decoded connectors per connection_id (one connector per source)
-    connectors: dict[str, object] = {}
+    for spec in folder_specs:
+        pod_id = spec.get("pod_id")
+        cid = spec.get("connection_id")
+        if pod_id and pod_id != "__local__":
+            pod_specs.append(spec)
+        elif cid:
+            conn_specs.append(spec)
+        else:
+            local_specs.append(spec)
 
-    async with async_session_maker() as session:
-        # Bulk-load connections referenced by this run
-        connection_ids = {cid for _, cid in folder_specs if cid}
-        if connection_ids:
-            res = await session.execute(
-                select(Connection).where(Connection.connection_id.in_(connection_ids))
-            )
-            for conn in res.scalars().all():
-                try:
-                    config = decrypt_config(conn.config_encrypted)
-                    connectors[conn.connection_id] = get_connector(conn.source_type, config)
-                except Exception as e:
-                    print(f"[STAGING] Failed to init connector {conn.name}: {e}", flush=True)
+    all_local_paths: list[str] = []
 
-    # Stage each remote path off the event loop (paramiko/boto3 are blocking)
-    loop = _aio.get_event_loop()
-    for path, connection_id in folder_specs:
-        if not connection_id:
-            local_paths.append(path)
-            continue
-        connector = connectors.get(connection_id)
-        if connector is None:
-            print(f"[STAGING] Skipping {path}: connector unavailable", flush=True)
-            continue
-        try:
-            staged = await loop.run_in_executor(
-                None,
-                lambda c=connector, p=path: c.download_to(p, staging_root, recursive=True),
-            )
-            local_paths.append(staged)
-        except Exception as e:
-            print(f"[STAGING] Failed to stage {path} from connection {connection_id}: {e}", flush=True)
+    # --- POD-based staging ----------------------------------------------
+    if pod_specs:
+        pod_paths = await _stage_from_pods(team_id, pod_specs)
+        all_local_paths.extend(pod_paths)
 
-    # Close any connectors that opened persistent sessions
-    for c in connectors.values():
-        try:
-            close = getattr(c, "close", None)
-            if callable(close):
-                close()
-        except Exception:
-            pass
+    # --- connector staging (existing flow) ------------------------------
+    remaining = conn_specs + local_specs
+    if remaining:
+        staging_root = tempfile.mkdtemp(prefix=f"retrace-train-{team_id[:8]}-")
+        connectors: dict[str, object] = {}
 
-    if not local_paths:
+        async with async_session_maker() as session:
+            connection_ids = {s["connection_id"] for s in conn_specs if s.get("connection_id")}
+            if connection_ids:
+                res = await session.execute(
+                    select(Connection).where(Connection.connection_id.in_(connection_ids))
+                )
+                for conn in res.scalars().all():
+                    try:
+                        config = decrypt_config(conn.config_encrypted)
+                        connectors[conn.connection_id] = get_connector(conn.source_type, config)
+                    except Exception as e:
+                        print(f"[STAGING] Failed to init connector {conn.name}: {e}", flush=True)
+
+        loop = _aio.get_event_loop()
+        for spec in remaining:
+            path = spec["path"]
+            cid = spec.get("connection_id")
+            if not cid:
+                all_local_paths.append(path)
+                continue
+            connector = connectors.get(cid)
+            if connector is None:
+                print(f"[STAGING] Skipping {path}: connector unavailable", flush=True)
+                continue
+            try:
+                staged = await loop.run_in_executor(
+                    None,
+                    lambda c=connector, p=path: c.download_to(p, staging_root, recursive=True),
+                )
+                all_local_paths.append(staged)
+            except Exception as e:
+                print(f"[STAGING] Failed to stage {path} from connection {cid}: {e}", flush=True)
+
+        for c in connectors.values():
+            try:
+                close = getattr(c, "close", None)
+                if callable(close):
+                    close()
+            except Exception:
+                pass
+
+    if not all_local_paths:
         print(f"[STAGING] No paths staged for training (team={team_id})", flush=True)
         return
 
     await _run_local(
         team_id=team_id,
-        folder_paths=local_paths,
+        folder_paths=all_local_paths,
         group_ids=group_ids,
         team_name=team_name,
         team_description=team_description,
         force_full=force_full,
     )
+
+
+async def _stage_from_pods(team_id: str, pod_specs: list[dict]) -> list[str]:
+    """Download files from connected POD agents via RPC into a temp dir.
+
+    Uses ``list_directory`` (recursive) to discover files, then ``read_file``
+    to fetch each one.  Binary formats that cannot survive JSON string
+    transfer (e.g. PDF) are still written — the pipeline's extractors will
+    gracefully skip them if the content is corrupted.
+
+    Returns a list of local directory paths ready for the training pipeline.
+    """
+    import tempfile, os
+    from app.services.websocket_manager import websocket_manager
+
+    staging_root = tempfile.mkdtemp(prefix=f"retrace-pod-{team_id[:8]}-")
+    staged_paths: list[str] = []
+
+    # Group specs by pod_id so we batch-list per POD
+    by_pod: dict[str, list[dict]] = {}
+    for spec in pod_specs:
+        by_pod.setdefault(spec["pod_id"], []).append(spec)
+
+    for pod_id, specs in by_pod.items():
+        for spec in specs:
+            src_path = spec["path"]
+            group_id = spec["group_id"]
+            dest_root = os.path.join(staging_root, group_id)
+
+            try:
+                listing = await websocket_manager.call_pod_method(
+                    pod_id=pod_id,
+                    method="list_directory",
+                    params={"path": src_path, "recursive": True},
+                    timeout=60.0,
+                )
+            except Exception as exc:
+                print(f"[POD-STAGE] list_directory failed on pod={pod_id} path={src_path}: {exc}", flush=True)
+                continue
+
+            files = [f for f in listing.get("files", []) if f.get("type") == "file"]
+            if not files:
+                print(f"[POD-STAGE] No files found at {src_path} on pod={pod_id}", flush=True)
+                continue
+
+            downloaded = 0
+            for finfo in files:
+                rel = finfo.get("rel_path") or finfo.get("name", "unknown")
+                file_path_rpc = finfo.get("path", "")
+
+                try:
+                    result = await websocket_manager.call_pod_method(
+                        pod_id=pod_id,
+                        method="read_file",
+                        params={"path": file_path_rpc},
+                        timeout=30.0,
+                    )
+                except Exception as exc:
+                    print(f"[POD-STAGE] read_file failed: {file_path_rpc}: {exc}", flush=True)
+                    continue
+
+                content = result.get("content", "")
+                dest = os.path.join(dest_root, rel)
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+
+                try:
+                    with open(dest, "w", encoding="utf-8") as fh:
+                        fh.write(content)
+                    downloaded += 1
+                except Exception as exc:
+                    print(f"[POD-STAGE] write failed: {dest}: {exc}", flush=True)
+
+            if downloaded > 0:
+                staged_paths.append(dest_root)
+                print(
+                    f"[POD-STAGE] Staged {downloaded}/{len(files)} files "
+                    f"from pod={pod_id} path={src_path} → {dest_root}",
+                    flush=True,
+                )
+            else:
+                print(f"[POD-STAGE] No files staged from pod={pod_id} path={src_path}", flush=True)
+
+    return staged_paths

@@ -197,27 +197,68 @@ class WebSocketManager:
                 future.set_result(data.get("result"))
     
     async def _handle_training_progress(self, pod_id: str, data: dict):
-        """Handle training progress update from POD."""
+        """Handle training progress update from POD.
+
+        Updates the TrainingJob row and, when the POD reports
+        ``phase == "completed"``, flips the owning FolderGroup to
+        *completed* so the team becomes usable in agent chat.
+        """
         from app.db.database import async_session_maker
         from app.models.training import TrainingJob
-        from sqlalchemy import update
-        
+        from app.models.folder_group import FolderGroup
+        from sqlalchemy import update, select
+        from datetime import datetime
+
         job_id = data.get("job_id")
         if not job_id:
             return
-        
+
+        phase = data.get("phase", "")
+        values: dict = {"progress_data": data}
+
+        if phase == "completed":
+            values["status"] = "completed"
+            values["completed_at"] = datetime.utcnow()
+            stats = data.get("statistics", {})
+        elif phase in ("processing", "scanning"):
+            values["status"] = "running"
+
         async with async_session_maker() as session:
+            # Update the TrainingJob
             await session.execute(
                 update(TrainingJob)
                 .where(TrainingJob.job_id == job_id)
-                .values(progress_data=data)
+                .values(**values)
             )
+
+            # On completion, flip the FolderGroup to 'completed'
+            if phase == "completed":
+                job = await session.execute(
+                    select(TrainingJob).where(TrainingJob.job_id == job_id)
+                )
+                job_row = job.scalar_one_or_none()
+                if job_row:
+                    await session.execute(
+                        update(FolderGroup)
+                        .where(FolderGroup.group_id == job_row.group_id)
+                        .values(
+                            training_status="completed",
+                            last_trained=datetime.utcnow(),
+                            metadata_json={
+                                "phase": "completed",
+                                "message": "Training complete (via POD)",
+                                "statistics": stats,
+                            },
+                        )
+                    )
+
             await session.commit()
-        
+
         logger.debug(
             "Training progress update",
             pod_id=pod_id,
             job_id=job_id,
+            phase=phase,
             progress=data.get("progress"),
             total=data.get("total")
         )
