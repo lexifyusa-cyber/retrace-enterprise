@@ -569,8 +569,7 @@ function AssistantTurn({ turn, messages, actions, isLatestLiveTurn }: {
     )
   }
 
-  // Aggregate cost across the whole turn.
-  const turnCost = msgs.reduce((acc, m) => acc + (m.cost || 0), 0)
+  // Aggregate tokens across the whole turn.
   const turnTokens = msgs.reduce(
     (acc, m) => acc + ((m.tokens?.input || 0) + (m.tokens?.output || 0)),
     0,

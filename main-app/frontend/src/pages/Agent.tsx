@@ -33,7 +33,6 @@ import BrowserWorkspace from '@/components/BrowserWorkspace'
 import SandboxFileExplorer from '@/components/SandboxFileExplorer'
 import MessageList from '@/components/agent/MessageList'
 import { getToolIcon, getToolLabel } from '@/components/agent/ToolCallBlock'
-import CostBadge from '@/components/agent/CostBadge'
 import TodosPanel from '@/components/agent/TodosPanel'
 import CommandPalette, { type PaletteCommand } from '@/components/agent/CommandPalette'
 import MentionMenu, { type MentionAgent } from '@/components/agent/MentionMenu'
@@ -381,7 +380,6 @@ export default function Agent() {
   const conversationsWithPerm = useConversationsWithPendingPermission()
   const runningConversations = useRunningConversations()
   const ocMessages = activeSession?.messages ?? []
-  const ocSessionCost = activeSession?.sessionCost ?? null
   const pendingPermission = activeSession?.pendingPermission ?? null
   const isRunning = activeSession?.isRunning ?? false
 
@@ -1348,8 +1346,6 @@ export default function Agent() {
             <Code className="w-3 h-3" /> Ask
           </button>
         </div>
-        <CostBadge cost={ocSessionCost} />
-
         <HeaderOverflowMenu
           canFork={!!activeSession?.sessionId && !isRunning && !!activeConversationId}
           canShare={!!activeSession?.sessionId && !!activeConversationId}
