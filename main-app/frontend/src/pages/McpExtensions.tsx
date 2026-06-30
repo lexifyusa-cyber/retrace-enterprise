@@ -361,6 +361,7 @@ function MyExtensionCard({
 }) {
   const catalog = ext.catalog
   const authLabel = AUTH_LABELS[catalog.auth_type] || catalog.auth_type
+  const hasDetails = catalog.is_builtin || PASSTHROUGH_TYPES.includes(catalog.auth_type)
 
   return (
     <motion.div
@@ -437,7 +438,7 @@ function MyExtensionCard({
               Connect
             </button>
           )}
-          {PASSTHROUGH_TYPES.includes(catalog.auth_type) && (
+          {hasDetails && (
             <button onClick={onVerifyAccess} disabled={isVerifying}
               className="flex items-center gap-1 px-2 py-1 text-xs rounded hover:bg-emerald-500/10 text-emerald-400 transition-colors disabled:opacity-50">
               {isVerifying ? <Loader2 className="w-3 h-3 animate-spin" /> : <UserCheck className="w-3 h-3" />}
@@ -446,7 +447,7 @@ function MyExtensionCard({
           )}
           <button onClick={onEdit}
             className="flex items-center gap-1 px-2 py-1 text-xs rounded hover:bg-rt-surface text-rt-text-muted transition-colors">
-            <Settings className="w-3 h-3" /> {PASSTHROUGH_TYPES.includes(catalog.auth_type) ? 'Details' : 'Edit'}
+            <Settings className="w-3 h-3" /> {hasDetails ? 'Details' : 'Edit'}
           </button>
           {!catalog.is_builtin && (
             <button onClick={onDelete}
@@ -543,11 +544,12 @@ function EditUserExtensionDialog({
   onSaved: () => void
 }) {
   const isPassthrough = PASSTHROUGH_TYPES.includes(ext.catalog.auth_type)
+  const isDetailsMode = ext.catalog.is_builtin || isPassthrough
 
-  // For passthrough types: no editable env vars (admin-configured).
+  // For passthrough or built-in types: no editable env vars (admin-configured).
   // For others: merge catalog defaults with user overrides so user sees full picture.
   const [envVars, setEnvVars] = useState<EnvVar[]>(() => {
-    if (isPassthrough) return []
+    if (isDetailsMode) return []
     // Merge: start with catalog defaults, overlay user overrides
     const catalogVars = ext.catalog.env_vars_json || {}
     const userVars = ext.env_vars_json || {}
@@ -602,29 +604,28 @@ function EditUserExtensionDialog({
         className="w-full max-w-xl max-h-[85vh] overflow-y-auto bg-rt-surface border border-rt-border rounded-2xl shadow-2xl"
       >
         <div className="flex items-center justify-between p-5 border-b border-rt-border">
-          <h2 className="text-lg font-semibold">{isPassthrough ? 'Details' : 'Edit'} — {ext.catalog.name}</h2>
+          <h2 className="text-lg font-semibold">{isDetailsMode ? 'Details' : 'Edit'} — {ext.catalog.name}</h2>
           <button onClick={onClose} className="text-rt-text-muted hover:text-rt-text"><X className="w-5 h-5" /></button>
         </div>
 
         <div className="p-5 space-y-4">
-          {isPassthrough ? (
+          {isDetailsMode ? (
             <div className="space-y-3">
-              {/* OAuth info banner */}
               <div className="bg-emerald-500/5 border border-emerald-500/15 rounded-lg p-3">
                 <div className="flex items-start gap-2">
                   <ShieldCheck className="w-4 h-4 text-emerald-400 mt-0.5 shrink-0" />
                   <div>
-                    <p className="text-xs font-medium text-emerald-400">Pre-configured by your admin</p>
+                    <p className="text-xs font-medium text-emerald-400">Built-in extension</p>
                     <p className="text-[11px] text-rt-text-muted mt-1">
-                      Your credentials are used automatically for authentication. No configuration needed.
+                      Connection settings are managed from the built-in catalog. Use Verify Access to check current availability.
                     </p>
                   </div>
                 </div>
               </div>
-              {/* Show catalog config as read-only info */}
-              {Object.keys(catalogEnvVars).length > 0 && (
-                <div>
-                  <label className="text-xs font-medium text-rt-text-muted mb-1 block">Connection Details</label>
+
+              <div>
+                <label className="text-xs font-medium text-rt-text-muted mb-1 block">Connection Details</label>
+                {Object.keys(catalogEnvVars).length > 0 ? (
                   <div className="bg-rt-bg/50 rounded-lg border border-rt-border p-3 space-y-1.5">
                     {Object.entries(catalogEnvVars).map(([key, value]) => (
                       <div key={key} className="flex items-center gap-2 text-xs">
@@ -633,8 +634,12 @@ function EditUserExtensionDialog({
                       </div>
                     ))}
                   </div>
-                </div>
-              )}
+                ) : (
+                  <div className="bg-rt-bg/50 rounded-lg border border-rt-border p-3 text-xs text-rt-text-muted">
+                    No connection variables are required for this built-in extension.
+                  </div>
+                )}
+              </div>
             </div>
           ) : (
             /* Editable env vars for non-oauth auth types */
@@ -672,7 +677,7 @@ function EditUserExtensionDialog({
         </div>
 
         <div className="flex items-center justify-end gap-3 p-5 border-t border-rt-border">
-          {isPassthrough ? (
+          {isDetailsMode ? (
             <button onClick={onClose} className="px-4 py-2 text-sm text-rt-text-muted hover:text-rt-text bg-rt-bg border border-rt-border rounded-lg">Close</button>
           ) : (
             <>

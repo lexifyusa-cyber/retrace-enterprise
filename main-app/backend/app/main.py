@@ -496,34 +496,27 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     except Exception as exc:
         print(f"[STARTUP] Default admin/tenant setup skipped: {exc}", flush=True)
 
-    # Auto-seed ServiceNow as built-in extension and auto-install for all users
+    # Auto-seed built-in MCP extensions and auto-install them for all users.
     try:
         from sqlalchemy import select
         from app.db.database import async_session_maker
         from app.models.mcp_extension import McpExtension
         from app.models.user_extension import UserExtension
         from app.models.user import User
-        import json
 
         async with async_session_maker() as session:
-            # Check if ServiceNow extension exists
-            result = await session.execute(
-                select(McpExtension).where(McpExtension.name == "ServiceNow")
-            )
-            sn_ext = result.scalar_one_or_none()
+            import sys
 
-            if sn_ext is None:
-                import sys
-                python_path = sys.executable
-
-                sn_ext = McpExtension(
-                    name="ServiceNow",
-                    description="ServiceNow IT Service Management — create incidents, query tables, and manage tickets.",
-                    command=python_path,
-                    args_json=["-m", "servicenow_mcp"],
-                    env_vars_json={"SERVICENOW_INSTANCE_URL": "https://dev221851.service-now.com"},
-                    auth_type="auto_passthrough",
-                    auth_config_json={
+            python_path = sys.executable
+            builtin_specs = [
+                {
+                    "name": "ServiceNow",
+                    "description": "ServiceNow IT Service Management - create incidents, query tables, and manage tickets.",
+                    "command": python_path,
+                    "args_json": ["-m", "servicenow_mcp"],
+                    "env_vars_json": {"SERVICENOW_INSTANCE_URL": "https://dev221851.service-now.com"},
+                    "auth_type": "auto_passthrough",
+                    "auth_config_json": {
                         "token_env_var": "SERVICENOW_OAUTH_TOKEN",
                         "username_env_var": "SERVICENOW_USERNAME",
                         "password_env_var": "SERVICENOW_PASSWORD",
@@ -531,21 +524,136 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
                         "oauth_auth_type_value": "oauth",
                         "ldap_auth_type_value": "basic",
                     },
-                    is_builtin=True,
-                    is_enabled=True,
-                )
-                session.add(sn_ext)
-                await session.commit()
-                await session.refresh(sn_ext)
-                print("[STARTUP] Created ServiceNow built-in extension", flush=True)
-            elif not sn_ext.is_builtin:
-                sn_ext.is_builtin = True
-                await session.commit()
-                print("[STARTUP] Marked existing ServiceNow extension as built-in", flush=True)
+                },
+                {
+                    "name": "Grafana",
+                    "description": "Grafana observability MCP - query dashboards, datasources, alerts, and metrics context.",
+                    "command": "npx",
+                    "args_json": ["-y", "@leval/mcp-grafana"],
+                    "env_vars_json": {
+                        "GRAFANA_URL": "",
+                        "GRAFANA_API_KEY": "",
+                    },
+                },
+                {
+                    "name": "Prometheus",
+                    "description": "Prometheus monitoring MCP - query PromQL, labels, series, targets, and alert state.",
+                    "command": "npx",
+                    "args_json": ["-y", "mcp-prometheus"],
+                    "env_vars_json": {
+                        "PROMETHEUS_URL": "",
+                    },
+                },
+                {
+                    "name": "Azure",
+                    "description": "Azure MCP - inspect and operate Azure resources through the Azure MCP server.",
+                    "command": "npx",
+                    "args_json": ["-y", "@azure/mcp", "server", "start"],
+                    "env_vars_json": {},
+                },
+                {
+                    "name": "Teams",
+                    "description": "Microsoft Teams MCP - access Teams data and actions through Microsoft Graph.",
+                    "command": "npx",
+                    "args_json": ["-y", "@floriscornel/teams-mcp"],
+                    "env_vars_json": {
+                        "MICROSOFT_CLIENT_ID": "",
+                        "MICROSOFT_CLIENT_SECRET": "",
+                        "MICROSOFT_TENANT_ID": "",
+                    },
+                },
+                {
+                    "name": "Outlook",
+                    "description": "Microsoft Outlook MCP - access mail and calendar through Microsoft Graph.",
+                    "command": "npx",
+                    "args_json": ["-y", "microsoft-outlook-mcp"],
+                    "env_vars_json": {
+                        "MICROSOFT_CLIENT_ID": "",
+                        "MICROSOFT_CLIENT_SECRET": "",
+                        "MICROSOFT_TENANT_ID": "",
+                    },
+                },
+                {
+                    "name": "Slack",
+                    "description": "Slack MCP - search channels, read messages, and interact with Slack workspace data.",
+                    "command": "npx",
+                    "args_json": ["-y", "@modelcontextprotocol/server-slack"],
+                    "env_vars_json": {
+                        "SLACK_BOT_TOKEN": "",
+                        "SLACK_TEAM_ID": "",
+                    },
+                },
+            ]
 
-            # Auto-install all built-in extensions for every active user
+            created_count = 0
+            updated_count = 0
+            for spec in builtin_specs:
+                result = await session.execute(
+                    select(McpExtension).where(McpExtension.name == spec["name"])
+                )
+                ext = result.scalar_one_or_none()
+                if ext is None:
+                    ext = McpExtension(
+                        name=spec["name"],
+                        description=spec["description"],
+                        transport="stdio",
+                        command=spec["command"],
+                        args_json=spec["args_json"],
+                        env_vars_json=spec.get("env_vars_json") or {},
+                        auth_type=spec.get("auth_type", "none"),
+                        auth_config_json=spec.get("auth_config_json"),
+                        is_builtin=True,
+                        auto_install=True,
+                        is_enabled=True,
+                    )
+                    session.add(ext)
+                    created_count += 1
+                    continue
+
+                changed = False
+                for field in (
+                    "description",
+                    "command",
+                    "args_json",
+                    "env_vars_json",
+                    "auth_type",
+                    "auth_config_json",
+                ):
+                    value = spec.get(field)
+                    if field == "auth_type":
+                        value = value or "none"
+                    if getattr(ext, field) != value:
+                        setattr(ext, field, value)
+                        changed = True
+                if ext.transport != "stdio":
+                    ext.transport = "stdio"
+                    changed = True
+                if not ext.is_builtin:
+                    ext.is_builtin = True
+                    changed = True
+                if not getattr(ext, "auto_install", False):
+                    ext.auto_install = True
+                    changed = True
+                if not ext.is_enabled:
+                    ext.is_enabled = True
+                    changed = True
+                if changed:
+                    updated_count += 1
+
+            if created_count or updated_count:
+                await session.commit()
+                print(
+                    f"[STARTUP] Built-in MCP extensions seeded: {created_count} created, {updated_count} updated",
+                    flush=True,
+                )
+
+            # Auto-install all enabled, auto-install built-in extensions for every active user
             builtin_result = await session.execute(
-                select(McpExtension).where(McpExtension.is_builtin == True)
+                select(McpExtension).where(
+                    McpExtension.is_builtin == True,
+                    McpExtension.auto_install == True,
+                    McpExtension.is_enabled == True,
+                )
             )
             builtin_exts = builtin_result.scalars().all()
 

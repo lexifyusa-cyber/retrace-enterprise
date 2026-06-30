@@ -748,10 +748,19 @@ async def validate_user_access(
     """
     ext = await _get_extension(extension_id, session)
 
-    if ext.auth_type not in ("oauth_passthrough", "ldap_passthrough", "auto_passthrough"):
-        return {"has_access": True, "message": "This extension does not use credential pass-through."}
+    from app.models.user_extension import UserExtension
+    user_ext_result = await session.execute(
+        select(UserExtension)
+        .where(UserExtension.extension_id == ext.extension_id)
+        .where(UserExtension.user_id == current_user.user_id)
+        .limit(1)
+    )
+    user_ext = user_ext_result.scalar_one_or_none()
+    env_vars = dict(ext.env_vars_json or {})
+    if user_ext and user_ext.env_vars_json:
+        env_vars.update(user_ext.env_vars_json)
 
-    # Fetch user's active session
+    # Fetch user's active session for passthrough and Microsoft Graph checks.
     from app.models.user_session import UserSession
     sess_result = await session.execute(
         select(UserSession)
@@ -761,6 +770,95 @@ async def validate_user_access(
         .limit(1)
     )
     user_session = sess_result.scalar_one_or_none()
+
+    def _configured(key: str) -> bool:
+        value = str(env_vars.get(key) or "").strip()
+        return bool(value and value != "••••••••")
+
+    ext_name = (ext.name or "").strip().lower()
+
+    if ext_name == "grafana":
+        if not _configured("GRAFANA_URL") or not _configured("GRAFANA_API_KEY"):
+            return {"has_access": False, "message": "Grafana URL and API key are not configured."}
+        grafana_url = str(env_vars["GRAFANA_URL"]).rstrip("/")
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(
+                    f"{grafana_url}/api/health",
+                    headers={"Authorization": f"Bearer {env_vars['GRAFANA_API_KEY']}"},
+                )
+            if resp.status_code == 200:
+                return {"has_access": True, "message": "Grafana access verified."}
+            return {"has_access": False, "message": f"Grafana returned HTTP {resp.status_code}."}
+        except httpx.TimeoutException:
+            return {"has_access": False, "message": "Grafana verification timed out. Check the URL."}
+        except Exception as exc:
+            logger.error("validate_grafana_access_error", error=str(exc))
+            return {"has_access": False, "message": f"Grafana verification failed: {exc}"}
+
+    if ext_name == "prometheus":
+        if not _configured("PROMETHEUS_URL"):
+            return {"has_access": False, "message": "Prometheus URL is not configured."}
+        prometheus_url = str(env_vars["PROMETHEUS_URL"]).rstrip("/")
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(f"{prometheus_url}/api/v1/status/runtimeinfo")
+            if resp.status_code == 200:
+                return {"has_access": True, "message": "Prometheus access verified."}
+            return {"has_access": False, "message": f"Prometheus returned HTTP {resp.status_code}."}
+        except httpx.TimeoutException:
+            return {"has_access": False, "message": "Prometheus verification timed out. Check the URL."}
+        except Exception as exc:
+            logger.error("validate_prometheus_access_error", error=str(exc))
+            return {"has_access": False, "message": f"Prometheus verification failed: {exc}"}
+
+    if ext_name == "slack":
+        if not _configured("SLACK_BOT_TOKEN"):
+            return {"has_access": False, "message": "Slack bot token is not configured."}
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(
+                    "https://slack.com/api/auth.test",
+                    headers={"Authorization": f"Bearer {env_vars['SLACK_BOT_TOKEN']}"},
+                )
+            data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+            if resp.status_code == 200 and data.get("ok"):
+                team = data.get("team") or data.get("team_id") or "workspace"
+                return {"has_access": True, "message": f"Slack access verified for {team}."}
+            return {"has_access": False, "message": data.get("error") or f"Slack returned HTTP {resp.status_code}."}
+        except httpx.TimeoutException:
+            return {"has_access": False, "message": "Slack verification timed out."}
+        except Exception as exc:
+            logger.error("validate_slack_access_error", error=str(exc))
+            return {"has_access": False, "message": f"Slack verification failed: {exc}"}
+
+    if ext_name in ("teams", "outlook"):
+        if not user_session or not user_session.external_access_token:
+            return {"has_access": False, "message": f"Sign in with Azure AD to verify {ext.name} access. No Microsoft Graph token found."}
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(
+                    "https://graph.microsoft.com/v1.0/me",
+                    headers={"Authorization": f"Bearer {user_session.external_access_token}"},
+                )
+            if resp.status_code == 200:
+                data = resp.json()
+                display = data.get("displayName") or data.get("userPrincipalName") or current_user.email
+                return {"has_access": True, "message": f"{ext.name} Microsoft Graph access verified as {display}."}
+            return {"has_access": False, "message": f"Microsoft Graph returned HTTP {resp.status_code} for {ext.name}."}
+        except httpx.TimeoutException:
+            return {"has_access": False, "message": "Microsoft Graph verification timed out."}
+        except Exception as exc:
+            logger.error("validate_graph_access_error", extension=ext.name, error=str(exc))
+            return {"has_access": False, "message": f"{ext.name} verification failed: {exc}"}
+
+    if ext_name == "azure":
+        if user_session and (user_session.external_access_token or user_session.external_id_token):
+            return {"has_access": True, "message": "Azure AD session found. Azure MCP can use the current Microsoft identity where supported."}
+        return {"has_access": False, "message": "No Azure AD session found. Sign in with Azure AD or configure Azure CLI credentials for Azure MCP."}
+
+    if ext.auth_type not in ("oauth_passthrough", "ldap_passthrough", "auto_passthrough"):
+        return {"has_access": True, "message": "This extension does not use credential pass-through."}
 
     # ── Auto pass-through: detect which auth the user has and route accordingly ──
     effective_auth_type = ext.auth_type
