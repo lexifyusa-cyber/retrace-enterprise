@@ -532,7 +532,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
                     "args_json": ["-y", "@leval/mcp-grafana"],
                     "env_vars_json": {
                         "GRAFANA_URL": "",
-                        "GRAFANA_API_KEY": "",
+                        "GRAFANA_SERVICE_ACCOUNT_TOKEN": "",
+                    },
+                    "auth_type": "oauth_passthrough",
+                    "auth_config_json": {
+                        "token_env_var": "AZURE_ACCESS_TOKEN",
+                        "additional_token_env_vars": ["MICROSOFT_GRAPH_ACCESS_TOKEN"],
                     },
                 },
                 {
@@ -543,6 +548,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
                     "env_vars_json": {
                         "PROMETHEUS_URL": "",
                     },
+                    "auth_type": "oauth_passthrough",
+                    "auth_config_json": {
+                        "token_env_var": "AZURE_ACCESS_TOKEN",
+                        "additional_token_env_vars": ["MICROSOFT_GRAPH_ACCESS_TOKEN"],
+                    },
                 },
                 {
                     "name": "Azure",
@@ -550,6 +560,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
                     "command": "npx",
                     "args_json": ["-y", "@azure/mcp", "server", "start"],
                     "env_vars_json": {},
+                    "auth_type": "oauth_passthrough",
+                    "auth_config_json": {
+                        "token_env_var": "AZURE_ACCESS_TOKEN",
+                        "additional_token_env_vars": ["MICROSOFT_GRAPH_ACCESS_TOKEN"],
+                        "id_token_env_var": "AZURE_ID_TOKEN",
+                        "refresh_token_env_var": "AZURE_REFRESH_TOKEN",
+                    },
                 },
                 {
                     "name": "Teams",
@@ -560,6 +577,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
                         "MICROSOFT_CLIENT_ID": "",
                         "MICROSOFT_CLIENT_SECRET": "",
                         "MICROSOFT_TENANT_ID": "",
+                    },
+                    "auth_type": "oauth_passthrough",
+                    "auth_config_json": {
+                        "token_env_var": "MICROSOFT_ACCESS_TOKEN",
+                        "additional_token_env_vars": ["MICROSOFT_GRAPH_ACCESS_TOKEN", "AZURE_ACCESS_TOKEN"],
+                        "id_token_env_var": "MICROSOFT_ID_TOKEN",
+                        "refresh_token_env_var": "MICROSOFT_REFRESH_TOKEN",
                     },
                 },
                 {
@@ -572,6 +596,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
                         "MICROSOFT_CLIENT_SECRET": "",
                         "MICROSOFT_TENANT_ID": "",
                     },
+                    "auth_type": "oauth_passthrough",
+                    "auth_config_json": {
+                        "token_env_var": "MICROSOFT_ACCESS_TOKEN",
+                        "additional_token_env_vars": ["MICROSOFT_GRAPH_ACCESS_TOKEN", "AZURE_ACCESS_TOKEN"],
+                        "id_token_env_var": "MICROSOFT_ID_TOKEN",
+                        "refresh_token_env_var": "MICROSOFT_REFRESH_TOKEN",
+                    },
                 },
                 {
                     "name": "Slack",
@@ -581,7 +612,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
                     "env_vars_json": {
                         "SLACK_BOT_TOKEN": "",
                         "SLACK_TEAM_ID": "",
+                        "SLACK_CHANNEL_IDS": "",
                     },
+                    "auth_type": "none",
+                    "auth_config_json": {},
                 },
             ]
 
@@ -622,6 +656,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
                     value = spec.get(field)
                     if field == "auth_type":
                         value = value or "none"
+                    if field == "env_vars_json":
+                        # Preserve admin/user configured MCP values across restarts.
+                        # Built-in specs only provide default keys; they must not wipe
+                        # discovered URLs, API keys, or service account tokens.
+                        existing_env = dict(getattr(ext, field) or {})
+                        spec_env = dict(value or {})
+                        merged_env = {**spec_env, **{k: v for k, v in existing_env.items() if v}}
+                        if existing_env != merged_env:
+                            setattr(ext, field, merged_env)
+                            changed = True
+                        continue
                     if getattr(ext, field) != value:
                         setattr(ext, field, value)
                         changed = True

@@ -203,7 +203,7 @@ class McpClientManager:
                 if env_vars:
                     env.update(env_vars)
 
-                # Inject OAuth token if pass-through
+                # Inject Entra/OAuth tokens if pass-through is configured.
                 if auth_type == "oauth_passthrough" and auth_config:
                     if not user_auth_token:
                         raise RuntimeError(
@@ -212,6 +212,13 @@ class McpClientManager:
                         )
                     token_env_var = auth_config.get("token_env_var", "OAUTH_TOKEN")
                     env[token_env_var] = user_auth_token
+                    for extra_name in auth_config.get("additional_token_env_vars", []) or []:
+                        if extra_name:
+                            env[str(extra_name)] = user_auth_token
+                    if auth_config.get("id_token_env_var") and auth_config.get("id_token"):
+                        env[str(auth_config["id_token_env_var"])] = str(auth_config["id_token"])
+                    if auth_config.get("refresh_token_env_var") and auth_config.get("refresh_token"):
+                        env[str(auth_config["refresh_token_env_var"])] = str(auth_config["refresh_token"])
 
                 # Inject LDAP credentials if ldap_passthrough
                 if auth_type == "ldap_passthrough" and auth_config:
@@ -231,6 +238,13 @@ class McpClientManager:
                     if user_auth_token:
                         token_env_var = auth_config.get("token_env_var", "OAUTH_TOKEN")
                         env[token_env_var] = user_auth_token
+                        for extra_name in auth_config.get("additional_token_env_vars", []) or []:
+                            if extra_name:
+                                env[str(extra_name)] = user_auth_token
+                        if auth_config.get("id_token_env_var") and auth_config.get("id_token"):
+                            env[str(auth_config["id_token_env_var"])] = str(auth_config["id_token"])
+                        if auth_config.get("refresh_token_env_var") and auth_config.get("refresh_token"):
+                            env[str(auth_config["refresh_token_env_var"])] = str(auth_config["refresh_token"])
                         if auth_type_env_var:
                             env[auth_type_env_var] = auth_config.get("oauth_auth_type_value", "bearer")
                         logger.info("auto_passthrough_oauth", extension=extension_name)

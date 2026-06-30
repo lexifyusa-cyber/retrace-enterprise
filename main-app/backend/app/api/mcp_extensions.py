@@ -6,6 +6,7 @@ ReTrace agent can use (like Claude Desktop's MCP server settings).
 """
 
 import secrets
+import subprocess
 import time
 from datetime import datetime
 from typing import Optional
@@ -23,6 +24,7 @@ from app.core.security import CurrentUser, get_current_user, require_role
 from app.db.database import get_session
 from app.models.mcp_extension import McpExtension
 from app.models.user_extension import UserExtension
+from app.models.user_session import UserSession
 from app.services.mcp_client_service import mcp_client_manager
 
 logger = structlog.get_logger()
@@ -715,6 +717,21 @@ async def get_extension_tools(
     if mcp_client_manager.is_running(extension_id):
         tools = await mcp_client_manager.list_tools(extension_id)
     else:
+        user_session = (await session.execute(
+            select(UserSession)
+            .where(UserSession.user_id == current_user.user_id)
+            .where(UserSession.revoked == False)
+            .order_by(UserSession.last_active_at.desc())
+            .limit(1)
+        )).scalar_one_or_none()
+        user_auth_token = (user_session.external_access_token or user_session.external_id_token) if user_session else ""
+        auth_config = dict(ext.auth_config_json or {})
+        if user_session:
+            if user_session.external_id_token:
+                auth_config["id_token"] = user_session.external_id_token
+            if user_session.external_refresh_token:
+                auth_config["refresh_token"] = user_session.external_refresh_token
+
         # Start temporarily to discover tools
         tools = await mcp_client_manager.start_extension(
             extension_id=ext.extension_id,
@@ -725,7 +742,10 @@ async def get_extension_tools(
             args=ext.args_json,
             env_vars=ext.get_raw_env_vars(),
             auth_type=ext.auth_type,
-            auth_config=ext.auth_config_json,
+            auth_config=auth_config,
+            user_auth_token=user_auth_token or "",
+            user_id=current_user.user_id,
+            tenant_id=current_user.tenant_id or "",
         )
 
     return {
@@ -778,14 +798,15 @@ async def validate_user_access(
     ext_name = (ext.name or "").strip().lower()
 
     if ext_name == "grafana":
-        if not _configured("GRAFANA_URL") or not _configured("GRAFANA_API_KEY"):
-            return {"has_access": False, "message": "Grafana URL and API key are not configured."}
+        grafana_token = str(env_vars.get("GRAFANA_SERVICE_ACCOUNT_TOKEN") or env_vars.get("GRAFANA_API_KEY") or "").strip()
+        if not _configured("GRAFANA_URL") or not grafana_token or grafana_token == "••••••••":
+            return {"has_access": False, "message": "Grafana URL and service account token are not configured."}
         grafana_url = str(env_vars["GRAFANA_URL"]).rstrip("/")
         try:
             async with httpx.AsyncClient(timeout=15) as client:
                 resp = await client.get(
                     f"{grafana_url}/api/health",
-                    headers={"Authorization": f"Bearer {env_vars['GRAFANA_API_KEY']}"},
+                    headers={"Authorization": f"Bearer {grafana_token}"},
                 )
             if resp.status_code == 200:
                 return {"has_access": True, "message": "Grafana access verified."}
@@ -800,10 +821,31 @@ async def validate_user_access(
         if not _configured("PROMETHEUS_URL"):
             return {"has_access": False, "message": "Prometheus URL is not configured."}
         prometheus_url = str(env_vars["PROMETHEUS_URL"]).rstrip("/")
+        headers = {}
+        azure_resource = str(env_vars.get("PROMETHEUS_AZURE_RESOURCE") or "").strip()
+        verify_path = "/api/v1/status/runtimeinfo"
+        if azure_resource:
+            try:
+                token_result = subprocess.run(
+                    ["az", "account", "get-access-token", "--resource", azure_resource, "--query", "accessToken", "-o", "tsv"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
+                )
+                token = token_result.stdout.strip()
+                if token:
+                    headers["Authorization"] = f"Bearer {token}"
+                    verify_path = "/api/v1/query?query=up"
+            except Exception as exc:
+                logger.warning("validate_prometheus_azure_token_failed", error=str(exc))
+                return {"has_access": False, "message": "Azure Managed Prometheus token acquisition failed. Check Azure CLI login/RBAC on this host."}
         try:
             async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.get(f"{prometheus_url}/api/v1/status/runtimeinfo")
+                resp = await client.get(f"{prometheus_url}{verify_path}", headers=headers or None)
             if resp.status_code == 200:
+                if azure_resource:
+                    return {"has_access": True, "message": "Azure Managed Prometheus access verified."}
                 return {"has_access": True, "message": "Prometheus access verified."}
             return {"has_access": False, "message": f"Prometheus returned HTTP {resp.status_code}."}
         except httpx.TimeoutException:

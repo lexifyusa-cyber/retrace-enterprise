@@ -157,6 +157,9 @@ export default function Settings() {
   const [azureTenantId, setAzureTenantId] = useState('')
   const [azureRedirectUri, setAzureRedirectUri] = useState(`${window.location.origin}/auth/callback/azure`)
   const [azureAdditionalScopes, setAzureAdditionalScopes] = useState('')
+  const [azureAdminMappings, setAzureAdminMappings] = useState('')
+  const [azureUserAdminMappings, setAzureUserAdminMappings] = useState('')
+  const [azureUserMappings, setAzureUserMappings] = useState('')
   const [azureTestPending, setAzureTestPending] = useState(false)
   const [ldapTestPending, setLdapTestPending] = useState(false)
   const [autoProvisionEnabled, setAutoProvisionEnabled] = useState(false)
@@ -220,6 +223,10 @@ export default function Settings() {
         setAzureTenantId(ac.tenant_id || '')
         setAzureRedirectUri(ac.redirect_uri || `${window.location.origin}/auth/callback/azure`)
         setAzureAdditionalScopes(ac.additional_scopes || '')
+        const mappings = ac.role_mappings || {}
+        setAzureAdminMappings(Array.isArray(mappings.admin) ? mappings.admin.join(', ') : (mappings.admin || ''))
+        setAzureUserAdminMappings(Array.isArray(mappings.user_admin) ? mappings.user_admin.join(', ') : (mappings.user_admin || ''))
+        setAzureUserMappings(Array.isArray(mappings.user) ? mappings.user.join(', ') : (mappings.user || ''))
       }
     }
   }, [tenantAuth, isGlobalAdmin])
@@ -1541,6 +1548,21 @@ export default function Settings() {
                       <input type="text" className="input text-sm w-full" placeholder="e.g. api://client-id/servicenow.access" value={azureAdditionalScopes} onChange={(e) => setAzureAdditionalScopes(e.target.value)} />
                       <p className="text-[10px] text-rt-text-muted mt-0.5">Space-separated scopes for external services (ServiceNow, etc.). Added to the login request.</p>
                     </div>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                      <div>
+                        <label className="label text-[10px]">Admin app roles/groups</label>
+                        <input type="text" className="input text-sm w-full" placeholder="Retrace.Admin, group-object-id" value={azureAdminMappings} onChange={(e) => setAzureAdminMappings(e.target.value)} />
+                      </div>
+                      <div>
+                        <label className="label text-[10px]">User Admin app roles/groups</label>
+                        <input type="text" className="input text-sm w-full" placeholder="Retrace.UserAdmin" value={azureUserAdminMappings} onChange={(e) => setAzureUserAdminMappings(e.target.value)} />
+                      </div>
+                      <div>
+                        <label className="label text-[10px]">User app roles/groups</label>
+                        <input type="text" className="input text-sm w-full" placeholder="Retrace.User" value={azureUserMappings} onChange={(e) => setAzureUserMappings(e.target.value)} />
+                      </div>
+                    </div>
+                    <p className="text-[10px] text-rt-text-muted -mt-2">Values are matched against Entra token app roles, group object IDs, directory roles, and scopes. Leave blank to keep ReTrace's existing user role.</p>
                     <button
                       disabled={azureTestPending || !azureClientId || !azureTenantId}
                       onClick={async () => {
@@ -1552,6 +1574,7 @@ export default function Settings() {
                               client_secret: azureClientSecret || '********',
                               tenant_id: azureTenantId,
                               redirect_uri: azureRedirectUri,
+                              additional_scopes: azureAdditionalScopes || '',
                             },
                           }
                           if (isGlobalAdmin && selectedTenantId) payload.tenant_id = selectedTenantId
@@ -1635,12 +1658,18 @@ export default function Settings() {
                       }
                     }
                     if (authMethod === 'azure_ad') {
+                      const splitMappings = (value: string) => value.split(',').map((v) => v.trim()).filter(Boolean)
                       payload.azure_ad_config = {
                         client_id: azureClientId,
                         client_secret: azureClientSecret || (tenantAuth?.azure_ad_config?.client_secret === '********' ? '********' : ''),
                         tenant_id: azureTenantId,
                         redirect_uri: azureRedirectUri,
                         additional_scopes: azureAdditionalScopes || '',
+                        role_mappings: {
+                          admin: splitMappings(azureAdminMappings),
+                          user_admin: splitMappings(azureUserAdminMappings),
+                          user: splitMappings(azureUserMappings),
+                        },
                       }
                     }
                     await authApi.patch('/tenant/auth', payload)

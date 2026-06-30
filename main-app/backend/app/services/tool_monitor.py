@@ -543,7 +543,7 @@ class ToolMonitorService:
                 .limit(1)
             )).scalar_one_or_none()
             if sess:
-                user_auth_token = sess.external_id_token or sess.external_access_token
+                user_auth_token = sess.external_access_token or sess.external_id_token
                 if sess.external_username and sess.external_password:
                     from app.core.encryption import decrypt_value
                     user_auth_credentials = {
@@ -553,6 +553,11 @@ class ToolMonitorService:
             tenant_id = user_ext.tenant_id or ""
             merged_env = user_ext.get_merged_env_vars(catalog_ext.get_raw_env_vars())
             merged_auth = {**(catalog_ext.auth_config_json or {}), **(user_ext.auth_config_json or {})}
+            if sess:
+                if sess.external_id_token:
+                    merged_auth["id_token"] = sess.external_id_token
+                if sess.external_refresh_token:
+                    merged_auth["refresh_token"] = sess.external_refresh_token
             name = catalog_ext.name
             command = catalog_ext.command
             args_json = catalog_ext.args_json

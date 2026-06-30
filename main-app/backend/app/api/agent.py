@@ -2569,7 +2569,7 @@ async def _warmup_mcp_background(user_auth_context: dict) -> None:
             )
             user_session = sess_result.scalar_one_or_none()
             if user_session:
-                user_auth_token = user_session.external_id_token or user_session.external_access_token
+                user_auth_token = user_session.external_access_token or user_session.external_id_token
 
             # Load LDAP credentials for ldap_passthrough extensions
             user_auth_credentials = None
@@ -2584,6 +2584,11 @@ async def _warmup_mcp_background(user_auth_context: dict) -> None:
                 try:
                     merged_env = user_ext.get_merged_env_vars(catalog_ext.get_raw_env_vars())
                     merged_auth = {**(catalog_ext.auth_config_json or {}), **(user_ext.auth_config_json or {})}
+                    if user_session:
+                        if user_session.external_id_token:
+                            merged_auth["id_token"] = user_session.external_id_token
+                        if user_session.external_refresh_token:
+                            merged_auth["refresh_token"] = user_session.external_refresh_token
                     await mcp_client_manager.start_extension(
                         extension_id=catalog_ext.extension_id,
                         extension_name=catalog_ext.name,

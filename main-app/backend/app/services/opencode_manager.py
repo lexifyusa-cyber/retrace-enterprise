@@ -169,7 +169,7 @@ class OpenCodeProcess:
         # Retrace's forked shell.ts in OC reads these to route bash through
         # the PTY bridge. Without them OC's shell tool returns a config error.
         env["RETRACE_USER_ID"] = self.user_id
-        env["RETRACE_BACKEND_URL"] = os.environ.get("RETRACE_BACKEND_URL", "http://127.0.0.1:8000")
+        env["RETRACE_BACKEND_URL"] = os.environ.get("RETRACE_BACKEND_URL", "http://127.0.0.1:8020")
         if os.environ.get("RETRACE_INTERNAL_TOKEN"):
             env["RETRACE_INTERNAL_TOKEN"] = os.environ["RETRACE_INTERNAL_TOKEN"]
         # Branded per-user workspace; OC's index.ts preamble chdir's here at
@@ -183,7 +183,14 @@ class OpenCodeProcess:
         # tool families out of the per-call tool payload; the agent loads them via
         # tool_search when needed — see docs/tool-search-plan.md. OFF by default;
         # opt in per-deploy with RETRACE_ENABLE_TOOL_SEARCH=1 (dev first).
-        if os.environ.get("RETRACE_ENABLE_TOOL_SEARCH", "").strip().lower() in ("1", "true", "yes", "on"):
+        _tool_search_enabled = os.environ.get("RETRACE_ENABLE_TOOL_SEARCH", "").strip().lower() in ("1", "true", "yes", "on")
+        if not _tool_search_enabled:
+            try:
+                from app.core.config import settings as app_settings
+                _tool_search_enabled = bool(getattr(app_settings, "RETRACE_ENABLE_TOOL_SEARCH", False))
+            except Exception:
+                _tool_search_enabled = False
+        if _tool_search_enabled:
             env["OPENCODE_EXPERIMENTAL_TOOL_SEARCH"] = "1"
 
         self.process = await asyncio.create_subprocess_exec(
@@ -368,6 +375,8 @@ class OpenCodeManager:
         from sqlalchemy import select as sa_select
         from app.models.mcp_extension import McpExtension
         from app.models.user_extension import UserExtension
+        from app.models.user_session import UserSession
+        from app.models.tenant import Tenant
 
         async with async_session_maker() as session:
             llm = await get_active_llm_settings(session)
@@ -496,9 +505,9 @@ class OpenCodeManager:
             "- **Browser**: Navigate web pages, take screenshots, click, type, and read content\n"
             "- **Screen Automation**: Take screenshots, click, type, and interact with desktop applications\n"
             "- **SOPs**: List, read, create, and run Standard Operating Procedures\n"
-            "- **Email**: List inboxes, read emails, and send emails\n\n"
+            "- **Email**: List inboxes, read emails, and send emails\n- **Observability**: Query Grafana/Azure Monitor logs for service error summaries\n\n"
             "When using tools:\n"
-            "- Always check the knowledge base first when the user asks about information that might be in team docs\n"
+            "- Always check the knowledge base first when the user asks about information that might be in team docs\n- For Grafana, Azure Monitor, service errors, logs, or observability questions, call `retrace-observability` tools first; do not stop at dashboard recommendations when a log query tool can answer directly\n"
             "- Use the browser tool when you need to access web content or web applications\n"
             "- Create SOPs for repeatable processes the user describes\n"
             "- Be thorough but concise in your responses\n"
@@ -568,7 +577,7 @@ class OpenCodeManager:
         # into it. RETRACE_BACKEND_URL + RETRACE_INTERNAL_TOKEN below let
         # the MCP find the backend and authenticate to the internal
         # /api/v1/internal/browser/.../action endpoint.
-        backend_url = os.environ.get("RETRACE_BACKEND_URL", "http://127.0.0.1:8000")
+        backend_url = os.environ.get("RETRACE_BACKEND_URL", "http://127.0.0.1:8020")
         # Internal token: the backend's lifespan handler writes one to
         # ~/.local/share/retrace/internal-token and also sets os.environ.
         # We prefer the env var (fast path); fall back to the file so MCP
@@ -715,6 +724,12 @@ class OpenCodeManager:
                     "command": [sys.executable, "-m", "app.retrace_mcp.scheduler"],
                     "environment": {**mcp_env_base},
                 },
+                "retrace-observability": {
+                    "type": "local",
+                    "enabled": True,
+                    "command": [sys.executable, "-m", "app.retrace_mcp.observability"],
+                    "environment": {**mcp_env_base},
+                },
                 # retrace-bash MCP removed — OC's forked shell.ts now routes
                 # directly through the PTY bridge (see opencode/.../tool/shell.ts).
                 # Saves ~50MB per OC instance and removes the parallel-bash-tool
@@ -771,7 +786,7 @@ class OpenCodeManager:
             "multiEdit": "edit", "glob": "glob", "grep": "grep", "task": "task",
             "web_fetch": "webfetch", "todo_write": "todowrite",
         }
-        _RETRACE_MCP_NAMES = {"retrace-kb", "retrace-browser", "retrace-localbrowser", "retrace-screenops", "retrace-search", "retrace-scheduler"}
+        _RETRACE_MCP_NAMES = {"retrace-kb", "retrace-browser", "retrace-localbrowser", "retrace-screenops", "retrace-search", "retrace-scheduler", "retrace-observability"}
         for name in disabled_names:
             if name in _NATIVE_PERM_MAP:
                 config["permission"][_NATIVE_PERM_MAP[name]] = "deny"
@@ -797,8 +812,25 @@ class OpenCodeManager:
             config["provider"][provider_id]["npm"] = "@ai-sdk/openai-compatible"
 
         user_mcp_servers = await self._get_user_mcp_servers(user_id)
-        for name, srv in user_mcp_servers.items():
-            config["mcp"][name] = srv
+        if is_xai_endpoint:
+            # xAI currently rejects requests with more than 200 tool schemas.
+            # OpenCode also merges user-level MCP config from ~/.config/opencode,
+            # so explicitly disable those inherited servers and only add compact
+            # optional MCPs that users expect in chat. Slack and Grafana are
+            # small enough to keep available while Azure/Prometheus/etc. stay out. Core
+            # ReTrace MCPs remain enabled for KB/browser/search/scheduler flows.
+            config["mcp"].update({
+                "fly": {"type": "local", "enabled": False, "command": ["/home/ubuntu/.fly/bin/flyctl", "mcp", "server"]},
+                "github": {"type": "remote", "enabled": False, "url": "https://api.githubcopilot.com/mcp/"},
+                "azure": {"type": "local", "enabled": False, "command": ["npx", "-y", "@azure/mcp@latest", "server", "start"]},
+            })
+            for name in ("user-slack", "user-grafana"):
+                srv = user_mcp_servers.get(name)
+                if srv:
+                    config["mcp"][name] = srv
+        else:
+            for name, srv in user_mcp_servers.items():
+                config["mcp"][name] = srv
 
         # Local MCP servers import heavy dependencies on startup — retrace-search
         # pulls the langchain tree (`app.tools`), which takes ~35-40s to import
@@ -825,6 +857,8 @@ class OpenCodeManager:
         from sqlalchemy import select as sa_select
         from app.models.mcp_extension import McpExtension
         from app.models.user_extension import UserExtension
+        from app.models.user_session import UserSession
+        from app.models.tenant import Tenant
 
         servers: Dict[str, Any] = {}
         try:
@@ -837,6 +871,21 @@ class OpenCodeManager:
                     .where(McpExtension.is_enabled == True)
                 )
                 rows = result.all()
+                sess = (await session.execute(
+                    sa_select(UserSession)
+                    .where(UserSession.user_id == user_id)
+                    .where(UserSession.revoked == False)
+                    .order_by(UserSession.last_active_at.desc())
+                    .limit(1)
+                )).scalar_one_or_none()
+                entra_access_token = (sess.external_access_token if sess else "") or ""
+                entra_id_token = (sess.external_id_token if sess else "") or ""
+                entra_refresh_token = (sess.external_refresh_token if sess else "") or ""
+                azure_cfg = {}
+                if sess and sess.tenant_id:
+                    tenant = await session.get(Tenant, sess.tenant_id)
+                    azure_cfg = dict(tenant.azure_ad_config or {}) if tenant else {}
+
                 for user_ext, catalog_ext in rows:
                     name = f"user-{catalog_ext.name.lower().replace(' ', '-')}"
                     srv: Dict[str, Any] = {}
@@ -893,9 +942,30 @@ class OpenCodeManager:
                             srv["headers"] = headers
                     else:
                         # Local (stdio) MCPs: env vars get passed to the
-                        # subprocess. This is the original behavior.
-                        if merged_env:
-                            srv["environment"] = merged_env
+                        # subprocess. Built-in SSO-capable MCPs also receive
+                        # the signed-in user's Entra tokens so they can enforce
+                        # Microsoft Graph/Azure permissions without asking each
+                        # user to configure credentials per MCP.
+                        env = dict(merged_env or {})
+                        auth_cfg = catalog_ext.auth_config_json or {}
+                        if catalog_ext.auth_type in ("oauth_passthrough", "auto_passthrough"):
+                            if azure_cfg:
+                                env["AZURE_CLIENT_ID"] = env.get("AZURE_CLIENT_ID") or str(azure_cfg.get("client_id") or "")
+                                env["AZURE_TENANT_ID"] = env.get("AZURE_TENANT_ID") or str(azure_cfg.get("tenant_id") or "")
+                                env["MICROSOFT_CLIENT_ID"] = env.get("MICROSOFT_CLIENT_ID") or str(azure_cfg.get("client_id") or "")
+                                env["MICROSOFT_TENANT_ID"] = env.get("MICROSOFT_TENANT_ID") or str(azure_cfg.get("tenant_id") or "")
+                            if entra_access_token:
+                                token_env_var = auth_cfg.get("token_env_var") or "OAUTH_TOKEN"
+                                env[token_env_var] = entra_access_token
+                                for extra_name in auth_cfg.get("additional_token_env_vars", []) or []:
+                                    if extra_name:
+                                        env[str(extra_name)] = entra_access_token
+                                if auth_cfg.get("id_token_env_var") and entra_id_token:
+                                    env[str(auth_cfg["id_token_env_var"])] = entra_id_token
+                                if auth_cfg.get("refresh_token_env_var") and entra_refresh_token:
+                                    env[str(auth_cfg["refresh_token_env_var"])] = entra_refresh_token
+                        if env:
+                            srv["environment"] = env
                     servers[name] = srv
         except Exception as e:
             logger.warning("opencode_user_mcp_failed", user_id=user_id, error=str(e))

@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     # Models
     REASONING_MODEL: str = "gpt-4o"
     VISION_MODEL: str = "gpt-4-vision-preview"
+    RETRACE_ENABLE_TOOL_SEARCH: bool = False
     
     # Supabase (remote auth — desktop app validates JWT against Supabase)
     SUPABASE_URL: str = ""

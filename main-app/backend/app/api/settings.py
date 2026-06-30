@@ -20,6 +20,32 @@ logger = structlog.get_logger()
 router = APIRouter()
 
 
+def _configured_secret(value: Optional[str]) -> Optional[str]:
+    """Return a stripped secret only when it is not an example/placeholder."""
+    if not value:
+        return None
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    lowered = cleaned.lower()
+    placeholder_markers = (
+        "your-api-key",
+        "your-openai-api-key",
+        "sk-your-",
+        "placeholder",
+        "changeme",
+        "change-me",
+        "replace-me",
+    )
+    if any(marker in lowered for marker in placeholder_markers):
+        return None
+    return cleaned
+
+
+def _resolved_openai_api_key(db_settings: LLMSettingsModel) -> Optional[str]:
+    return _configured_secret(db_settings.api_key) or _configured_secret(app_settings.OPENAI_API_KEY)
+
+
 class LLMSettings(BaseModel):
     """Schema for LLM settings."""
     api_url: Optional[str] = None
@@ -281,7 +307,7 @@ async def update_llm_settings(settings_data: LLMSettings, current_user: CurrentU
                 api_url=db_settings.api_url,
                 model_name=db_settings.model_name or app_settings.REASONING_MODEL,
                 provider=db_settings.provider or "openai",
-                api_key_set=bool(db_settings.api_key),
+                api_key_set=bool(_resolved_openai_api_key(db_settings)),
                 screenops_api_key_set=bool(db_settings.screenops_api_key),
                 serper_api_key_set=bool(getattr(db_settings, "serper_api_key", None)),
                 small_model_name=getattr(db_settings, "small_model_name", None),
@@ -323,7 +349,7 @@ async def get_llm_settings(session: AsyncSession = Depends(get_session), current
         api_url=db_settings.api_url,
         model_name=db_settings.model_name or app_settings.REASONING_MODEL,
         provider=db_settings.provider or "openai",
-        api_key_set=bool(db_settings.api_key or app_settings.OPENAI_API_KEY),
+        api_key_set=bool(_resolved_openai_api_key(db_settings)),
         screenops_api_key_set=bool(db_settings.screenops_api_key),
         serper_api_key_set=bool(getattr(db_settings, "serper_api_key", None)),
         small_model_name=getattr(db_settings, "small_model_name", None),
@@ -356,7 +382,7 @@ async def test_llm_connection(settings_data: LLMSettings, session: AsyncSession 
     db_settings = None
     if not settings_data.api_key or settings_data.api_key == 'saved-key-placeholder':
         db_settings = await get_or_create_settings(session)
-        settings_data.api_key = db_settings.api_key or app_settings.OPENAI_API_KEY
+        settings_data.api_key = _resolved_openai_api_key(db_settings)
         if not settings_data.screenops_api_key or settings_data.screenops_api_key == "saved-key-placeholder":
             settings_data.screenops_api_key = db_settings.screenops_api_key
     # Resolve ScreenOps placeholder when chat key was provided in form
@@ -513,7 +539,7 @@ async def get_api_key(session: AsyncSession = Depends(get_session), current_user
     """Get the current API key (for internal use)."""
     db_settings = await get_or_create_settings(session)
     return {
-        "api_key": db_settings.api_key or app_settings.OPENAI_API_KEY
+        "api_key": _resolved_openai_api_key(db_settings)
     }
 
 
@@ -542,7 +568,7 @@ async def get_active_llm_settings(session: AsyncSession, consumer_key: str | Non
         except (json.JSONDecodeError, TypeError):
             pass
 
-    api_key = db_settings.api_key or app_settings.OPENAI_API_KEY
+    api_key = _resolved_openai_api_key(db_settings)
     api_url = db_settings.api_url
 
     # Override with gateway credentials when a gateway provider is configured

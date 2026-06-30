@@ -2279,6 +2279,13 @@ async def update_tenant_auth(
         if isinstance(new_az, dict):
             if tenant.azure_ad_config and new_az.get("client_secret") in ("********", "", None):
                 new_az = {**new_az, "client_secret": tenant.azure_ad_config.get("client_secret", "")}
+            # Ensure SSO tokens can be reused by built-in MCPs. Admin consent in
+            # Entra ID is still controlled by the cloud app registration.
+            from app.services.auth.azure_ad_auth import DEFAULT_DELEGATED_SCOPES, _dedupe_scope_string
+            new_az["additional_scopes"] = _dedupe_scope_string(
+                f"{DEFAULT_DELEGATED_SCOPES} {new_az.get('additional_scopes', '')}"
+            )
+            new_az.setdefault("role_mappings", (tenant.azure_ad_config or {}).get("role_mappings", {}))
             tenant.azure_ad_config = new_az
         else:
             tenant.azure_ad_config = new_az
@@ -2667,7 +2674,7 @@ async def login_azure_ad(
     if not tenant or not tenant.azure_ad_config:
         raise HTTPException(400, "Azure AD not configured for this domain")
 
-    from app.services.auth.azure_ad_auth import exchange_code_for_user
+    from app.services.auth.azure_ad_auth import exchange_code_for_user, resolve_retrace_role_from_claims
     azure_user = await exchange_code_for_user(data.code, tenant.azure_ad_config)
     if not azure_user:
         await _log_audit(session, "login_failed", request,
@@ -2675,9 +2682,16 @@ async def login_azure_ad(
                          details={"reason": "azure_ad_code_exchange_failed", "provider": "azure_ad"})
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Azure AD authentication failed")
 
-    # JIT provisioning
+    # JIT provisioning + Entra app-role/group mapping into ReTrace RBAC.
+    # Existing ReTrace roles remain the fallback unless azure_ad_config.role_mappings
+    # explicitly maps an Entra claim to admin/user_admin/user.
     user_result = await session.execute(select(User).where(User.email == azure_user.email))
     user = user_result.scalar_one_or_none()
+    mapped_role = resolve_retrace_role_from_claims(
+        azure_user.claims,
+        tenant.azure_ad_config or {},
+        fallback_role=(user.role if user else "user"),
+    )
     if not user:
         if not getattr(tenant, 'auto_provision_enabled', False):
             logger.info("azure_ad_jit_blocked_no_auto_provision", email=azure_user.email, tenant_id=tenant.tenant_id)
@@ -2687,16 +2701,20 @@ async def login_azure_ad(
             email=azure_user.email,
             display_name=azure_user.display_name,
             auth_provider="azure_ad",
-            role="user",
+            role=mapped_role,
         )
         session.add(user)
         await session.flush()
-        logger.info("azure_ad_jit_provision", email=azure_user.email)
-    elif getattr(user, "status", None) == "invited":
-        user.status = "active"
-        user.password_reset_token = None
-        user.password_reset_expires = None
-        user.force_password_change = False
+        logger.info("azure_ad_jit_provision", email=azure_user.email, role=mapped_role)
+    else:
+        if mapped_role != user.role and user.role != "zero_admin":
+            logger.info("azure_ad_role_mapped", email=azure_user.email, old_role=user.role, new_role=mapped_role)
+            user.role = mapped_role
+        if getattr(user, "status", None) == "invited":
+            user.status = "active"
+            user.password_reset_token = None
+            user.password_reset_expires = None
+            user.force_password_change = False
 
     if not user.is_active:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Account is deactivated")
