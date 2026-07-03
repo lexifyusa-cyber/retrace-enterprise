@@ -12,7 +12,7 @@ interface PodState {
   setSelectedPod: (pod: Pod | null) => void
   setFolderGroups: (groups: FolderGroup[]) => void
   setTrainingJobs: (jobs: TrainingJob[]) => void
-  updatePodStatus: (podId: string, status: string) => void
+  updatePodStatus: (podId: string, status: Pod['status']) => void
 }
 
 export const usePodStore = create<PodState>((set) => ({

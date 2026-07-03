@@ -740,6 +740,10 @@ async def analyze_kb_endpoints(
 ):
     """Analyze KB contents to discover endpoints — same flow as internal teams."""
     logger.info("mcp_builder_analyze_kb_start", api_name=request.api_name, kb_team_id=request.kb_team_id)
+    raise HTTPException(
+        status_code=501,
+        detail="MCP Builder legacy KB analysis is disabled. Use TeamKnowParse-backed training instead.",
+    )
 
     llm_settings = await get_active_llm_settings(session)
     api_key = llm_settings.get("api_key")

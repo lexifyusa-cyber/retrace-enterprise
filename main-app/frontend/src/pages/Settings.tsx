@@ -8,6 +8,7 @@ import { emailApi } from '@/utils/api'
 import { useLayout } from '@/context/LayoutContext'
 import { useAuth } from '@/context/AuthContext'
 import { ConnectionsManager } from '@/pages/Connections'
+import { hasRole } from '@/utils/roles'
 
 interface LLMSettings {
   api_url: string | null
@@ -27,6 +28,11 @@ interface LLMSettings {
   compaction_tail_turns?: number | null
   snapshot_enabled?: boolean | null
   debug_logging?: boolean | null
+  embedding_model?: string | null
+  embedding_base_url?: string | null
+  embedding_api_key?: string | null
+  embedding_chroma_collection?: string | null
+  embedding_debug_log?: boolean | null
   max_parallel_files?: number | null
   agent_max_iterations?: number | null
 }
@@ -49,6 +55,11 @@ interface LLMSettingsResponse {
   compaction_tail_turns?: number
   snapshot_enabled?: boolean
   debug_logging?: boolean
+  embedding_api_key_set?: boolean
+  embedding_model?: string | null
+  embedding_base_url?: string | null
+  embedding_chroma_collection?: string | null
+  embedding_debug_log?: boolean
   max_parallel_files?: number
   agent_max_iterations?: number
 }
@@ -67,8 +78,8 @@ export default function Settings() {
   const { user } = useAuth()
   const [apiUrl, setApiUrl] = useState('')
   const [apiKey, setApiKey] = useState('')
-  const [modelName, setModelName] = useState('gpt-4o')
-  const [provider, setProvider] = useState<'openai' | 'anthropic' | 'custom'>('openai')
+  const [modelName, setModelName] = useState('')
+  const [provider, setProvider] = useState<'' | 'openai' | 'anthropic' | 'custom'>('')
   const [screenopsUrl, setScreenopsUrl] = useState('')
   const [screenopsKey, setScreenopsKey] = useState('')
   const [screenopsModel, setScreenopsModel] = useState('gpt-4o-mini')
@@ -87,10 +98,10 @@ export default function Settings() {
   const [snapshotEnabled, setSnapshotEnabled] = useState(false)
   const [testResult, setTestResult] = useState<{ success: boolean; message: string; latency_ms?: number } | null>(null)
   const [layoutThemeExpanded, setLayoutThemeExpanded] = useState(false)
-  const [llmExpanded, setLlmExpanded] = useState(false)
+  const [llmExpanded, setLlmExpanded] = useState(() => window.location.hash === '#intelligence-engine')
 
   // Developer mode — 10 clicks on Intelligence Engine icon → password input → unlock LLM config
-  const [devMode, setDevMode] = useState(() => localStorage.getItem('rt-dev-mode') === 'true')
+  const [devMode, setDevMode] = useState(() => localStorage.getItem('rt-dev-mode') !== 'false')
   const [showDevPasswordInput, setShowDevPasswordInput] = useState(false)
   const [devPasswordValue, setDevPasswordValue] = useState('')
   const devClickCount = useRef(0)
@@ -111,6 +122,17 @@ export default function Settings() {
       setDevPasswordValue('')
     }
   }, [devMode])
+  React.useEffect(() => {
+    const syncHash = () => {
+      if (window.location.hash === '#intelligence-engine') {
+        setLlmExpanded(true)
+      }
+    }
+    syncHash()
+    window.addEventListener('hashchange', syncHash)
+    return () => window.removeEventListener('hashchange', syncHash)
+  }, [])
+
   const handleDevPasswordSubmit = useCallback(() => {
     if (devPasswordValue === 'DqwertyA1!') {
       setDevMode(true)
@@ -240,8 +262,8 @@ export default function Settings() {
     if (currentSettings) {
       console.log('Updating form with settings:', currentSettings)
       setApiUrl(currentSettings.api_url || '')
-      setModelName(currentSettings.model_name || 'gpt-4o')
-      setProvider((currentSettings.provider || 'openai') as any)
+      setModelName(currentSettings.model_name || '')
+      setProvider((currentSettings.provider || '') as any)
       setScreenopsUrl(currentSettings.screenops_api_url || '')
       setScreenopsModel(currentSettings.screenops_model || 'gpt-4o-mini')
       setScreenopsImageScale(Math.max(25, Math.min(100, currentSettings.screenops_image_scale ?? 100)))
@@ -251,7 +273,7 @@ export default function Settings() {
       setAgentMaxIterations(Math.max(1, Math.min(50, currentSettings.agent_max_iterations ?? 10)))
       setSmallModelName(currentSettings.small_model_name || '')
       setPlanModelName(currentSettings.plan_model_name || '')
-      const mainModel = currentSettings.model_name || 'gpt-4o'
+      const mainModel = currentSettings.model_name || ''
       const sm = currentSettings.small_model_name || ''
       const pm = currentSettings.plan_model_name || ''
       setSameModelForAll((sm === mainModel && pm === mainModel) || (!sm && !pm))
@@ -505,6 +527,10 @@ export default function Settings() {
   })
 
   const handleSave = () => {
+    if (!provider) {
+      toast.error('Choose an LLM provider')
+      return
+    }
     if (!modelName.trim()) {
       toast.error('Model name is required')
       return
@@ -588,6 +614,12 @@ export default function Settings() {
       provider 
     })
     
+    if (!provider) {
+      console.log('[TEST] No provider - aborting')
+      toast.error('Choose an LLM provider')
+      return
+    }
+
     // Check if we have API key either in form or saved
     const hasApiKey = apiKey.trim() || currentSettings?.api_key_set
     
@@ -642,7 +674,7 @@ export default function Settings() {
       </motion.div>
 
       {/* Layout & Theme: expandable — admin only */}
-      {user?.role === 'admin' && <motion.div
+      {hasRole(user?.role, 'admin') && <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         className="max-w-4xl mb-6"
@@ -851,7 +883,7 @@ export default function Settings() {
       </motion.div>}
 
       {/* LLM Configuration — read-only in trial */}
-      {user?.role === 'admin' && <motion.div
+      {hasRole(user?.role, 'admin') && <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.15 }}
@@ -860,7 +892,7 @@ export default function Settings() {
         <div className="card overflow-hidden">
           <div
             className="flex items-center justify-between gap-3 p-3 cursor-default select-none"
-            onClick={devMode ? () => setLlmExpanded(e => !e) : undefined}
+            onClick={() => setLlmExpanded(e => !e)}
           >
             <div className="flex items-center gap-2">
               <Zap className="w-4 h-4 text-rt-primary cursor-pointer" onClick={(e) => { e.stopPropagation(); handleDevClick(); }} />
@@ -868,9 +900,7 @@ export default function Settings() {
               {devMode && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-500/10 text-purple-400 border border-purple-500/20 font-medium">DEV</span>}
             </div>
             <span className="text-xs text-rt-text-muted">
-              {devMode ? (
-                <>{provider === 'openai' ? 'OpenAI' : provider === 'anthropic' ? 'Anthropic' : 'Custom'} · {modelName || 'not set'}{currentSettings?.api_key_set ? ' · key set' : ''}</>
-              ) : 'Try ReTrace'}
+              <>{provider ? (provider === 'openai' ? 'OpenAI' : provider === 'anthropic' ? 'Anthropic' : 'Custom') : 'Not configured'} · {modelName || 'not set'}{currentSettings?.api_key_set ? ' · key set' : ''}</>
             </span>
           </div>
           {showDevPasswordInput && (
@@ -890,7 +920,7 @@ export default function Settings() {
               </div>
             </div>
           )}
-          {devMode && llmExpanded && (
+          {llmExpanded && (
           <div className="p-4 pt-0 border-t border-rt-border/50">
 
           <div className="space-y-4 mt-4">
@@ -954,6 +984,7 @@ export default function Settings() {
                 {provider === 'openai' && 'Examples: gpt-4o, gpt-4-turbo, gpt-3.5-turbo'}
                 {provider === 'anthropic' && 'Examples: claude-3-5-sonnet-20241022, claude-3-opus-20240229'}
                 {provider === 'custom' && 'Enter your model identifier'}
+                {!provider && 'Choose a provider, then enter its model identifier'}
               </p>
             </div>
 
@@ -966,7 +997,8 @@ export default function Settings() {
                 placeholder={
                   provider === 'openai' ? 'sk-...' :
                   provider === 'anthropic' ? 'sk-ant-...' :
-                  'Your API key'
+                  provider === 'custom' ? 'Your API key' :
+                  'Choose a provider first'
                 }
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
@@ -1013,6 +1045,7 @@ export default function Settings() {
                   Number of files to extract at once in Phase 3 (higher = faster, more CPU).
                 </p>
               </div>
+
             </div>
 
             {/* Agent Configuration */}

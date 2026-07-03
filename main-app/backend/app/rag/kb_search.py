@@ -1,5 +1,5 @@
 """
-KB Search — Fast retrieval engine (zero embeddings, zero internal LLM calls).
+KB Search — TeamKnowParse-backed retrieval entrypoints.
 
 Retrieval strategies fused with Reciprocal Rank Fusion (RRF):
   0. Structural Registry — match on component/key-file names from the KB.
@@ -9,8 +9,8 @@ Retrieval strategies fused with Reciprocal Rank Fusion (RRF):
      text (like a human trying different grep patterns).
   3. RRF Fusion — merge all rankings into a single ordered list.
 
-No embeddings, no vector DB, no internal LLM calls.
-All data comes from the in-memory KB blob.  Speed target: <500ms per search.
+TeamKnowParse data is stored in SQL tables and optionally Chroma.
+This module intentionally does not fall back to the legacy encrypted KB blob.
 """
 
 import asyncio
@@ -19,8 +19,11 @@ from pathlib import PurePosixPath
 from typing import Optional
 
 import structlog
+from sqlalchemy import select
 
 from app.rag.kb_store import KnowledgeBaseStore
+from app.core.config import settings as app_settings
+from app.db.database import async_session_maker
 
 logger = structlog.get_logger()
 
@@ -76,287 +79,142 @@ async def search_kb(
     time (the agent LLM already understands the query, so its keywords are high
     quality and come at zero extra latency).
     """
-    kb_store = KnowledgeBaseStore()
-    kb_data = await kb_store.load(team_id)
-    if not kb_data:
-        return "No knowledge base found for this team. Train the team first."
+    if not app_settings.TEAMKNOWPARSE_KB_ENABLED:
+        return "TeamKnowParse KB is disabled. Enable TEAMKNOWPARSE_KB_ENABLED to search trained TeamKnowParse data."
 
-    project_analysis = kb_data.get("project_analysis", {})
-    file_analysis: dict = kb_data.get("file_analysis", {})
-    folder_analysis: dict = kb_data.get("folder_analysis", {})
-    files: dict = kb_data.get("files", {})
+    try:
+        from app.services.teamknowparse_search import search_teamknowparse_kb
+        async with async_session_maker() as session:
+            return await search_teamknowparse_kb(session, team_id=team_id, query=query, mode="hybrid", top_k=top_k)
+    except Exception as exc:
+        logger.warning("teamknowparse_kb_search_failed", team_id=team_id, error=str(exc))
+        return f"TeamKnowParse KB search failed: {exc}"
 
-    if not file_analysis and not files:
-        return "Knowledge base is empty — no files were indexed during training."
-
-    # ── Deterministic expansion (no LLM call) ─────────────────────
-    components = _extract_component_names(project_analysis, file_analysis)
-    expansion = _deterministic_expand(query, components, agent_keywords)
-
-    keywords = expansion["keywords"]
-    target_components = expansion["components"]
-    file_patterns = expansion["file_patterns"]
-    intent = expansion["intent"]
-
-    logger.info(
-        "kb_search_fast",
-        query=query[:80],
-        keywords=keywords[:10],
-        components=target_components,
-        file_patterns=file_patterns,
-        intent=intent,
-        agent_kw_count=len(agent_keywords) if agent_keywords else 0,
-    )
-
-    # ── Stage 0: Structural registry search ───────────────────────
-    registry = _build_structural_registry(kb_data, team_id)
-    structural_ranking = _search_structural_registry(
-        registry, query, keywords, file_patterns,
-    )
-
-    # ── Stage 1: Direct path lookup ───────────────────────────────
-    direct_hits = _direct_path_matches(file_analysis, files, keywords, file_patterns)
-
-    # ── Stage 2: Keyword search (parallel across analysis layers) ─
-    scores_a, scores_b, scores_c = await asyncio.gather(
-        _search_file_analysis(file_analysis, keywords, target_components, file_patterns),
-        _search_folder_analysis(folder_analysis, file_analysis, keywords, file_patterns),
-        _search_file_text(files, keywords),
-    )
-
-    all_paths = set(scores_a) | set(scores_b) | set(scores_c) | direct_hits
-    keyword_ranking: list[tuple[str, float]] = []
-    all_terms = list({k.lower() for k in keywords} | {p.lower() for p in file_patterns})
-
-    for path in all_paths:
-        score = (
-            scores_a.get(path, 0.0) * _W_FILE_ANALYSIS
-            + scores_b.get(path, 0.0) * _W_FOLDER_MATCH
-            + scores_c.get(path, 0.0) * _W_TEXT_MATCH
-        )
-        if path in direct_hits and score < 1.0:
-            score = max(score, 1.0)
-        fa = file_analysis.get(path, {})
-        score *= _IMPORTANCE_BOOST.get(fa.get("importance", "medium"), 1.0)
-        file_comp = (fa.get("component") or "").lower()
-        if file_comp and file_comp in [c.lower() for c in target_components]:
-            score *= _COMPONENT_BOOST
-        path_lower = path.lower()
-        path_hits = sum(1 for t in all_terms if t in path_lower)
-        if path_hits > 0 and all_terms:
-            score *= 1.0 + (path_hits / len(all_terms)) * (_PATH_BOOST_MAX - 1.0)
-        fn_lower = PurePosixPath(path).name.lower()
-        stem_lower = PurePosixPath(path).stem.lower()
-        if any(p in fn_lower or p in stem_lower for p in _NOISY_FILE_PATTERNS):
-            score *= _NOISY_FILE_PENALTY
-        keyword_ranking.append((path, score))
-
-    keyword_ranking.sort(key=lambda x: x[1], reverse=True)
-
-    # ── Stage 3: RRF fusion ───────────────────────────────────────
-    rankings: list[list[tuple[str, float]]] = []
-    if structural_ranking:
-        rankings.append(structural_ranking)
-    if keyword_ranking:
-        rankings.append(keyword_ranking)
-
-    fused = _reciprocal_rank_fusion(*rankings)
-
-    if not fused:
-        return f"No relevant information found in knowledge base for: {query}"
-
-    top_paths = fused[:top_k]
-
-    # ── Format response ───────────────────────────────────────────
-    return _format_results(
-        query=query,
-        top_paths=top_paths,
-        project_analysis=project_analysis,
-        file_analysis=file_analysis,
-        folder_analysis=folder_analysis,
-        files=files,
-        intent=intent,
-    )
+    # Intentionally do not fall back to the legacy encrypted KB blob.
 
 
 # ===================================================================
-# Additional public helpers for granular KB tools
+# TeamKnowParse-only helper APIs used by KB tools/MCP
 # ===================================================================
 
 async def get_team_summary(team_id: str) -> Optional[str]:
-    """Return a short team summary from the KB for embedding in the system prompt.
+    """Return a short TeamKnowParse KB summary without reading the legacy KB blob."""
+    if not app_settings.TEAMKNOWPARSE_KB_ENABLED:
+        return None
+    from app.models.teamknowparse_kb import TeamKnowParseKbChunk, TeamKnowParseKbFile, TeamKnowParseKbFolder
 
-    Returns None if no KB exists.  The summary is cheap to produce (just reads
-    the cached blob's project_analysis) and lets the agent answer overview
-    questions without any tool call at all.
-    """
-    kb_store = KnowledgeBaseStore()
-    kb_data = await kb_store.load(team_id)
-    if not kb_data:
+    async with async_session_maker() as session:
+        folders = (await session.execute(
+            select(TeamKnowParseKbFolder).where(TeamKnowParseKbFolder.team_id == team_id).limit(8)
+        )).scalars().all()
+        files = (await session.execute(
+            select(TeamKnowParseKbFile).where(TeamKnowParseKbFile.team_id == team_id).limit(12)
+        )).scalars().all()
+        chunks_count = (await session.execute(
+            select(TeamKnowParseKbChunk.chunk_id).where(TeamKnowParseKbChunk.team_id == team_id).limit(1)
+        )).first()
+
+    if not folders and not files and not chunks_count:
         return None
 
-    pa = kb_data.get("project_analysis", {})
-    if not pa:
-        return None
-
-    parts: list[str] = []
-    if pa.get("summary"):
-        parts.append(pa["summary"])
-    if pa.get("technologies"):
-        parts.append(f"Technologies: {', '.join(pa['technologies'][:15])}")
-    if pa.get("architecture_style"):
-        parts.append(f"Architecture: {pa['architecture_style']}")
-    comps = pa.get("key_components", [])
-    if comps:
-        comp_lines = [f"  - {c['name']}: {c.get('description', '')}" for c in comps[:10] if isinstance(c, dict)]
-        if comp_lines:
-            parts.append("Key components:\n" + "\n".join(comp_lines))
-
-    folder_analysis = kb_data.get("folder_analysis", {})
-    if folder_analysis:
-        top_dirs = sorted(folder_analysis.items(), key=lambda x: x[1].get("importance", ""), reverse=True)[:8]
-        dir_lines = [f"  - {d}: {info.get('purpose', '')[:80]}" for d, info in top_dirs]
-        if dir_lines:
-            parts.append("Top-level structure:\n" + "\n".join(dir_lines))
-
-    return "\n".join(parts) if parts else None
-
-
-async def list_kb_entries(
-    team_id: str,
-    category: str = "all",
-) -> str:
-    """List entries in the KB: key_files, directories, files, or all."""
-    kb_store = KnowledgeBaseStore()
-    kb_data = await kb_store.load(team_id)
-    if not kb_data:
-        return "No knowledge base found. Train the team first."
-
-    registry = _build_structural_registry(kb_data, team_id)
-    parts: list[str] = []
-
-    if category in ("all", "key_files") and registry.get("key_files"):
-        kf = registry["key_files"]
-        parts.append(f"=== KEY FILES ({len(kf)}) ===")
-        for f in kf:
-            parts.append(f"  {f['path']}: {f['description']}")
-
-    if category in ("all", "directories") and registry.get("directories"):
-        dirs = registry["directories"]
-        parts.append(f"\n=== DIRECTORIES ({len(dirs)}) ===")
-        for d_path, d_info in sorted(dirs.items()):
-            purpose = d_info.get("purpose", "")
-            file_count = d_info.get("file_count", 0)
-            parts.append(f"  {d_path} ({file_count} files): {purpose}")
-
-    file_analysis = kb_data.get("file_analysis", {})
-    if category in ("all", "files"):
-        parts.append(f"\n=== FILES ({len(file_analysis)}) ===")
-        for path, fa in sorted(file_analysis.items()):
-            desc = fa.get("description", "")[:80]
-            parts.append(f"  {path}: {desc}")
-
-    if not parts:
-        return "No entries found in the knowledge base."
-
+    parts: list[str] = ["TeamKnowParse KB is trained for this team."]
+    if folders:
+        parts.append("Folders:\n" + "\n".join(f"  - {f.folder_path}: {(f.folder_description or '')[:120]}" for f in folders))
+    if files:
+        parts.append("Files:\n" + "\n".join(f"  - {f.file_path}: {(f.file_description or '')[:120]}" for f in files))
     return "\n".join(parts)
 
 
+async def list_kb_entries(team_id: str, category: str = "all") -> str:
+    """List TeamKnowParse KB entries without reading the legacy KB blob."""
+    if not app_settings.TEAMKNOWPARSE_KB_ENABLED:
+        return "TeamKnowParse KB is disabled."
+    from app.models.teamknowparse_kb import TeamKnowParseKbChunk, TeamKnowParseKbFile, TeamKnowParseKbFolder
+
+    async with async_session_maker() as session:
+        folders = (await session.execute(
+            select(TeamKnowParseKbFolder).where(TeamKnowParseKbFolder.team_id == team_id).limit(100)
+        )).scalars().all()
+        files = (await session.execute(
+            select(TeamKnowParseKbFile).where(TeamKnowParseKbFile.team_id == team_id).limit(200)
+        )).scalars().all()
+        chunks = (await session.execute(
+            select(TeamKnowParseKbChunk).where(TeamKnowParseKbChunk.team_id == team_id).limit(10)
+        )).scalars().all()
+
+    if not folders and not files and not chunks:
+        return "No TeamKnowParse KB records found. Train the team first."
+
+    parts: list[str] = []
+    if category in {"all", "directories"}:
+        parts.append(f"=== TEAMKNOWPARSE FOLDERS ({len(folders)}) ===")
+        parts.extend(f"  {f.folder_path}: {(f.folder_description or '')[:120]}" for f in folders)
+    if category in {"all", "files", "key_files"}:
+        parts.append(f"\n=== TEAMKNOWPARSE FILES ({len(files)}) ===")
+        parts.extend(f"  {f.file_path}: {(f.file_description or '')[:120]}" for f in files)
+    if category not in {"all", "directories", "files", "key_files"}:
+        return "Unknown category. Use all, directories, files, or key_files."
+    return "\n".join(parts).strip()
+
+
 async def read_kb_file(team_id: str, file_path: str) -> str:
-    """Read the full text of a specific file from the KB."""
-    kb_store = KnowledgeBaseStore()
-    kb_data = await kb_store.load(team_id)
-    if not kb_data:
-        return "No knowledge base found. Train the team first."
+    """Read TeamKnowParse chunks for a file without reading the legacy KB blob."""
+    if not app_settings.TEAMKNOWPARSE_KB_ENABLED:
+        return "TeamKnowParse KB is disabled."
+    from app.models.teamknowparse_kb import TeamKnowParseKbChunk
 
-    files = kb_data.get("files", {})
-    file_analysis = kb_data.get("file_analysis", {})
-
-    # Try exact match first
-    fdata = files.get(file_path)
-    if not fdata:
-        # Try fuzzy path match (suffix matching)
-        for path in files:
-            if path.endswith(file_path) or file_path in path:
-                fdata = files[path]
-                file_path = path
-                break
-
-    if not fdata:
-        available = list(files.keys())[:20]
-        return (
-            f"File '{file_path}' not found in KB. "
-            f"Available files (first 20): {', '.join(available)}"
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(TeamKnowParseKbChunk)
+            .where(TeamKnowParseKbChunk.team_id == team_id)
+            .where(TeamKnowParseKbChunk.file_path.contains(file_path))
+            .order_by(TeamKnowParseKbChunk.chunk_index)
+            .limit(80)
         )
+        chunks = result.scalars().all()
 
-    text = fdata.get("text", "")
-    fa = file_analysis.get(file_path, {})
-
-    parts = [f"=== {file_path} ==="]
-    if fa.get("description"):
-        parts.append(f"Description: {fa['description']}")
-    if fa.get("component"):
-        parts.append(f"Component: {fa['component']}")
-    if fa.get("role"):
-        parts.append(f"Role: {fa['role']}")
-    if fa.get("technologies"):
-        parts.append(f"Technologies: {', '.join(fa['technologies'])}")
-    parts.append(f"\n--- content ({len(text)} chars) ---")
-    parts.append(text[:_MAX_TEXT_PER_FILE * 2])
-    if len(text) > _MAX_TEXT_PER_FILE * 2:
-        parts.append("\n[... content truncated ...]")
-
+    if not chunks:
+        return f"File '{file_path}' not found in TeamKnowParse KB."
+    actual_path = chunks[0].file_path
+    parts = [f"=== {actual_path} ==="]
+    for chunk in chunks:
+        page = f" page {chunk.page_number}" if chunk.page_number else ""
+        parts.append(f"\n--- chunk {chunk.chunk_index}{page} ---\n{chunk.search_text}")
     return "\n".join(parts)
 
 
 async def browse_kb_structure(team_id: str, path: str = "/") -> str:
-    """Browse the KB folder structure at a given path.
+    """Browse TeamKnowParse file paths without reading the legacy KB blob."""
+    if not app_settings.TEAMKNOWPARSE_KB_ENABLED:
+        return "TeamKnowParse KB is disabled."
+    from app.models.teamknowparse_kb import TeamKnowParseKbFile
 
-    Handles paths stored with or without leading slashes and supports
-    substring/suffix matching so ``browse("/docs/experiments")`` works even
-    when the KB stores paths as ``/full/repo/docs/experiments/...``.
-    """
-    kb_store = KnowledgeBaseStore()
-    kb_data = await kb_store.load(team_id)
-    if not kb_data:
-        return "No knowledge base found. Train the team first."
+    prefix = path.strip("/")
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(TeamKnowParseKbFile.file_path)
+            .where(TeamKnowParseKbFile.team_id == team_id)
+            .limit(500)
+        )
+        all_paths = sorted({row[0] for row in result.all() if row[0]})
 
-    file_analysis = kb_data.get("file_analysis", {})
-    folder_analysis = kb_data.get("folder_analysis", {})
-    files_data = kb_data.get("files", {})
-    all_paths = sorted(set(file_analysis.keys()) | set(files_data.keys()))
+    if prefix:
+        all_paths = [fp for fp in all_paths if prefix in fp.strip("/")]
+    if not all_paths:
+        return f"No TeamKnowParse KB entries found at path '{path}'."
 
     children, direct_files, matched_prefix = _browse_match(all_paths, path)
-
-    result_parts = [f"=== KB Structure: {path or '/'} ===\n"]
-
+    result_parts = [f"=== TeamKnowParse KB Structure: {path or '/'} ===\n"]
     if children:
         result_parts.append("Directories:")
         for dir_name, dir_files in sorted(children.items()):
-            full_dir = f"{matched_prefix}/{dir_name}" if matched_prefix else dir_name
-            fa_info = folder_analysis.get(full_dir, {}) or folder_analysis.get(full_dir.lstrip("/"), {})
-            purpose = fa_info.get("purpose", "")
-            result_parts.append(f"  [{dir_name}/] ({len(dir_files)} files) {purpose}")
-
+            result_parts.append(f"  [{dir_name}/] ({len(dir_files)} files)")
     if direct_files:
         result_parts.append("\nFiles:")
-        for fp in direct_files:
-            name = PurePosixPath(fp).name
-            fa = file_analysis.get(fp, {})
-            desc = fa.get("description", "")[:60]
-            result_parts.append(f"  {name}: {desc}")
-
+        for fp in direct_files[:100]:
+            result_parts.append(f"  {PurePosixPath(fp).name}")
     if not children and not direct_files:
-        result_parts.append(f"No entries found at path '{path}'.")
-        result_parts.append("Try browsing from root: '/'")
-        top_dirs: set[str] = set()
-        for fp in all_paths[:200]:
-            first = fp.lstrip("/").split("/")[0]
-            if first:
-                top_dirs.add(first)
-        if top_dirs:
-            result_parts.append(f"Top-level directories: {', '.join(sorted(top_dirs))}")
-
+        result_parts.extend(f"  {fp}" for fp in all_paths[:100])
     return "\n".join(result_parts)
 
 

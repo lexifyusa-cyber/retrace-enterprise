@@ -23,7 +23,7 @@ class LLMSettingsModel(Base):
     api_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     api_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # Encrypted in production
     model_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    provider: Mapped[str] = mapped_column(String(50), default="openai")
+    provider: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     
     # ScreenOps (Computer Use) — URL, model, and API key for coordinate finder (OpenAI-compatible API)
     screenops_api_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -55,6 +55,13 @@ class LLMSettingsModel(Base):
 
     # Training debug logging — when True, pipeline logs included/excluded folders and files
     debug_logging: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True, default=False)
+    # TeamKnowParse embedding retrieval settings (OpenAI-compatible embeddings API)
+    embedding_model: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    embedding_base_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    embedding_api_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    embedding_chroma_collection: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    embedding_debug_log: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True, default=False)
+
     # Training Phase 3: max number of files to extract in parallel (1 = sequential)
     max_parallel_files: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=1)
 
@@ -84,5 +91,10 @@ class LLMSettingsModel(Base):
             "agent_tools_config": self.agent_tools_config,
             "agent_max_iterations": self.agent_max_iterations if self.agent_max_iterations is not None else 10,
             "debug_logging": bool(self.debug_logging) if self.debug_logging is not None else False,
+            "embedding_model": self.embedding_model,
+            "embedding_base_url": self.embedding_base_url,
+            "embedding_api_key": self.embedding_api_key,
+            "embedding_chroma_collection": self.embedding_chroma_collection,
+            "embedding_debug_log": bool(self.embedding_debug_log) if self.embedding_debug_log is not None else False,
             "max_parallel_files": self.max_parallel_files if self.max_parallel_files is not None else 1,
         }

@@ -7,8 +7,8 @@ this deployment.
 
 - **App:** `retrace-dev`  ->  https://retrace-dev.fly.dev
 - **Org:** lumena tech (`personal`)  |  **Region:** `iad`
-- **DB:** SQLite on the `retrace_data` Fly volume, mounted at `/data`
-  (`DATABASE_URL=sqlite+aiosqlite:////data/retrace.db`).
+- **DB:** Fly Postgres in `iad`; `DATABASE_URL` is provided as an environment secret.
+- **Vector DB:** ChromaDB persists on the `retrace_data` Fly volume at `/data/chroma_teamknowparse`.
 
 ## How the pipeline works
 
@@ -22,7 +22,7 @@ this deployment.
 The two deploy workflows share a concurrency group, so they never run at the
 same time. Note this is a **single shared environment**: only one branch can be
 live at a time, the auto-deploy on a `main` push will overwrite a branch you're
-testing, and all deploys share the same SQLite data on the volume.
+testing, and all deploys share the same PostgreSQL database and Chroma volume.
 
 ## One-time setup (required before the pipeline can deploy)
 
@@ -37,13 +37,15 @@ testing, and all deploys share the same SQLite data on the volume.
      repository secret -> Name `FLY_API_TOKEN`, value = the token.
    - Or via CLI: `gh secret set FLY_API_TOKEN -a actions --body "FlyV1 ..."`
 
-3. **Set the LLM / app secrets on Fly** (staged until the next deploy):
+3. **Create/attach Fly Postgres in `iad` and set app secrets** (staged until the next deploy):
    ```bash
+   fly postgres create --region iad
+   fly postgres attach <postgres-app-name> -a retrace-dev
    fly secrets set -a retrace-dev \
      OPENAI_API_KEY=sk-... \
      ANTHROPIC_API_KEY=sk-ant-...
    ```
-   `JWT_SECRET` is already set. Add any others your config needs
+   `fly postgres attach` provides `DATABASE_URL`. `JWT_SECRET` is already set. Add any others your config needs
    (see `main-app/backend/.env.example`).
 
 After the PR adding these files is merged to `main`, the first auto-deploy runs.

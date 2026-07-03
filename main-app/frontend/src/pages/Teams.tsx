@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Plus, Package, Trash2, Play, X, Folder, FolderOpen, ChevronRight, ChevronDown, Check, FolderTree, FileCode, FileText, Image, TicketIcon, AlertTriangle, Database, Layers, File, Brain, Download, Monitor, Server, Loader2, Mail, Copy, CheckCircle, RefreshCw } from 'lucide-react'
+import { Plus, Package, Trash2, Play, X, Folder, FolderOpen, ChevronRight, ChevronDown, Check, FolderTree, FileCode, FileText, Image, TicketIcon, AlertTriangle, Database, Layers, File, Brain, Download, Monitor, Server, Loader2, Mail, Copy, CheckCircle, RefreshCw, Archive } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import toast from 'react-hot-toast'
 import { podApi, teamApi, groupApi, localFilesApi, emailApi, connectionsApi } from '@/utils/api'
@@ -15,6 +15,7 @@ export default function Teams() {
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [trainingTeamId, setTrainingTeamId] = useState<string | null>(null)
   const [showProgressModal, setShowProgressModal] = useState(false)
+  const [teamKnowParseMode, setTeamKnowParseMode] = useState<'txt' | 'mixed'>('mixed')
   const queryClient = useQueryClient()
   
   const { data: teams = [], isLoading } = useQuery({
@@ -40,7 +41,7 @@ export default function Teams() {
   })
   
   const trainMutation = useMutation({
-    mutationFn: teamApi.trainAll,
+    mutationFn: (teamId: string) => teamApi.trainAll(teamId, { teamknowparse_mode: teamKnowParseMode }),
     onSuccess: (data: any, teamId: string) => {
       queryClient.invalidateQueries({ queryKey: ['teams'] })
       queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] })
@@ -115,6 +116,8 @@ export default function Teams() {
                   deleteMutation.mutate(team.team_id)
                 }
               }}
+              teamKnowParseMode={teamKnowParseMode}
+              onModeChange={setTeamKnowParseMode}
               onTrain={() => trainMutation.mutate(team.team_id)}
               isTraining={trainMutation.isPending}
             />
@@ -175,6 +178,8 @@ function TeamCard({
   onDelete,
   onTrain,
   isTraining,
+  teamKnowParseMode,
+  onModeChange,
 }: {
   team: Team
   pods: Pod[]
@@ -182,11 +187,14 @@ function TeamCard({
   onDelete: () => void
   onTrain: () => void
   isTraining: boolean
+  teamKnowParseMode: 'txt' | 'mixed'
+  onModeChange: (mode: 'txt' | 'mixed') => void
 }) {
   const [showDescription, setShowDescription] = useState(false)
   const [showAddGroupModal, setShowAddGroupModal] = useState(false)
   const [showTrainingLog, setShowTrainingLog] = useState(false)
   const [showTrainingTree, setShowTrainingTree] = useState(false)
+  const [showTeamKnowParseOutputs, setShowTeamKnowParseOutputs] = useState(false)
   const [emailExpanded, setEmailExpanded] = useState(false)
   const [showDraftsModal, setShowDraftsModal] = useState(false)
   const [showUnreadModal, setShowUnreadModal] = useState(false)
@@ -283,14 +291,32 @@ function TeamCard({
             {team.folder_groups.length} {team.folder_groups.length === 1 ? 'group' : 'groups'}
           </span>
           {isAdmin && team.folder_groups.length > 0 && (
-            <button
-              onClick={onTrain}
-              disabled={isTraining || team.folder_groups.some(g => g.training_status === 'training')}
-              className="btn-primary text-xs py-1 px-2.5 flex items-center gap-1.5"
-            >
-              <Play className="w-3 h-3" />
-              {isTraining ? 'Starting...' : 'Train'}
-            </button>
+            <div className="flex items-center gap-1.5">
+              <div className="flex rounded border border-rt-border overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => onModeChange('txt')}
+                  className={`px-2 py-1 text-[10px] ${teamKnowParseMode === 'txt' ? 'bg-rt-primary/15 text-rt-primary' : 'text-rt-text-muted hover:text-rt-text'}`}
+                >
+                  Text
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onModeChange('mixed')}
+                  className={`px-2 py-1 text-[10px] border-l border-rt-border ${teamKnowParseMode === 'mixed' ? 'bg-rt-primary/15 text-rt-primary' : 'text-rt-text-muted hover:text-rt-text'}`}
+                >
+                  Mixed
+                </button>
+              </div>
+              <button
+                onClick={onTrain}
+                disabled={isTraining || team.folder_groups.some(g => g.training_status === 'training')}
+                className="btn-primary text-xs py-1 px-2.5 flex items-center gap-1.5"
+              >
+                <Play className="w-3 h-3" />
+                {isTraining ? 'Starting...' : 'Train'}
+              </button>
+            </div>
           )}
           {isAdmin && (
             <button
@@ -442,6 +468,14 @@ function TeamCard({
                   {showTrainingTree ? 'Hide Training Map' : 'View Training Map'}
                 </button>
 
+                <button
+                  onClick={() => setShowTeamKnowParseOutputs(!showTeamKnowParseOutputs)}
+                  className="flex items-center gap-1.5 text-xs text-rt-text-muted hover:text-rt-text transition-colors"
+                >
+                  <Archive className="w-3.5 h-3.5" />
+                  {showTeamKnowParseOutputs ? 'Hide Outputs' : 'View Outputs'}
+                </button>
+
                 {/* Training Log button */}
                 {stats.logs && Array.isArray(stats.logs) && (stats.logs as string[]).length > 0 && (
                   <button
@@ -464,6 +498,12 @@ function TeamCard({
               {showTrainingTree && (
                 <div className="mt-2">
                   <TrainingTreeView teamId={team.team_id} />
+                </div>
+              )}
+
+              {showTeamKnowParseOutputs && (
+                <div className="mt-2">
+                  <TeamKnowParseOutputsView teamId={team.team_id} />
                 </div>
               )}
 
@@ -1205,6 +1245,8 @@ function AddGroupModal({
   const [showRemoteBrowser, setShowRemoteBrowser] = useState(false)
   const [entries, setEntries] = useState<TrainingEntry[]>([])
   const [submitting, setSubmitting] = useState(false)
+  const [uploadingZip, setUploadingZip] = useState(false)
+  const [uploadingFiles, setUploadingFiles] = useState(false)
   const queryClient = useQueryClient()
 
   const isPodSource = sourceValue.startsWith('pod:')
@@ -1241,6 +1283,46 @@ function AddGroupModal({
     setEntries(prev => [...prev, ...newEntries])
     setShowRemoteBrowser(false)
   }
+
+  const handleZipUpload = async (file: File | undefined) => {
+    if (!file) return
+    if (!file.name.toLowerCase().endsWith('.zip')) {
+      toast.error('Choose a .zip file')
+      return
+    }
+    setUploadingZip(true)
+    try {
+      await teamApi.uploadTrainingZip(teamId, file)
+      queryClient.invalidateQueries({ queryKey: ['teams'] })
+      toast.success('Zip uploaded and added to training data')
+      onClose()
+    } catch (error: any) {
+      toast.error(error?.response?.data?.detail || 'Zip upload failed')
+    } finally {
+      setUploadingZip(false)
+    }
+  }
+
+  const handleFileUpload = async (fileList: FileList | null | undefined, label: string) => {
+    const files = Array.from(fileList || []).filter(file => !file.name.startsWith('.'))
+    if (files.length === 0) {
+      toast.error(`Choose ${label}`)
+      return
+    }
+    setUploadingFiles(true)
+    try {
+      const data = await teamApi.uploadTrainingFiles(teamId, files)
+      queryClient.invalidateQueries({ queryKey: ['teams'] })
+      const count = data?.file_count || files.length
+      toast.success(`${count} ${count === 1 ? 'file' : 'files'} uploaded and added to training data`)
+      onClose()
+    } catch (error: any) {
+      toast.error(error?.response?.data?.detail || 'Upload failed')
+    } finally {
+      setUploadingFiles(false)
+    }
+  }
+
 
   const handleSubmit = async () => {
     if (entries.length === 0) {
@@ -1352,6 +1434,51 @@ function AddGroupModal({
             <FolderOpen className="w-3.5 h-3.5" />
             Browse {isPodSource ? 'Folders' : `${SOURCE_TYPE_LABELS[selectedConnection?.source_type || ''] || 'Remote'} Source`}
           </button>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <label className="py-1.5 rounded border border-rt-border text-xs hover:border-rt-primary transition-colors flex items-center justify-center gap-1.5 cursor-pointer">
+              <Archive className="w-3.5 h-3.5" />
+              {uploadingZip ? 'Uploading...' : 'Zip'}
+              <input
+                type="file"
+                accept=".zip,application/zip"
+                className="hidden"
+                disabled={uploadingZip || uploadingFiles}
+                onChange={(e) => {
+                  handleZipUpload(e.target.files?.[0])
+                  e.currentTarget.value = ''
+                }}
+              />
+            </label>
+            <label className="py-1.5 rounded border border-rt-border text-xs hover:border-rt-primary transition-colors flex items-center justify-center gap-1.5 cursor-pointer">
+              <File className="w-3.5 h-3.5" />
+              {uploadingFiles ? 'Uploading...' : 'Files'}
+              <input
+                type="file"
+                multiple
+                className="hidden"
+                disabled={uploadingZip || uploadingFiles}
+                onChange={(e) => {
+                  handleFileUpload(e.target.files, 'one or more files')
+                  e.currentTarget.value = ''
+                }}
+              />
+            </label>
+            <label className="py-1.5 rounded border border-rt-border text-xs hover:border-rt-primary transition-colors flex items-center justify-center gap-1.5 cursor-pointer">
+              <FolderOpen className="w-3.5 h-3.5" />
+              {uploadingFiles ? 'Uploading...' : 'Folder'}
+              <input
+                type="file"
+                multiple
+                className="hidden"
+                disabled={uploadingZip || uploadingFiles}
+                {...({ webkitdirectory: '', directory: '' } as any)}
+                onChange={(e) => {
+                  handleFileUpload(e.target.files, 'a folder')
+                  e.currentTarget.value = ''
+                }}
+              />
+            </label>
+          </div>
         </div>
 
         {/* Entries */}
@@ -1723,6 +1850,116 @@ function TeamAgents({ teamId }: { teamId: string }) {
 
 
 // ---------------------------------------------------------------------------
+// TeamKnowParse Outputs View – raw artifacts + normalized KB preview
+// ---------------------------------------------------------------------------
+
+function TeamKnowParseOutputsView({ teamId }: { teamId: string }) {
+  const [selectedRunId, setSelectedRunId] = useState<string>('')
+  const { data: runs = [], isLoading: runsLoading } = useQuery<any[]>({
+    queryKey: ['teamknowparse-runs', teamId],
+    queryFn: () => teamApi.listTeamKnowParseRuns(teamId),
+  })
+  const activeRunId = selectedRunId || runs[0]?.teamknowparse_run_id || ''
+  const { data: artifactsData } = useQuery<any>({
+    queryKey: ['teamknowparse-artifacts', teamId, activeRunId],
+    queryFn: () => teamApi.listTeamKnowParseArtifacts(teamId, activeRunId),
+    enabled: !!activeRunId,
+  })
+  const { data: kbData } = useQuery<any>({
+    queryKey: ['teamknowparse-kb-records', teamId, activeRunId],
+    queryFn: () => teamApi.getKbRecords(teamId, activeRunId),
+    enabled: !!activeRunId,
+  })
+
+  if (runsLoading) {
+    return <div className="p-3 bg-rt-bg rounded-lg border border-rt-border text-xs text-rt-text-muted">Loading TeamKnowParse outputs...</div>
+  }
+  if (!runs.length) {
+    return <div className="p-3 bg-rt-bg rounded-lg border border-rt-border text-xs text-rt-text-muted">No TeamKnowParse runs found for this team.</div>
+  }
+
+  const artifacts = artifactsData?.artifacts || []
+  const selectedRun = runs.find((run: any) => run.teamknowparse_run_id === activeRunId) || runs[0]
+
+  return (
+    <div className="p-3 bg-rt-bg rounded-lg border border-rt-border space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <div className="text-xs font-medium text-rt-text">TeamKnowParse Outputs</div>
+          <div className="text-[11px] text-rt-text-muted">Raw artifacts and normalized KB records for debugging.</div>
+        </div>
+        <div className="flex items-center gap-2">
+          <select
+            value={activeRunId}
+            onChange={(event) => setSelectedRunId(event.target.value)}
+            className="bg-rt-surface border border-rt-border rounded-md px-2 py-1 text-xs"
+          >
+            {runs.map((run: any) => (
+              <option key={run.ingestion_run_id} value={run.teamknowparse_run_id}>
+                {run.teamknowparse_run_id}
+              </option>
+            ))}
+          </select>
+          <a
+            href={teamApi.artifactsZipUrl(teamId, activeRunId)}
+            className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-rt-primary/10 text-rt-primary text-xs hover:bg-rt-primary/20"
+          >
+            <Download className="w-3.5 h-3.5" /> ZIP
+          </a>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        <div className="border border-rt-border rounded-lg overflow-hidden">
+          <div className="px-3 py-2 border-b border-rt-border text-xs font-medium">Original JSON Artifacts</div>
+          <div className="divide-y divide-rt-border max-h-64 overflow-y-auto">
+            {artifacts.map((artifact: any) => (
+              <div key={artifact.path} className="px-3 py-2 flex items-center justify-between gap-3 text-xs">
+                <div className="min-w-0">
+                  <div className="font-mono truncate">{artifact.path}</div>
+                  <div className="text-[10px] text-rt-text-muted">{artifact.encrypted ? 'encrypted at rest' : 'plain file'} · {artifact.size} bytes</div>
+                </div>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <a href={teamApi.artifactUrl(teamId, activeRunId, artifact.path)} target="_blank" rel="noreferrer" className="text-rt-primary hover:underline">View</a>
+                  <a href={teamApi.artifactUrl(teamId, activeRunId, artifact.path, true)} className="text-rt-text-muted hover:text-rt-text">Download</a>
+                </div>
+              </div>
+            ))}
+            {!artifacts.length && <div className="px-3 py-3 text-xs text-rt-text-muted">No artifacts found for this run.</div>}
+          </div>
+        </div>
+
+        <div className="border border-rt-border rounded-lg overflow-hidden">
+          <div className="px-3 py-2 border-b border-rt-border text-xs font-medium">Normalized KB Mapping</div>
+          <div className="p-3 space-y-2 text-xs">
+            <div className="grid grid-cols-3 gap-2">
+              <div className="bg-rt-surface rounded-md p-2"><div className="text-[10px] text-rt-text-muted">Folders</div><div className="font-semibold">{kbData?.folders?.length ?? 0}</div></div>
+              <div className="bg-rt-surface rounded-md p-2"><div className="text-[10px] text-rt-text-muted">Files</div><div className="font-semibold">{kbData?.files?.length ?? 0}</div></div>
+              <div className="bg-rt-surface rounded-md p-2"><div className="text-[10px] text-rt-text-muted">Chunks</div><div className="font-semibold">{kbData?.total_chunks ?? 0}</div></div>
+            </div>
+            <div className="max-h-44 overflow-y-auto space-y-2">
+              {(kbData?.chunks || []).slice(0, 8).map((chunk: any) => (
+                <div key={chunk.chunk_id} className="bg-rt-surface rounded-md p-2">
+                  <div className="flex justify-between gap-2 text-[11px] text-rt-text-muted">
+                    <span className="truncate">{chunk.filename || chunk.file_path}</span>
+                    <span>{chunk.embedding_status}</span>
+                  </div>
+                  <div className="mt-1 line-clamp-2 text-rt-text-muted">{chunk.text_preview}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {selectedRun?.validation && (
+        <div className="text-[11px] text-rt-text-muted">Validation: {selectedRun.validation.valid === false ? 'failed' : 'valid/accepted'}</div>
+      )}
+    </div>
+  )
+}
+
+
 // Training Tree View – hierarchical visualization of indexed training data
 // ---------------------------------------------------------------------------
 

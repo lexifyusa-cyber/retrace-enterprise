@@ -851,13 +851,25 @@ export const useOpenCodeStore = create<StoreInternal>((set, get) => ({
       }
 
       if (!response.ok || !response.body) {
-        console.error('[OC] Bad response', { status: response.status })
+        let detail = `${response.status} ${response.statusText}`
+        try {
+          const text = await response.text()
+          if (text) {
+            try {
+              const parsed = JSON.parse(text)
+              detail = parsed?.detail || parsed?.message || text
+            } catch {
+              detail = text
+            }
+          }
+        } catch {}
+        console.error('[OC] Bad response', { status: response.status, detail })
         if (!isCurrent()) return
         get()._patchSession(conversationId, s => ({
           ...s,
           messages: s.messages.map(m =>
             m.id === assistantMsgId
-              ? { ...m, parts: [{ type: 'text', id: 'part-err', text: `Error: ${response.status} ${response.statusText}` }], isStreaming: false }
+              ? { ...m, parts: [{ type: 'text', id: 'part-err', text: `API error: ${detail}` }], isStreaming: false }
               : m
           ),
           isRunning: false,

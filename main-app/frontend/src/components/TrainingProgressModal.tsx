@@ -59,6 +59,7 @@ export default function TrainingProgressModal({ teamId, onClose }: TrainingProgr
   }
 
   useEffect(() => {
+    if (!isPolling) return
     const timer = setInterval(() => {
       const diff = Math.floor((Date.now() - startedAt.getTime()) / 1000)
       if (diff < 60) {
@@ -70,7 +71,7 @@ export default function TrainingProgressModal({ teamId, onClose }: TrainingProgr
       }
     }, 1000)
     return () => clearInterval(timer)
-  }, [startedAt])
+  }, [startedAt, isPolling])
 
   const pollStatus = useCallback(async () => {
     try {

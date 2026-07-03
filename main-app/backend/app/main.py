@@ -30,7 +30,7 @@ from app.api import channels as channels_api
 from app.api import connections as connections_api
 from app.api import connections_oauth as connections_oauth_api
 from app.services.websocket_manager import websocket_manager
-from app.db.database import init_db
+from app.db.database import init_db, is_sqlite_database_url, sqlite_db_path_from_url
 from app.models.automation_run import AutomationRun  # ensure table creation
 # Import models to ensure they're registered with Base
 from app.models import pod, folder_group, team, query as query_model, settings as settings_model
@@ -54,6 +54,7 @@ from app.models import audit_log as audit_log_model  # noqa: F401
 from app.models import scheduled_followup as scheduled_followup_model  # noqa: F401  – registers ScheduledFollowup table
 from app.models import tool_monitor as tool_monitor_model  # noqa: F401  – registers ToolMonitor table (unified)
 from app.models import remote_trigger as remote_trigger_model  # noqa: F401  – registers RemoteTrigger table
+from app.models import teamknowparse_kb as teamknowparse_kb_model  # noqa: F401
 from app.api import auth as auth_api
 from app.api import mcp_builder as mcp_builder_api
 from app.api import mcp_extensions as mcp_extensions_api
@@ -110,7 +111,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         from pathlib import Path
         from urllib.parse import unquote
         db_url = settings.DATABASE_URL
-        if "sqlite" in db_url:
+        if is_sqlite_database_url(db_url):
             # Extract path: sqlite+aiosqlite:///path or sqlite:///path
             parsed = db_url.split("///", 1)[-1].split("?", 1)[0]
             db_path = unquote(parsed)
@@ -178,6 +179,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
                 cursor.execute("ALTER TABLE llm_settings ADD COLUMN snapshot_enabled INTEGER DEFAULT 0")
                 conn.commit()
                 print("[STARTUP] Added snapshot_enabled column to llm_settings", flush=True)
+            for col_name, col_type in [
+                ("embedding_model", "VARCHAR(255)"),
+                ("embedding_base_url", "TEXT"),
+                ("embedding_api_key", "TEXT"),
+                ("embedding_chroma_collection", "VARCHAR(255)"),
+                ("embedding_debug_log", "INTEGER DEFAULT 0"),
+            ]:
+                if col_name not in cols:
+                    cursor.execute(f"ALTER TABLE llm_settings ADD COLUMN {col_name} {col_type}")
+                    conn.commit()
+                    print(f"[STARTUP] Added {col_name} column to llm_settings", flush=True)
             conn.close()
     except Exception as exc:
         print(f"[STARTUP] llm_settings migration skipped: {exc}", flush=True)
@@ -188,7 +200,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         from pathlib import Path
         from urllib.parse import unquote
         db_url = settings.DATABASE_URL
-        if "sqlite" in db_url:
+        if is_sqlite_database_url(db_url):
             parsed = db_url.split("///", 1)[-1].split("?", 1)[0]
             db_path = unquote(parsed)
             if not Path(db_path).is_absolute():
@@ -220,7 +232,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         from pathlib import Path
         from urllib.parse import unquote
         db_url = settings.DATABASE_URL
-        if "sqlite" in db_url:
+        if is_sqlite_database_url(db_url):
             parsed = db_url.split("///", 1)[-1].split("?", 1)[0]
             db_path = unquote(parsed)
             if not Path(db_path).is_absolute():
@@ -272,7 +284,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         from pathlib import Path
         from urllib.parse import unquote
         db_url = settings.DATABASE_URL
-        if "sqlite" in db_url:
+        if is_sqlite_database_url(db_url):
             parsed = db_url.split("///", 1)[-1].split("?", 1)[0]
             db_path = unquote(parsed)
             if not Path(db_path).is_absolute():
@@ -308,7 +320,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         from pathlib import Path
         from urllib.parse import unquote
         db_url = settings.DATABASE_URL
-        if "sqlite" in db_url:
+        if is_sqlite_database_url(db_url):
             parsed = db_url.split("///", 1)[-1].split("?", 1)[0]
             db_path = unquote(parsed)
             if not Path(db_path).is_absolute():
@@ -394,8 +406,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         import sqlite3 as _sqlite3
         from pathlib import Path as _Path
         _db_url = settings.DATABASE_URL
-        _parsed = _db_url.split("///", 1)[-1].split("?", 1)[0]
-        _db_path = _parsed if _Path(_parsed).is_absolute() else str((_Path(__file__).parent.parent / _parsed).resolve())
+        if not is_sqlite_database_url(_db_url):
+            raise RuntimeError("SQLite-only conversations migration skipped for non-SQLite database")
+        _db_path = sqlite_db_path_from_url(_db_url)
         with _sqlite3.connect(_db_path) as conn:
             cursor = conn.cursor()
             cursor.execute("PRAGMA table_info(conversations)")

@@ -67,7 +67,7 @@ class ConversationMessage(Base):
     __tablename__ = "conversation_messages"
 
     message_id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=lambda: str(uuid4())
+        String(128), primary_key=True, default=lambda: str(uuid4())
     )
     conversation_id: Mapped[str] = mapped_column(
         String(36),

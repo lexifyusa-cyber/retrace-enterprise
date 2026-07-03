@@ -2,9 +2,12 @@
 Database connection and session management.
 """
 
+from pathlib import Path
 from typing import AsyncGenerator
+from urllib.parse import unquote
 
 from sqlalchemy import event, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
 
@@ -17,14 +20,59 @@ engine_kwargs = {
     "pool_pre_ping": True,  # Verify connections before using
 }
 
+
+def normalize_database_url(database_url: str) -> str:
+    """Normalize deployment DATABASE_URL values for SQLAlchemy async engines."""
+    if database_url.startswith("postgres://"):
+        return database_url.replace("postgres://", "postgresql+asyncpg://", 1)
+    if database_url.startswith("postgresql://"):
+        return database_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    return database_url
+
+
+DATABASE_URL = normalize_database_url(settings.DATABASE_URL)
+
+
+def database_backend(database_url: str | None = None) -> str:
+    """Return the SQLAlchemy backend name for a database URL."""
+    url = make_url(normalize_database_url(database_url or settings.DATABASE_URL))
+    return url.get_backend_name()
+
+
+def is_sqlite_database_url(database_url: str | None = None) -> bool:
+    return database_backend(database_url) == "sqlite"
+
+
+def is_postgresql_database_url(database_url: str | None = None) -> bool:
+    return database_backend(database_url) == "postgresql"
+
+
+def sqlite_db_path_from_url(database_url: str | None = None) -> str:
+    """Resolve a SQLite file path from the configured SQLAlchemy URL."""
+    url = make_url(normalize_database_url(database_url or settings.DATABASE_URL))
+    if url.get_backend_name() != "sqlite":
+        raise ValueError("DATABASE_URL is not a SQLite URL")
+
+    raw = str(url.database or "")
+    if raw in ("", ":memory:"):
+        return raw
+
+    db_path = unquote(raw)
+    if Path(db_path).is_absolute():
+        return db_path
+
+    backend_dir = Path(__file__).parent.parent.parent
+    return str((backend_dir / db_path).resolve())
+
+
 # For SQLite with aiosqlite, add timeout and WAL mode to prevent locks
-if "sqlite" in settings.DATABASE_URL:
+if is_sqlite_database_url():
     engine_kwargs["connect_args"] = {"timeout": 30.0}
 
-engine = create_async_engine(settings.DATABASE_URL, **engine_kwargs)
+engine = create_async_engine(DATABASE_URL, **engine_kwargs)
 
 # Enable WAL journal mode for SQLite — allows concurrent readers + one writer
-if "sqlite" in settings.DATABASE_URL:
+if is_sqlite_database_url():
     @event.listens_for(engine.sync_engine, "connect")
     def _set_sqlite_pragma(dbapi_conn, connection_record):
         cursor = dbapi_conn.cursor()
@@ -46,15 +94,23 @@ class Base(DeclarativeBase):
 
 
 async def init_db() -> None:
-    """Initialize the database and create all tables, then run lightweight migrations."""
+    """Initialize the database.
+
+    SQLite keeps its legacy create_all/lightweight migration fallback for now.
+    PostgreSQL schema must be managed with Alembic so startup never executes
+    SQLite-specific DDL such as PRAGMA table_info or table rebuilds.
+    """
+    if not is_sqlite_database_url():
+        return
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    await _run_migrations()
+    await _run_sqlite_migrations()
 
 
-async def _run_migrations() -> None:
-    """Add columns that may be missing from older schemas (idempotent)."""
+async def _run_sqlite_migrations() -> None:
+    """Add columns that may be missing from older SQLite schemas."""
     migrations = [
         ("documentation", "status", "ALTER TABLE documentation ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'draft'"),
         ("sops", "status", "ALTER TABLE sops ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'draft'"),

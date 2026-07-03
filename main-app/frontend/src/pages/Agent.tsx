@@ -241,6 +241,8 @@ export default function Agent() {
   const _saved = loadAgentSession()
   const [task, setTask] = useState('')
   const [selectedTeamId, setSelectedTeamId] = useState<string>(_saved.selectedTeamId ?? '')
+  const [showRetrievalDebug, setShowRetrievalDebug] = useState(false)
+  const [retrievalDebugQuestion, setRetrievalDebugQuestion] = useState('')
   const [showTeamPicker, setShowTeamPicker] = useState(false)
   const [streamingSOP, setStreamingSOP] = useState<string | null>(null)
   const [streamingDoc, setStreamingDoc] = useState<string | null>(null)
@@ -527,6 +529,18 @@ export default function Agent() {
     p.folder_groups?.some(g => g.training_status === 'completed') === true
   )
 
+  const retrievalDebugMutation = useMutation({
+    mutationFn: () => {
+      if (!selectedTeamId) throw new Error('Select a trained team first')
+      const question = retrievalDebugQuestion.trim() || task.trim()
+      if (!question) throw new Error('Enter a debug question')
+      return teamApi.debugRetrieval(selectedTeamId, { question, top_k: 5 })
+    },
+    onError: (error: any) => {
+      toast.error(error?.response?.data?.detail || error?.message || 'Retrieval debug failed')
+    },
+  })
+
   // When team changes: deselect active conversation, abort local streams,
   // regenerate the OC config (so RETRACE_TEAM_ID + system prompt update), and
   // mark every cached session's sessionId as stale. The OC sidecar restarts
@@ -609,7 +623,7 @@ export default function Agent() {
   // Persist key state to sessionStorage on every change
   useEffect(() => {
     const sessionId = activeSession?.sessionId ?? null
-    saveAgentSession({ selectedTeamId, activeConversationId, opencodeSessionId: sessionId })
+    saveAgentSession({ selectedTeamId, activeConversationId, opencodeSessionId: sessionId, retrievalMode: 'hybrid' })
   }, [selectedTeamId, activeConversationId, activeSession?.sessionId])
 
   // Auto-restore last session on mount
@@ -1380,8 +1394,8 @@ export default function Agent() {
       </div>
 
       {/* Team selector + tool status */}
-      <div className="px-8 py-3 border-b border-rt-border bg-rt-bg-light flex items-center gap-4">
-        <div className="relative">
+      <div className="px-8 py-3 border-b border-rt-border bg-rt-bg-light flex flex-wrap items-center gap-3 lg:gap-4">
+        <div className="relative flex-shrink-0">
           <button type="button" onClick={() => setShowTeamPicker(!showTeamPicker)}
             // Colorless glass dropdown — same recipe as the Browser/Terminal/
             // Files tabs (white tint, no theme color since this is a neutral
@@ -1442,8 +1456,20 @@ export default function Agent() {
             MCP servers without going to Settings. */}
         <McpStatusPill />
 
+        <div className="flex flex-shrink-0 items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowRetrievalDebug((value) => !value)}
+            disabled={!selectedTeamId}
+            title={selectedTeamId ? 'Inspect retrieved KB chunks' : 'Select a trained team first'}
+            className={`flex min-w-[126px] items-center justify-center gap-1.5 px-3 py-1 rounded-lg border border-rt-border text-xs transition-colors whitespace-nowrap ${showRetrievalDebug ? 'bg-rt-primary/15 text-rt-primary' : 'bg-rt-surface/50 text-rt-text-muted hover:text-rt-text'} disabled:opacity-40 disabled:cursor-not-allowed`}
+          >
+            <FileText className="w-3.5 h-3.5 flex-shrink-0" /> Debug Retrieval
+          </button>
+        </div>
+
         {/* Tool icons — click to enable/disable */}
-        <div className="flex items-center gap-3 text-xs text-rt-text-muted">
+        <div className="flex flex-wrap items-center gap-3 text-xs text-rt-text-muted">
           <span className="flex items-center gap-1.5">
             <div className={`w-2 h-2 rounded-full ${enabledToolsCount > 0 ? 'bg-rt-success' : 'bg-rt-warning'}`} />
             <span>{enabledToolsCount}/{tools.length} tools</span>
@@ -1555,6 +1581,50 @@ export default function Agent() {
           </div>
         </div>
       </div>
+
+      {showRetrievalDebug && selectedTeamId && (
+        <div className="px-8 py-3 border-b border-rt-border bg-rt-bg-light/70">
+          <div className="rounded-lg border border-rt-border bg-rt-surface p-3 space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                value={retrievalDebugQuestion}
+                onChange={(event) => setRetrievalDebugQuestion(event.target.value)}
+                placeholder="Question to test retrieval..."
+                className="flex-1 min-w-[260px] bg-rt-bg border border-rt-border rounded-md px-3 py-1.5 text-sm"
+              />
+              <button
+                type="button"
+                onClick={() => retrievalDebugMutation.mutate()}
+                disabled={retrievalDebugMutation.isPending}
+                className="px-3 py-1.5 rounded-md bg-rt-primary text-white text-xs font-medium disabled:opacity-60"
+              >
+                {retrievalDebugMutation.isPending ? 'Testing...' : 'Test retrieval'}
+              </button>
+            </div>
+            {retrievalDebugMutation.data && (
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-3 text-xs">
+                <div className="space-y-2 max-h-72 overflow-y-auto">
+                  {retrievalDebugMutation.data.hits?.map((hit: any) => (
+                    <div key={hit.chunk_id || hit.rank} className="rounded-md bg-rt-bg border border-rt-border p-2">
+                      <div className="flex items-center justify-between gap-2 text-[11px] text-rt-text-muted">
+                        <span>#{hit.rank} · {hit.source} · score {Number(hit.score || 0).toFixed(3)}</span>
+                        <span>{hit.page_number ? `page ${hit.page_number}` : ''}</span>
+                      </div>
+                      <div className="mt-1 font-mono text-[11px] truncate">{hit.filename || hit.file_path || 'unknown source'}</div>
+                      <div className="mt-1 text-rt-text-muted whitespace-pre-wrap line-clamp-4">{hit.text_preview}</div>
+                    </div>
+                  ))}
+                  {!retrievalDebugMutation.data.hits?.length && <div className="text-rt-text-muted">No chunks retrieved.</div>}
+                </div>
+                <div className="rounded-md bg-rt-bg border border-rt-border p-2">
+                  <div className="text-[11px] font-medium mb-1">LLM Context Preview</div>
+                  <pre className="max-h-72 overflow-y-auto whitespace-pre-wrap text-[11px] text-rt-text-muted font-mono">{retrievalDebugMutation.data.llm_context_preview || 'No context generated.'}</pre>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Conversations row — horizontal, below the team bar */}
       <div className="px-8 py-2 border-b border-rt-border bg-rt-bg-light/50 flex items-center gap-2 overflow-x-auto">

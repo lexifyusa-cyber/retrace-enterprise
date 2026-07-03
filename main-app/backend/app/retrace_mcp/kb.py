@@ -12,7 +12,14 @@ Tools:
 import asyncio
 import os
 import sys
+from pathlib import Path
 from typing import Optional
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=False)
+except Exception:
+    pass
 
 import httpx
 from mcp.server.fastmcp import FastMCP
@@ -93,7 +100,6 @@ def search(query: str, keywords: Optional[str] = None, top_k: int = 10) -> str:
         return "No team is selected. The user must pick a team in the picker before the knowledge base can be searched."
 
     kw_list = [k.strip() for k in keywords.split(",") if k.strip()] if keywords else None
-
     async def _do():
         return await search_kb(
             query=query,
@@ -185,25 +191,7 @@ def learn(title: str, content: str) -> str:
         title: Short descriptive title for the knowledge entry (e.g. 'How to deploy to staging')
         content: The full text content to store
     """
-    from app.rag.kb_store import KnowledgeBaseStore
-
-    team_id = _get_team_id()
-    if not team_id:
-        return "No team is selected. The user must pick a team in the picker before the knowledge base can be searched."
-
-    async def _do():
-        kb_store = KnowledgeBaseStore()
-        result = await kb_store.store_mcp_docs(
-            team_id=team_id,
-            pages=[(title, content)],
-            api_name="agent-learn",
-        )
-        return f"Learned: {title} ({result.get('chunk_count', 0)} chunks stored)"
-
-    try:
-        return _run_async(_do())
-    except Exception as e:
-        return f"Error learning: {e}"
+    return "Learning into the legacy KB blob is disabled. Use TeamKnowParse training instead."
 
 
 if __name__ == "__main__":

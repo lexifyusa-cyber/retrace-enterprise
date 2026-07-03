@@ -15,12 +15,14 @@ venv/
 *.db
 *.db-wal
 *.db-shm
+main-app/backend/retrace.db*
 *.sqlite3
 chroma_data/
 pod-installers/
 main-app/backend/screenops_screenshots/*.png
 main-app/backend/screenops_debug.log
 main-app/backend/build/
+main-app/logs/
 
 # Node
 node_modules/
@@ -57,3 +59,15 @@ main-app/backend/product_files_for_desktop.txt
 # Per-conversation OC working-dir artifacts (browser downloads land in
 # <oc_working_dir>/<conv-uuid>/Downloads/ in external-dev mode).
 /opencode/packages/opencode/[0-9a-f]*-*/
+
+# Local env and bundled TeamKnowParse runtime artifacts
+main-app/backend/.env
+main-app/backend/.env.*
+main-app/backend/.venv/
+main-app/backend/chroma_teamknowparse/
+teamknowparse/.venv/
+teamknowparse/runs/
+teamknowparse/uploads/
+teamknowparse/retrace_uploads/
+teamknowparse/__pycache__/
+teamknowparse/.pytest_cache/

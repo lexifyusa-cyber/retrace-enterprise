@@ -7,20 +7,25 @@ from typing import Optional
 from app.api.files import is_path_allowed
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+import io
 import structlog
+import zipfile
+from pathlib import Path
 
 from app.db.database import get_session
+from app.db.expressions import json_bool_true
 from app.models.team import Team
 from app.models.folder_group import FolderGroup, FolderPath
 from app.models.pod import Pod
 from app.models.team_access import TeamAccess
 from app.models.tenant import Tenant
 from app.models.user import User
+from app.models.teamknowparse_kb import TeamKnowParseKbChunk, TeamKnowParseKbFile, TeamKnowParseKbFolder, TeamKnowParseKbIngestionRun
 from app.core.security import get_optional_user, get_current_user, CurrentUser
 from sqlalchemy import func
 
@@ -69,6 +74,17 @@ class QAPair(BaseModel):
     answer: str
 
 
+class TeamTrainRequest(BaseModel):
+    pipeline: Optional[str] = None
+    teamknowparse_mode: str = Field(default="mixed", pattern="^(txt|mixed)$")
+    force_full: bool = False
+
+
+class RetrievalDebugRequest(BaseModel):
+    question: str = Field(..., min_length=1, max_length=4000)
+    top_k: int = Field(default=5, ge=1, le=20)
+
+
 class SyncQARequest(BaseModel):
     """Request body for syncing agent Q&A pairs to training data."""
     qa_pairs: list[QAPair] = Field(..., min_length=1, max_length=10)
@@ -100,6 +116,43 @@ class TeamResponse(BaseModel):
     metadata: dict = {}
 
 
+async def _get_team_for_user(session: AsyncSession, team_id: str, current_user: CurrentUser) -> Team:
+    query = select(Team).where(Team.team_id == team_id)
+    if current_user.role != "zero_admin" and current_user.tenant_id:
+        query = query.where(Team.tenant_id == current_user.tenant_id)
+    result = await session.execute(query)
+    team = result.scalar_one_or_none()
+    if not team:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Team {team_id} not found")
+    if current_user.role in {"zero_admin", "admin", "super_admin", "tenant_admin"}:
+        return team
+    if team.created_by == current_user.user_id:
+        return team
+    access = await session.execute(
+        select(TeamAccess).where(TeamAccess.team_id == team_id, TeamAccess.user_id == current_user.user_id)
+    )
+    if access.scalar_one_or_none():
+        return team
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have access to this team")
+
+
+def _artifact_content_type(path: str) -> str:
+    return "application/x-ndjson; charset=utf-8" if path.endswith(".jsonl") else "application/json; charset=utf-8"
+
+
+async def _get_kb_run(session: AsyncSession, team_id: str, run_id: str) -> TeamKnowParseKbIngestionRun:
+    result = await session.execute(
+        select(TeamKnowParseKbIngestionRun)
+        .where(TeamKnowParseKbIngestionRun.team_id == team_id)
+        .where(TeamKnowParseKbIngestionRun.teamknowparse_run_id == run_id)
+        .order_by(TeamKnowParseKbIngestionRun.created_at.desc())
+    )
+    run = result.scalars().first()
+    if not run:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"TeamKnowParse run {run_id} not found for this team")
+    return run
+
+
 @router.get("", response_model=list[TeamResponse])
 async def list_teams(
     session: AsyncSession = Depends(get_session),
@@ -114,30 +167,27 @@ async def list_teams(
         pass  # System-level admin sees all teams
     elif current_user and current_user.role in ("admin", "super_admin", "tenant_admin"):
         # Tenant admins see their tenant's teams + prebuilt sample teams
-        from sqlalchemy import or_, text
         query = query.where(
             or_(
                 Team.tenant_id == current_user.tenant_id,
-                text("json_extract(teams.metadata_json, '$.is_prebuilt') = 1"),
+                json_bool_true(Team.metadata_json, "is_prebuilt"),
             )
         )
     elif current_user and current_user.role == "user_admin":
         # User admins see teams they created + prebuilt sample teams
-        from sqlalchemy import or_, text
         query = query.where(
             or_(
                 Team.created_by == current_user.user_id,
-                text("json_extract(teams.metadata_json, '$.is_prebuilt') = 1"),
+                json_bool_true(Team.metadata_json, "is_prebuilt"),
             )
         )
     elif current_user:
         # Regular users see teams they have explicit access to + prebuilt sample teams
-        from sqlalchemy import or_, text
         accessible = select(TeamAccess.team_id).where(TeamAccess.user_id == current_user.user_id)
         query = query.where(
             or_(
                 Team.team_id.in_(accessible),
-                text("json_extract(teams.metadata_json, '$.is_prebuilt') = 1"),
+                json_bool_true(Team.metadata_json, "is_prebuilt"),
             )
         )
 
@@ -663,9 +713,374 @@ async def remove_folder_group(
     return {"status": "deleted", "group_id": group_id}
 
 
+@router.get("/{team_id}/teamknowparse-runs")
+async def list_teamknowparse_runs(
+    team_id: str,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """List TeamKnowParse ingestion runs for a team."""
+    await _get_team_for_user(session, team_id, current_user)
+    result = await session.execute(
+        select(TeamKnowParseKbIngestionRun)
+        .where(TeamKnowParseKbIngestionRun.team_id == team_id)
+        .order_by(TeamKnowParseKbIngestionRun.created_at.desc())
+    )
+    return [
+        {
+            "ingestion_run_id": run.ingestion_run_id,
+            "teamknowparse_run_id": run.teamknowparse_run_id,
+            "status": run.status,
+            "created_at": run.created_at.isoformat() if run.created_at else None,
+            "metrics": run.metrics_json or {},
+            "validation": run.validation_json or {},
+            "run_dir": run.run_dir,
+        }
+        for run in result.scalars().all()
+    ]
+
+
+@router.get("/{team_id}/teamknowparse-runs/{run_id}/artifacts")
+async def list_teamknowparse_artifacts(
+    team_id: str,
+    run_id: str,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """List original TeamKnowParse output artifacts for a run."""
+    from app.services.teamknowparse_artifacts import list_artifacts
+
+    await _get_team_for_user(session, team_id, current_user)
+    run = await _get_kb_run(session, team_id, run_id)
+    return {"team_id": team_id, "run_id": run.teamknowparse_run_id, "artifacts": list_artifacts(Path(run.run_dir))}
+
+
+@router.get("/{team_id}/teamknowparse-runs/{run_id}/artifacts.zip")
+async def download_teamknowparse_artifacts_zip(
+    team_id: str,
+    run_id: str,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Download all original TeamKnowParse artifacts as one ZIP."""
+    from app.services.teamknowparse_artifacts import list_artifacts, read_artifact
+
+    await _get_team_for_user(session, team_id, current_user)
+    run = await _get_kb_run(session, team_id, run_id)
+    run_dir = Path(run.run_dir)
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for artifact in list_artifacts(run_dir):
+            rel = artifact["path"]
+            archive.writestr(rel, read_artifact(run_dir, rel))
+    headers = {"Content-Disposition": f'attachment; filename="teamknowparse-{run_id}-artifacts.zip"'}
+    return Response(content=buffer.getvalue(), media_type="application/zip", headers=headers)
+
+
+@router.get("/{team_id}/teamknowparse-runs/{run_id}/artifacts/{artifact_path:path}")
+async def get_teamknowparse_artifact(
+    team_id: str,
+    run_id: str,
+    artifact_path: str,
+    download: bool = False,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """View or download one original TeamKnowParse artifact."""
+    from app.services.teamknowparse_artifacts import read_artifact
+
+    await _get_team_for_user(session, team_id, current_user)
+    run = await _get_kb_run(session, team_id, run_id)
+    try:
+        content = read_artifact(Path(run.run_dir), artifact_path)
+    except FileNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    headers = {}
+    if download:
+        headers["Content-Disposition"] = f'attachment; filename="{Path(artifact_path).name}"'
+    return Response(content=content, media_type=_artifact_content_type(artifact_path), headers=headers)
+
+
+@router.get("/{team_id}/kb-records")
+async def get_teamknowparse_kb_records(
+    team_id: str,
+    run_id: Optional[str] = None,
+    limit: int = 25,
+    offset: int = 0,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Inspect normalized TeamKnowParse KB rows after ingestion."""
+    await _get_team_for_user(session, team_id, current_user)
+    limit = min(max(limit, 1), 100)
+    folder_result = await session.execute(select(TeamKnowParseKbFolder).where(TeamKnowParseKbFolder.team_id == team_id).limit(50))
+    file_result = await session.execute(select(TeamKnowParseKbFile).where(TeamKnowParseKbFile.team_id == team_id).limit(100))
+    chunk_query = select(TeamKnowParseKbChunk).where(TeamKnowParseKbChunk.team_id == team_id)
+    count_query = select(func.count()).select_from(TeamKnowParseKbChunk).where(TeamKnowParseKbChunk.team_id == team_id)
+    if run_id:
+        chunk_query = chunk_query.where(TeamKnowParseKbChunk.source_run_id == run_id)
+        count_query = count_query.where(TeamKnowParseKbChunk.source_run_id == run_id)
+    total = (await session.execute(count_query)).scalar_one()
+    chunk_result = await session.execute(chunk_query.order_by(TeamKnowParseKbChunk.chunk_index).offset(offset).limit(limit))
+    return {
+        "team_id": team_id,
+        "run_id": run_id,
+        "total_chunks": total,
+        "folders": [
+            {"folder_id": f.folder_id, "folder_path": f.folder_path, "folder_name": f.folder_name, "folder_description": f.folder_description}
+            for f in folder_result.scalars().all()
+        ],
+        "files": [
+            {"file_id": f.file_id, "file_path": f.file_path, "filename": f.filename, "page_count": f.page_count, "file_description": f.file_description}
+            for f in file_result.scalars().all()
+        ],
+        "chunks": [
+            {
+                "chunk_id": c.chunk_id,
+                "source_run_id": c.source_run_id,
+                "chunk_index": c.chunk_index,
+                "file_path": c.file_path,
+                "filename": c.filename,
+                "page_number": c.page_number,
+                "page_type": c.page_type,
+                "embedding_status": c.embedding_status,
+                "embedding_error": c.embedding_error,
+                "text_preview": c.search_text[:800],
+            }
+            for c in chunk_result.scalars().all()
+        ],
+    }
+
+
+@router.post("/{team_id}/retrieval-debug")
+async def debug_teamknowparse_retrieval(
+    team_id: str,
+    body: RetrievalDebugRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Run retrieval only and return evidence/debug data without asking the LLM."""
+    from app.services.teamknowparse_vector import TeamKnowParseVectorService
+
+    await _get_team_for_user(session, team_id, current_user)
+    hits = await TeamKnowParseVectorService().search(session, team_id=team_id, query=body.question, mode="hybrid", top_k=body.top_k)
+    debug_hits = []
+    evidence_lines = []
+    for idx, hit in enumerate(hits, 1):
+        meta = hit.get("metadata") or {}
+        text = (hit.get("text") or "").strip()
+        citation = meta.get("file_path") or meta.get("filename") or "unknown"
+        page = meta.get("page_number") or None
+        evidence_lines.append(f"[{idx}] {citation}{f' page {page}' if page else ''}\n{text[:800]}")
+        debug_hits.append({
+            "rank": idx,
+            "chunk_id": hit.get("chunk_id"),
+            "score": hit.get("score", 0),
+            "source": hit.get("source", "hybrid"),
+            "file_path": meta.get("file_path"),
+            "filename": meta.get("filename"),
+            "page_number": page,
+            "page_type": meta.get("page_type"),
+            "text_preview": text[:1200],
+        })
+    return {
+        "team_id": team_id,
+        "question": body.question,
+        "mode": "hybrid",
+        "top_k": body.top_k,
+        "hit_count": len(debug_hits),
+        "hits": debug_hits,
+        "llm_context_preview": "\n\n".join(evidence_lines),
+    }
+
+
+
+def _safe_upload_relative_path(raw_path: str, fallback_name: str) -> Path:
+    """Return a safe relative upload path, preserving browser folder structure."""
+    candidate = (raw_path or fallback_name or "upload").replace("\\", "/").strip()
+    parts = [part for part in candidate.split("/") if part not in {"", "."}]
+    if not parts:
+        parts = [Path(fallback_name or "upload").name or "upload"]
+    if any(part == ".." for part in parts):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Unsafe upload path: {raw_path or fallback_name}")
+    safe_parts = [Path(part).name for part in parts]
+    relative = Path(*safe_parts)
+    if relative.is_absolute():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Unsafe upload path: {raw_path or fallback_name}")
+    return relative
+
+
+def _upload_group_name(name: str, fallback: str) -> str:
+    cleaned = Path(name or fallback).name.strip().strip(".")
+    return (cleaned or fallback)[:255]
+
+
+async def _register_uploaded_training_dir(
+    *,
+    session: AsyncSession,
+    team_id: str,
+    staged_dir: Path,
+    group_name: str,
+    source: str,
+    metadata: dict,
+) -> str:
+    group_id = str(uuid4())
+    group = FolderGroup(
+        group_id=group_id,
+        team_id=team_id,
+        pod_id="__local__",
+        group_name=_upload_group_name(group_name, "uploaded-training-data"),
+        group_type="documentation",
+        namespace=f"team-{team_id[:8]}-upload-{group_id[:8]}",
+        metadata_json={"source": source, **metadata},
+    )
+    group.folder_paths.append(FolderPath(
+        path_id=str(uuid4()),
+        group_id=group_id,
+        absolute_path=str(staged_dir),
+        scan_recursive=True,
+        connection_id=None,
+        file_filters={"include": [], "exclude": []},
+    ))
+    session.add(group)
+    await session.commit()
+    return group_id
+
+@router.post("/{team_id}/upload-training-zip")
+async def upload_training_zip(
+    team_id: str,
+    file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Upload a zip file and register the extracted folder as team training data."""
+    from app.core.config import settings as app_settings
+
+    if not file.filename or not file.filename.lower().endswith(".zip"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only .zip uploads are supported")
+
+    await _get_team_for_user(session, team_id, current_user)
+
+    safe_filename = Path(file.filename).name
+    if not safe_filename.lower().endswith(".zip"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only .zip uploads are supported")
+
+    root = Path(app_settings.TEAMKNOWPARSE_UPLOADS_DIR).parent / "retrace_uploads" / team_id / str(uuid4())
+    zip_path = root / safe_filename
+    extract_dir = root / "extracted"
+    root.mkdir(parents=True, exist_ok=True)
+    max_bytes = app_settings.TEAMKNOWPARSE_MAX_UPLOAD_MB * 1024 * 1024
+    written = 0
+    with zip_path.open("wb") as handle:
+        while chunk := await file.read(1024 * 1024):
+            written += len(chunk)
+            if written > max_bytes:
+                raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Zip upload is too large")
+            handle.write(chunk)
+
+    extract_dir.mkdir(parents=True, exist_ok=True)
+    extract_root = extract_dir.resolve()
+    max_files = 10000
+    max_extracted_bytes = max_bytes * 2
+    extracted_bytes = 0
+    extracted_files = 0
+    with zipfile.ZipFile(zip_path) as archive:
+        for member in archive.infolist():
+            if member.is_dir():
+                continue
+            extracted_files += 1
+            extracted_bytes += member.file_size
+            if extracted_files > max_files:
+                raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Zip contains too many files")
+            if extracted_bytes > max_extracted_bytes:
+                raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Zip expands to too much data")
+            target = (extract_dir / member.filename).resolve()
+            try:
+                target.relative_to(extract_root)
+            except ValueError:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Unsafe zip member: {member.filename}")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with archive.open(member) as source, target.open("wb") as output:
+                output.write(source.read())
+
+    group_id = await _register_uploaded_training_dir(
+        session=session,
+        team_id=team_id,
+        staged_dir=extract_dir,
+        group_name=Path(safe_filename).stem or "uploaded-zip",
+        source="zip_upload",
+        metadata={"zip_path": str(zip_path)},
+    )
+    return {"status": "uploaded", "team_id": team_id, "group_id": group_id, "path": str(extract_dir)}
+
+
+@router.post("/{team_id}/upload-training-files")
+async def upload_training_files(
+    team_id: str,
+    files: list[UploadFile] = File(...),
+    relative_paths: list[str] = Form(default=[]),
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Upload individual files or a browser-selected folder as training data."""
+    from app.core.config import settings as app_settings
+
+    if not files:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Choose at least one file or folder")
+    if len(files) > 10000:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Upload contains too many files")
+
+    await _get_team_for_user(session, team_id, current_user)
+
+    root = Path(app_settings.TEAMKNOWPARSE_UPLOADS_DIR).parent / "retrace_uploads" / team_id / str(uuid4())
+    staged_dir = root / "uploaded"
+    staged_root = staged_dir.resolve()
+    staged_dir.mkdir(parents=True, exist_ok=True)
+
+    max_bytes = app_settings.TEAMKNOWPARSE_MAX_UPLOAD_MB * 1024 * 1024
+    written = 0
+    staged_files = 0
+    top_level_names: set[str] = set()
+    for index, upload in enumerate(files):
+        fallback_name = Path(upload.filename or f"file-{index + 1}").name
+        raw_relative = relative_paths[index] if index < len(relative_paths) else fallback_name
+        relative = _safe_upload_relative_path(raw_relative, fallback_name)
+        top_level_names.add(relative.parts[0] if relative.parts else fallback_name)
+        target = (staged_dir / relative).resolve()
+        try:
+            target.relative_to(staged_root)
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Unsafe upload path: {raw_relative}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("wb") as handle:
+            while chunk := await upload.read(1024 * 1024):
+                written += len(chunk)
+                if written > max_bytes:
+                    raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Upload is too large")
+                handle.write(chunk)
+        staged_files += 1
+
+    if staged_files == 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No files were uploaded")
+
+    group_name = next(iter(top_level_names)) if len(top_level_names) == 1 else f"uploaded-files-{staged_files}"
+    group_id = await _register_uploaded_training_dir(
+        session=session,
+        team_id=team_id,
+        staged_dir=staged_dir,
+        group_name=group_name,
+        source="file_upload",
+        metadata={"file_count": staged_files, "total_bytes": written},
+    )
+    return {"status": "uploaded", "team_id": team_id, "group_id": group_id, "path": str(staged_dir), "file_count": staged_files}
+
+
 @router.post("/{team_id}/train")
 async def train_team(
     team_id: str,
+    body: TeamTrainRequest | None = None,
     force_full: bool = False,
     session: AsyncSession = Depends(get_session)
 ):
@@ -726,6 +1141,62 @@ async def train_team(
             detail="No active folder paths found (or all groups are already training)."
         )
 
+    from app.core.config import settings as app_settings
+    requested_pipeline = (body.pipeline if body and body.pipeline else "teamknowparse")
+    if requested_pipeline not in {"teamknowparse", "legacy"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="pipeline must be teamknowparse or legacy")
+    tkp_mode = (body.teamknowparse_mode if body else "mixed")
+    effective_force_full = (body.force_full if body else force_full)
+
+    if requested_pipeline == "teamknowparse":
+        if not app_settings.TEAMKNOWPARSE_PIPELINE_ENABLED:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="TeamKnowParse pipeline is disabled. Set TEAMKNOWPARSE_PIPELINE_ENABLED=true.",
+            )
+        if tkp_mode not in {"txt", "mixed"}:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="teamknowparse_mode must be txt or mixed")
+        unsupported = [spec for spec in folder_specs if spec.get("connection_id") or (spec.get("pod_id") and spec.get("pod_id") != "__local__")]
+        if unsupported:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="TeamKnowParse training currently supports local and uploaded zip training data. Stage remote/POD files locally first.",
+            )
+
+        # Mark groups as training before launching the background job.
+        for group in team.folder_groups:
+            if group.group_id in group_ids:
+                group.training_status = "training"
+                meta = dict(group.metadata_json or {})
+                meta.update({
+                    "phase": "queued",
+                    "pipeline": "teamknowparse",
+                    "teamknowparse_mode": tkp_mode,
+                    "message": "TeamKnowParse training queued",
+                    "logs": ["TeamKnowParse training queued"],
+                })
+                group.metadata_json = meta
+        await session.commit()
+
+        from app.services.teamknowparse_pipeline import TeamKnowParsePipelineRunner
+        job_id = await TeamKnowParsePipelineRunner().run_background(
+            team_id=team_id,
+            group_ids=group_ids,
+            source_paths=[spec["path"] for spec in folder_specs],
+            mode=tkp_mode,
+            team_name=team.team_name,
+        )
+        logger.info("teamknowparse_training_launched", team_id=team_id, job_id=job_id, mode=tkp_mode, paths=len(folder_specs))
+        return {
+            "status": "started",
+            "pipeline": "teamknowparse",
+            "team_id": team_id,
+            "job_id": job_id,
+            "teamknowparse_mode": tkp_mode,
+            "folder_groups": len(group_ids),
+            "folder_paths": len(folder_specs),
+        }
+
     # Mark groups as training
     for group in team.folder_groups:
         if group.group_id in group_ids:
@@ -741,7 +1212,7 @@ async def train_team(
             group_ids=group_ids,
             team_name=team.team_name,
             team_description=team.description,
-            force_full=force_full,
+            force_full=effective_force_full,
         )
     )
 
@@ -751,7 +1222,7 @@ async def train_team(
         team_name=team.team_name,
         groups=len(group_ids),
         paths=len(folder_specs),
-        force_full=force_full,
+        force_full=effective_force_full,
     )
 
     return {
@@ -759,7 +1230,8 @@ async def train_team(
         "team_id": team_id,
         "folder_groups": len(group_ids),
         "folder_paths": len(folder_specs),
-        "incremental": not force_full,
+        "pipeline": "legacy",
+        "incremental": not effective_force_full,
     }
 
 
@@ -913,12 +1385,18 @@ async def get_training_tree(
             detail=f"Team {team_id} not found"
         )
 
-    # Load the actual KB data
-    from app.rag.kb_store import KnowledgeBaseStore
-    kb_store = KnowledgeBaseStore()
-    kb_data = await kb_store.load(team_id)
+    # Build the training tree from TeamKnowParse SQL tables only. Do not read
+    # the legacy encrypted KB blob.
+    file_result = await session.execute(
+        select(TeamKnowParseKbFile).where(TeamKnowParseKbFile.team_id == team_id).limit(1000)
+    )
+    files = file_result.scalars().all()
+    chunk_result = await session.execute(
+        select(TeamKnowParseKbChunk).where(TeamKnowParseKbChunk.team_id == team_id).limit(5000)
+    )
+    chunks = chunk_result.scalars().all()
 
-    if not kb_data:
+    if not files and not chunks:
         return {
             "team_id": team_id,
             "team_name": team.team_name,
@@ -927,19 +1405,14 @@ async def get_training_tree(
             "tree": [],
         }
 
-    files = kb_data.get("files", {})
-    file_analysis = kb_data.get("file_analysis", {})
-    chunk_map = kb_data.get("chunk_map", {})
+    chunk_counts: dict[str, int] = {}
+    for chunk in chunks:
+        chunk_counts[chunk.file_path] = chunk_counts.get(chunk.file_path, 0) + 1
 
-    # Classify each file into a type using file_analysis or extension
-    type_buckets: dict[str, dict[str, list]] = {}  # {type: {sub_category: [file_info]}}
-
-    for file_path, file_data in files.items():
-        # Determine processing type from file_analysis or extension
-        fa = file_analysis.get(file_path, {})
+    type_buckets: dict[str, dict[str, list]] = {}
+    for file_record in files:
+        file_path = file_record.file_path
         ext = file_path.rsplit(".", 1)[-1].lower() if "." in file_path else ""
-
-        # Guess type from component/role or extension
         if ext in ("py", "js", "ts", "tsx", "jsx", "java", "go", "rs", "c", "cpp", "h", "cs", "rb", "php", "swift", "kt"):
             ptype = "code"
         elif ext in ("md", "txt", "rst", "adoc", "docx", "pdf", "html"):
@@ -949,52 +1422,18 @@ async def get_training_tree(
         elif ext in ("csv", "json", "xml", "yaml", "yml", "toml", "ini", "cfg", "conf"):
             ptype = "doc"
         else:
-            ptype = "other"
+            ptype = file_record.source_json.get("file_type", "other") if isinstance(file_record.source_json, dict) else "other"
 
-        # Derive sub-category from folder path
         parts = file_path.replace("\\", "/").split("/")
-        if len(parts) > 1:
-            sub_cat = parts[-2] if len(parts) >= 2 else "root"
-        else:
-            sub_cat = "root"
-
-        # Count chunks for this file
-        file_chunk_count = sum(
-            1 for cm in chunk_map.values()
-            if isinstance(cm, dict) and cm.get("file") == file_path
-        )
-
+        sub_cat = parts[-2] if len(parts) > 1 else "root"
         file_info = {
             "path": file_path,
-            "name": parts[-1] if parts else file_path,
-            "chunks": file_chunk_count,
+            "name": file_record.filename or (parts[-1] if parts else file_path),
+            "chunks": chunk_counts.get(file_path, 0),
         }
+        type_buckets.setdefault(ptype, {}).setdefault(sub_cat, []).append(file_info)
 
-        if ptype not in type_buckets:
-            type_buckets[ptype] = {}
-        if sub_cat not in type_buckets[ptype]:
-            type_buckets[ptype][sub_cat] = []
-        type_buckets[ptype][sub_cat].append(file_info)
-
-    # Also count non-file chunks (folder_analysis, project_analysis)
-    analysis_chunks = sum(
-        1 for cm in chunk_map.values()
-        if isinstance(cm, dict) and cm.get("type") in ("folder_analysis", "project_analysis", "file_analysis")
-    )
-    if analysis_chunks > 0:
-        if "summary" not in type_buckets:
-            type_buckets["summary"] = {}
-        type_buckets["summary"]["auto-generated"] = [{
-            "path": "(analysis)",
-            "name": f"{analysis_chunks} analysis entries",
-            "chunks": analysis_chunks,
-        }]
-
-    # Build tree response
     tree = []
-    total_chunks = len(chunk_map)
-    total_files = len(files)
-
     for ptype, sub_cats in type_buckets.items():
         type_chunks = sum(f["chunks"] for fs in sub_cats.values() for f in fs)
         type_file_count = sum(len(fs) for fs in sub_cats.values())
@@ -1014,15 +1453,13 @@ async def get_training_tree(
             "sub_categories": sub_categories,
         })
 
-    # Sort: code first, then doc, then others
     type_order = {"code": 0, "doc": 1, "summary": 2, "diagram_image": 3, "other": 4}
     tree.sort(key=lambda t: type_order.get(t["type"], 99))
-
     return {
         "team_id": team_id,
         "team_name": team.team_name,
-        "total_chunks": total_chunks,
-        "total_files": total_files,
+        "total_chunks": len(chunks),
+        "total_files": len(files),
         "tree": tree,
     }
 

@@ -11,6 +11,12 @@ from app.models.email_inbox import EmailInbox
 from app.models.email_message import EmailMessage
 from app.models.channel_connection import ChannelConnection
 from app.models.connection import Connection
+from app.models.teamknowparse_kb import (
+    TeamKnowParseKbChunk,
+    TeamKnowParseKbFile,
+    TeamKnowParseKbFolder,
+    TeamKnowParseKbIngestionRun,
+)
 
 __all__ = [
     "Pod",
@@ -25,4 +31,8 @@ __all__ = [
     "EmailMessage",
     "ChannelConnection",
     "Connection",
+    "TeamKnowParseKbFolder",
+    "TeamKnowParseKbFile",
+    "TeamKnowParseKbChunk",
+    "TeamKnowParseKbIngestionRun",
 ]

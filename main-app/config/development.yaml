@@ -7,17 +7,12 @@ app:
   environment: development
 
 database:
-  # SQLite for development (no external dependencies)
-  type: sqlite
-  path: ./retrace.db
-  
-  # PostgreSQL for production:
-  # type: postgresql
-  # host: localhost
-  # port: 5432
-  # name: retrace
-  # user: retrace
-  # password: ${POSTGRES_PASSWORD}
+  type: postgresql
+  host: localhost
+  port: 5432
+  name: retrace
+  user: retrace
+  password: ${POSTGRES_PASSWORD}
 
 server:
   host: 0.0.0.0

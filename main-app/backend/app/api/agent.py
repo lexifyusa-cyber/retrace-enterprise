@@ -16,6 +16,7 @@ from sqlalchemy.orm import selectinload
 import asyncio
 import json
 import os
+import re
 import structlog
 
 from app.db.database import get_session, async_session_maker
@@ -27,12 +28,158 @@ from app.services.opencode_manager import opencode_manager, _opencode_projects_d
 from app.services.session_bridge import get_or_create_conversation, find_opencode_session_id, link_session, sync_messages_from_opencode
 from app.core.security import CurrentUser, get_current_user
 from app.core.security import get_tenant_team_ids
+from app.core.config import settings
 # AgentToolsUpdate is needed at module-load time for the PATCH /opencode/tools
 # route's body annotation. settings.py has no agent-side imports, so the
 # module-level import is safe.
 from app.api.settings import AgentToolsUpdate
 
 logger = structlog.get_logger()
+
+
+def _strip_retrieved_evidence_for_display(text: str) -> str:
+    """Return the user-visible question from an internal retrieval-augmented prompt."""
+    if not isinstance(text, str) or "<retrieved_evidence>" not in text:
+        return text
+    marker = "User question:"
+    if marker in text:
+        return text.split(marker, 1)[1].strip()
+    end_marker = "</retrieved_evidence>"
+    if end_marker in text:
+        return text.split(end_marker, 1)[1].strip()
+    return text
+
+
+def _sanitize_oc_messages_for_display(data):
+    """Hide internal TeamKnowParse evidence blocks from OpenCode messages shown in UI."""
+    if not isinstance(data, list):
+        return data
+    for msg in data:
+        if not isinstance(msg, dict):
+            continue
+        info = msg.get("info") or {}
+        if info.get("role") != "user":
+            continue
+        for part in msg.get("parts") or []:
+            if isinstance(part, dict) and part.get("type") == "text":
+                part["text"] = _strip_retrieved_evidence_for_display(part.get("text") or "")
+    return data
+
+
+_EVIDENCE_STOPWORDS = {
+    "the", "and", "for", "with", "without", "does", "do", "can", "could",
+    "would", "should", "work", "works", "working", "whether", "what", "how",
+    "when", "where", "which", "that", "this", "from", "into", "about",
+    "are", "is", "was", "were", "have", "has", "had", "their", "there",
+    "not", "yes", "no", "all", "any", "some", "also", "only", "just",
+}
+
+_EVIDENCE_SYNONYMS = {
+    "camera": {"camera", "cameras", "surveillance"},
+    "cameras": {"camera", "cameras", "surveillance"},
+    "surveillance": {"camera", "cameras", "surveillance"},
+    "light": {"light", "day", "night", "mode", "modes", "adapt", "adapting"},
+    "day": {"light", "day", "night", "mode", "modes", "adapt", "adapting"},
+    "night": {"light", "day", "night", "mode", "modes", "adapt", "adapting"},
+    "adapt": {"adapt", "adapting", "adaptive", "dynamic", "self", "mode", "modes"},
+    "adapting": {"adapt", "adapting", "adaptive", "dynamic", "self", "mode", "modes"},
+}
+
+
+_KB_RETRIEVAL_HINT_RE = re.compile(
+    r"\b("
+    r"kb|knowledge\s*base|knowledgebase|docs?|documents?|documentation|"
+    r"runbook|sop|policy|procedure|manual|guide|uploaded|trained|training\s+data|"
+    r"architecture|diagram|ticket|incident|chunk|source|file\s+in\s+the\s+kb|"
+    r"search\s+(?:the\s+)?(?:kb|docs?|documents?|knowledge|trained\s+data)|"
+    r"find\s+(?:in|from)\s+(?:the\s+)?(?:kb|docs?|documents?|knowledge|trained\s+data)|"
+    r"retrieve\s+(?:from|in)\s+(?:the\s+)?(?:kb|docs?|documents?|knowledge|trained\s+data)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_NON_KB_ACTION_HINT_RE = re.compile(
+    r"\b("
+    r"open|go\s+to|navigate\s+to|launch|click|type|scroll|browser|chrome|youtube|google|"
+    r"website|web\s*site|web\s+search|search\s+the\s+web|internet|url|http|https"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _should_prefetch_kb_evidence(text: str) -> bool:
+    """Prefetch KB for informational questions, but skip browser/web actions."""
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return False
+    has_action_hint = bool(_NON_KB_ACTION_HINT_RE.search(cleaned))
+    explicit_kb = bool(re.search(r"\b(kb|knowledge\s*base|knowledgebase|trained\s+data)\b", cleaned, re.IGNORECASE))
+    if has_action_hint and not explicit_kb:
+        return False
+    return True
+
+
+def _evidence_term(term: str) -> str:
+    term = term.lower()
+    if len(term) > 4 and term.endswith("ies"):
+        return term[:-3] + "y"
+    if len(term) > 3 and term.endswith("s"):
+        return term[:-1]
+    return term
+
+
+def _query_terms_for_excerpt(query: str) -> set[str]:
+    base = {
+        _evidence_term(term)
+        for term in re.findall(r"[a-zA-Z0-9_]+", query.lower())
+        if len(term) > 2 and term.lower() not in _EVIDENCE_STOPWORDS
+    }
+    expanded = set(base)
+    raw = {_evidence_term(term) for term in re.findall(r"[a-zA-Z0-9_]+", query.lower())}
+    for term in base | raw:
+        expanded.update(_evidence_term(item) for item in _EVIDENCE_SYNONYMS.get(term, set()))
+    return expanded
+
+
+def _focused_evidence_excerpt(text: str, query: str, max_chars: int = 900) -> str:
+    """Extract the span most relevant to the query instead of the start of a long chunk."""
+    text = (text or "").strip().replace("\n", " ")
+    if len(text) <= max_chars:
+        return text
+
+    terms = _query_terms_for_excerpt(query)
+    if not terms:
+        return text[:max_chars] + "..."
+
+    lower = text.lower()
+    positions: list[int] = []
+    for term in terms:
+        pattern = re.compile(rf"\b{re.escape(term)}\w*\b", re.IGNORECASE)
+        positions.extend(match.start() for match in pattern.finditer(text))
+    if not positions:
+        return text[:max_chars] + "..."
+
+    half = max_chars // 2
+    best_start = 0
+    best_score = -1
+    for pos in positions:
+        start = max(0, pos - half)
+        end = min(len(text), start + max_chars)
+        window = lower[start:end]
+        score = sum(1 for term in terms if re.search(rf"\b{re.escape(term)}\w*\b", window))
+        if score > best_score:
+            best_score = score
+            best_start = start
+
+    best_end = min(len(text), best_start + max_chars)
+    excerpt = text[best_start:best_end].strip()
+    if best_start > 0:
+        excerpt = "..." + excerpt
+    if best_end < len(text):
+        excerpt = excerpt + "..."
+    return excerpt
+
+
 router = APIRouter()
 
 # Key by (user_id, session_id) so two users can never cross-cancel each other's
@@ -580,6 +727,7 @@ async def _persist_oc_llm_log(
     not byte-equivalent — OC may inline provider-specific metadata we don't
     reproduce, but the prompt, tools, and history all match.
     """
+    convo_for_browser = None
     try:
         from app.services.session_bridge import find_conversation_by_opencode_session
         convo = await find_conversation_by_opencode_session(oc_session_id)
@@ -942,7 +1090,66 @@ async def opencode_send_message(
     # Assemble the prompt_async body: text part first, then any attachments.
     # OC's `part.data` schema accepts `{type:"file", mime, filename, url}`
     # verbatim (verified via `~/.local/share/opencode/opencode.db`'s `part` rows).
-    oc_parts: list[dict] = [{"type": "text", "text": request.content}]
+    evidence_block = ""
+    team_id_for_retrieval = getattr(convo_for_browser, "team_id", None) or _active_team_id.get(user_id)
+    if team_id_for_retrieval and _should_prefetch_kb_evidence(request.content):
+        try:
+            from app.core.config import settings as app_settings
+            if app_settings.TEAMKNOWPARSE_KB_ENABLED:
+                from app.db.database import async_session_maker as _kb_session_maker
+                from app.services.teamknowparse_vector import TeamKnowParseVectorService
+
+                async with _kb_session_maker() as kb_session:
+                    hits = await TeamKnowParseVectorService().search(
+                        kb_session,
+                        team_id=team_id_for_retrieval,
+                        query=request.content,
+                        mode="hybrid",
+                        top_k=8,
+                    )
+                if hits:
+                    evidence_lines = []
+                    for idx, hit in enumerate(hits, 1):
+                        meta = hit.get("metadata") or {}
+                        citation = meta.get("file_path") or meta.get("filename") or "unknown"
+                        page = meta.get("page_number")
+                        source = hit.get("source") or "hybrid"
+                        text = _focused_evidence_excerpt(hit.get("text") or "", request.content, max_chars=900)
+                        evidence_lines.append(
+                            f"[{idx}] {citation}"
+                            + (f" page {page}" if page else "")
+                            + f" ({source})\n{text}"
+                        )
+                    evidence_block = "\n\nRetrieved TeamKnowParse KB evidence:\n" + "\n\n".join(evidence_lines)
+        except Exception as exc:
+            logger.warning(
+                "teamknowparse_enforced_retrieval_failed",
+                user_id=user_id,
+                team_id=team_id_for_retrieval,
+                error=str(exc),
+            )
+    elif team_id_for_retrieval:
+        logger.debug(
+            "teamknowparse_prefetch_skipped",
+            user_id=user_id,
+            team_id=team_id_for_retrieval,
+        )
+
+    if evidence_block:
+        content_text = (
+            "Answer the user directly using the retrieved TeamKnowParse KB evidence below. "
+            "The evidence is internal context only: do not print it, summarize it, or show a long excerpt before the answer. "
+            "Start with the direct answer in one or two sentences, then cite sources using [1], [2], etc. "
+            "If the evidence is insufficient, say what is missing. "
+            "You may still use the knowledge_base tool for follow-up lookup if needed.\n"
+            "<retrieved_evidence>"
+            f"{evidence_block}\n"
+            "</retrieved_evidence>\n\n"
+            f"User question:\n{request.content}"
+        )
+    else:
+        content_text = request.content
+    oc_parts: list[dict] = [{"type": "text", "text": content_text}]
     if request.parts:
         # Light validation: only forward parts whose type we expect. Reject
         # anything else so a malformed frontend can't smuggle arbitrary data
@@ -1233,7 +1440,7 @@ async def opencode_send_message(
                                 # capture (POST /api/v1/internal/llm/capture) is
                                 # the canonical writer now; opt back into the
                                 # reconstruction with RETRACE_LLM_LOG_FALLBACK=1.
-                                if os.environ.get("RETRACE_LLM_LOG_FALLBACK") == "1":
+                                if settings.RETRACE_LLM_LOG_FALLBACK:
                                     iter_counter += 1
                                     if tool_list_cache is None:
                                         tool_list_cache = await _fetch_oc_tool_list(
@@ -1499,6 +1706,7 @@ async def opencode_get_messages(
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.get(f"http://127.0.0.1:{port}/session/{session_id}/message")
         data = resp.json()
+        data = _sanitize_oc_messages_for_display(data)
         msg_count = len(data) if isinstance(data, list) else None
         logger.info("[OC] get_messages", session_id=session_id, status=resp.status_code, msg_count=msg_count)
         return data
@@ -2977,19 +3185,11 @@ async def learn_qa(
     data: LearnThisRequest,
     session: AsyncSession = Depends(get_session),
 ):
-    """Store a Q&A pair as knowledge in the team's knowledge base."""
-    from app.rag.kb_store import KnowledgeBaseStore
-
-    if not data.team_id:
-        raise HTTPException(status_code=400, detail="team_id is required")
-
-    kb_store = KnowledgeBaseStore()
-    result = await kb_store.store_mcp_docs(
-        team_id=data.team_id,
-        pages=[(data.question, data.answer)],
-        api_name="learn-this",
+    """Legacy KB blob writes are disabled for TeamKnowParse-backed training."""
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail="Learn This is disabled for TeamKnowParse-backed KB. Use TeamKnowParse training instead.",
     )
-    return {"status": "learned", "chunk_count": result.get("chunk_count", 0)}
 
 
 # ---------------------------------------------------------------------------
@@ -4105,8 +4305,9 @@ async def dashboard_stats(
     # Products — scoped by tenant + role:
     # zero_admin sees all; other admins see their tenant; user_admins see own;
     # regular users see via TeamAccess
-    from sqlalchemy import or_, text
-    _prebuilt_filter = text("json_extract(teams.metadata_json, '$.is_prebuilt') = 1")
+    from sqlalchemy import or_
+    from app.db.expressions import json_bool_true
+    _prebuilt_filter = json_bool_true(Team.metadata_json, "is_prebuilt")
     products_stmt = select(Team).options(selectinload(Team.folder_groups))
     if current_user.role == "zero_admin":
         pass  # zero_admin sees all tenants

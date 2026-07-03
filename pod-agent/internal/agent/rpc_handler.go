@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -42,6 +43,15 @@ func (h *RPCHandler) Handle(method string, params map[string]interface{}) (inter
 // root returns the sandboxed filesystem root.
 func (h *RPCHandler) root() *os.Root {
 	return h.agent.fsRoot
+}
+
+func (h *RPCHandler) readRootFile(path string) ([]byte, error) {
+	f, err := h.root().Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(f)
 }
 
 // normalizePath converts an incoming path to a relative path safe for os.Root.
@@ -229,7 +239,7 @@ func (h *RPCHandler) readFile(params map[string]interface{}) (interface{}, error
 		return nil, fmt.Errorf("path is a directory, not a file")
 	}
 
-	content, err := h.root().ReadFile(relPath)
+	content, err := h.readRootFile(relPath)
 	if err != nil {
 		return nil, fmt.Errorf("error reading file: %w", err)
 	}
@@ -364,7 +374,7 @@ func (h *RPCHandler) runTraining(jobID, groupID, namespace, groupType string, pa
 
 // processCodeFile reads and chunks a code file via the sandbox.
 func (h *RPCHandler) processCodeFile(path, namespace string) (chunks int, entities int) {
-	content, err := h.root().ReadFile(path)
+	content, err := h.readRootFile(path)
 	if err != nil {
 		return 0, 0
 	}
@@ -405,7 +415,7 @@ func (h *RPCHandler) processCodeFile(path, namespace string) (chunks int, entiti
 
 // processDocFile reads and chunks a documentation file via the sandbox.
 func (h *RPCHandler) processDocFile(path, namespace string) int {
-	content, err := h.root().ReadFile(path)
+	content, err := h.readRootFile(path)
 	if err != nil {
 		return 0
 	}
@@ -434,7 +444,7 @@ func (h *RPCHandler) processDocFile(path, namespace string) int {
 
 // processGenericFile reads and chunks a generic file via the sandbox.
 func (h *RPCHandler) processGenericFile(path, namespace string) int {
-	content, err := h.root().ReadFile(path)
+	content, err := h.readRootFile(path)
 	if err != nil {
 		return 0
 	}

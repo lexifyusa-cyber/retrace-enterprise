@@ -3,6 +3,7 @@ Settings and configuration API endpoints.
 """
 
 import json
+import os
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Depends
@@ -17,6 +18,28 @@ from app.db.database import get_session, async_session_maker
 from app.models.settings import LLMSettingsModel
 
 logger = structlog.get_logger()
+
+
+def _runtime_openai_key() -> str:
+    return app_settings.OPENAI_API_KEY or os.getenv("OPENAI_API_KEY", "") or os.getenv("EMBEDDING_API_KEY", "")
+
+
+async def _openai_chat_completion(client, *, model: str, messages: list[dict], token_limit: int):
+    try:
+        return await client.chat.completions.create(
+            model=model,
+            messages=messages,
+            max_completion_tokens=token_limit,
+        )
+    except Exception as exc:
+        msg = str(exc)
+        if "max_completion_tokens" in msg and "Unsupported parameter" in msg:
+            return await client.chat.completions.create(
+                model=model,
+                messages=messages,
+                max_tokens=token_limit,
+            )
+        raise
 router = APIRouter()
 
 
@@ -46,12 +69,28 @@ def _resolved_openai_api_key(db_settings: LLMSettingsModel) -> Optional[str]:
     return _configured_secret(db_settings.api_key) or _configured_secret(app_settings.OPENAI_API_KEY)
 
 
+def _clean_url(value: Optional[str]) -> str:
+    return (value or "").strip().rstrip("/")
+
+
+def _resolved_embedding_base_url(db_settings: LLMSettingsModel) -> str:
+    # TeamKnowParse embeddings are intentionally server-owned. The Settings UI
+    # configures the chat model only; embedding traffic always uses the fixed
+    # backend embedding endpoint configured for the qwen embedding service.
+    return _clean_url(app_settings.TEAMKNOWPARSE_EMBEDDING_BASE_URL)
+
+
+def _resolved_embedding_api_key(db_settings: LLMSettingsModel) -> Optional[str]:
+    return _configured_secret(app_settings.EMBEDDING_API_KEY)
+
+
+
 class LLMSettings(BaseModel):
     """Schema for LLM settings."""
     api_url: Optional[str] = None
     api_key: Optional[str] = None
     model_name: str = Field(..., min_length=1)
-    provider: str = Field(default="openai", pattern="^(openai|anthropic|custom)$")
+    provider: str = Field(..., pattern="^(openai|anthropic|custom)$")
     # ScreenOps (Computer Use) — URL, model, and API key for coordinate finder (OpenAI-compatible)
     screenops_api_url: Optional[str] = None
     screenops_api_key: Optional[str] = None
@@ -77,6 +116,12 @@ class LLMSettings(BaseModel):
     agent_max_iterations: Optional[int] = Field(None, ge=1, le=50)
     # Training: when True, pipeline logs included/excluded folders and files
     debug_logging: Optional[bool] = None
+    # TeamKnowParse embeddings (OpenAI-compatible embeddings API)
+    embedding_model: Optional[str] = None
+    embedding_base_url: Optional[str] = None
+    embedding_api_key: Optional[str] = None
+    embedding_chroma_collection: Optional[str] = None
+    embedding_debug_log: Optional[bool] = None
     # Training Phase 3: max files to extract in parallel (1–32, default 1)
     max_parallel_files: Optional[int] = None
 
@@ -93,6 +138,11 @@ class LLMSettingsResponse(BaseModel):
     api_key_set: bool
     screenops_api_key_set: bool = False
     serper_api_key_set: bool = False
+    embedding_api_key_set: bool = False
+    embedding_model: Optional[str] = None
+    embedding_base_url: Optional[str] = None
+    embedding_chroma_collection: Optional[str] = None
+    embedding_debug_log: bool = False
     small_model_name: Optional[str] = None
     plan_model_name: Optional[str] = None
     max_steps: int = 50
@@ -106,6 +156,37 @@ class LLMSettingsResponse(BaseModel):
     agent_max_iterations: int = 10
     debug_logging: bool = False
     max_parallel_files: int = 1
+
+def _llm_settings_response(db_settings: LLMSettingsModel) -> LLMSettingsResponse:
+    embedding_base_url = _resolved_embedding_base_url(db_settings)
+    embedding_api_key = _resolved_embedding_api_key(db_settings)
+    return LLMSettingsResponse(
+        api_url=db_settings.api_url,
+        model_name=db_settings.model_name or "",
+        provider=db_settings.provider or "",
+        api_key_set=bool(_resolved_openai_api_key(db_settings)),
+        screenops_api_key_set=bool(db_settings.screenops_api_key),
+        serper_api_key_set=bool(getattr(db_settings, "serper_api_key", None)),
+        embedding_api_key_set=bool(embedding_api_key),
+        embedding_model=getattr(db_settings, "embedding_model", None) or app_settings.TEAMKNOWPARSE_EMBEDDING_MODEL,
+        embedding_base_url=embedding_base_url or None,
+        embedding_chroma_collection=getattr(db_settings, "embedding_chroma_collection", None) or app_settings.TEAMKNOWPARSE_CHROMA_COLLECTION,
+        embedding_debug_log=bool(getattr(db_settings, "embedding_debug_log", None) if getattr(db_settings, "embedding_debug_log", None) is not None else app_settings.TEAMKNOWPARSE_EMBEDDING_DEBUG_LOG),
+        small_model_name=getattr(db_settings, "small_model_name", None),
+        plan_model_name=getattr(db_settings, "plan_model_name", None),
+        max_steps=int(getattr(db_settings, "max_steps", 50) or 50),
+        compaction_auto=bool(getattr(db_settings, "compaction_auto", False)),
+        compaction_tail_turns=int(getattr(db_settings, "compaction_tail_turns", 4) or 4),
+        snapshot_enabled=bool(getattr(db_settings, "snapshot_enabled", False)),
+        screenops_api_url=getattr(db_settings, "screenops_api_url", None),
+        screenops_model=db_settings.screenops_model,
+        screenops_image_scale=max(25, min(100, int(getattr(db_settings, "screenops_image_scale", 100) or 100))),
+        screenshot_delay_ms=max(0, min(30000, int(getattr(db_settings, "screenshot_delay_ms", 2000) or 2000))),
+        agent_max_iterations=int(getattr(db_settings, "agent_max_iterations", 10) or 10),
+        debug_logging=bool(getattr(db_settings, "debug_logging", False)),
+        max_parallel_files=int(getattr(db_settings, "max_parallel_files", 1) or 1),
+    )
+
 
 
 class TestConnectionResponse(BaseModel):
@@ -135,12 +216,9 @@ async def get_or_create_settings(session: AsyncSession) -> LLMSettingsModel:
         
         if not settings:
             print("[DB] Creating new settings record...", flush=True)
-            # Create default settings
-            settings = LLMSettingsModel(
-                id=1,
-                provider="openai",
-                model_name=app_settings.REASONING_MODEL,
-            )
+            # Create an empty settings row. The user must choose and save a
+            # provider/model before LLM calls are configured.
+            settings = LLMSettingsModel(id=1)
             session.add(settings)
             # Flush to get the ID, but don't commit yet
             # Note: This is called from get_llm_settings which uses get_session dependency
@@ -231,6 +309,16 @@ async def update_llm_settings(settings_data: LLMSettings, current_user: CurrentU
                     db_settings.agent_max_iterations = max(1, min(50, int(settings_data.agent_max_iterations)))
                 if settings_data.debug_logging is not None:
                     db_settings.debug_logging = bool(settings_data.debug_logging)
+                if settings_data.embedding_model is not None:
+                    db_settings.embedding_model = (settings_data.embedding_model or "").strip() or None
+                if settings_data.embedding_base_url is not None:
+                    db_settings.embedding_base_url = (settings_data.embedding_base_url or "").strip().rstrip("/") or None
+                if settings_data.embedding_api_key is not None and settings_data.embedding_api_key.strip():
+                    db_settings.embedding_api_key = settings_data.embedding_api_key.strip()
+                if settings_data.embedding_chroma_collection is not None:
+                    db_settings.embedding_chroma_collection = (settings_data.embedding_chroma_collection or "").strip() or None
+                if settings_data.embedding_debug_log is not None:
+                    db_settings.embedding_debug_log = bool(settings_data.embedding_debug_log)
                 if settings_data.max_parallel_files is not None:
                     n = max(1, min(32, int(settings_data.max_parallel_files)))
                     db_settings.max_parallel_files = n
@@ -254,36 +342,24 @@ async def update_llm_settings(settings_data: LLMSettings, current_user: CurrentU
                 await session.commit()
                 print("[SETTINGS] Committed any remaining implicit transaction", flush=True)
             
-            # Verify the commit worked by checking the database directly
-            import sqlite3 as sqlite_sync
-            from pathlib import Path
-            
-            # Get database path from config
-            db_url = app_settings.DATABASE_URL
-            if db_url.startswith("sqlite+aiosqlite:///"):
-                db_path = db_url.replace("sqlite+aiosqlite:///", "")
-                if not db_path.startswith("/"):
-                    # Relative path - resolve from backend directory
-                    backend_dir = Path(__file__).parent.parent.parent
-                    db_path = str(backend_dir / db_path)
-            else:
-                db_path = None
-            
-            # Quick sync check to verify data was written
-            if db_path:
-                try:
-                    conn = sqlite_sync.connect(db_path, timeout=1.0)
-                    cursor = conn.cursor()
-                    cursor.execute("SELECT model_name, provider, api_key IS NOT NULL as has_key FROM llm_settings WHERE id = 1")
-                    result = cursor.fetchone()
-                    conn.close()
-                    if result:
-                        print(f"[SETTINGS] ✅ Verified in DB: model={result[0]}, provider={result[1]}, has_key={result[2]}", flush=True)
+            # Verify the commit through SQLAlchemy so this works for SQLite and PostgreSQL.
+            try:
+                async with async_session_maker() as verify_session:
+                    verify_result = await verify_session.execute(
+                        select(LLMSettingsModel.model_name, LLMSettingsModel.provider, LLMSettingsModel.api_key)
+                        .where(LLMSettingsModel.id == 1)
+                    )
+                    verified = verify_result.first()
+                    if verified:
+                        print(
+                            f"[SETTINGS] Verified in DB: model={verified[0]}, provider={verified[1]}, has_key={verified[2] is not None}",
+                            flush=True,
+                        )
                     else:
-                        print("[SETTINGS] ⚠️  WARNING: Settings not found in DB after commit!", flush=True)
-                except Exception as verify_error:
-                    print(f"[SETTINGS] Could not verify (non-critical): {verify_error}", flush=True)
-            
+                        print("[SETTINGS] WARNING: Settings not found in DB after commit!", flush=True)
+            except Exception as verify_error:
+                print(f"[SETTINGS] Could not verify (non-critical): {verify_error}", flush=True)
+
             # Apply the new LLM config to any running OpenCode session right
             # away, so a model/provider/key change takes effect WITHOUT a
             # server or agent restart. OpenCode reads its model + api_key from
@@ -303,27 +379,7 @@ async def update_llm_settings(settings_data: LLMSettings, current_user: CurrentU
                 print(f"[SETTINGS] OpenCode reload skipped (non-critical): {_oc_err}", flush=True)
 
             # Build response from the refreshed object
-            response = LLMSettingsResponse(
-                api_url=db_settings.api_url,
-                model_name=db_settings.model_name or app_settings.REASONING_MODEL,
-                provider=db_settings.provider or "openai",
-                api_key_set=bool(_resolved_openai_api_key(db_settings)),
-                screenops_api_key_set=bool(db_settings.screenops_api_key),
-                serper_api_key_set=bool(getattr(db_settings, "serper_api_key", None)),
-                small_model_name=getattr(db_settings, "small_model_name", None),
-                plan_model_name=getattr(db_settings, "plan_model_name", None),
-                max_steps=int(getattr(db_settings, "max_steps", 50) or 50),
-                compaction_auto=bool(getattr(db_settings, "compaction_auto", False)),
-                compaction_tail_turns=int(getattr(db_settings, "compaction_tail_turns", 4) or 4),
-                snapshot_enabled=bool(getattr(db_settings, "snapshot_enabled", False)),
-                screenops_api_url=getattr(db_settings, "screenops_api_url", None),
-                screenops_model=db_settings.screenops_model,
-                screenops_image_scale=max(25, min(100, int(getattr(db_settings, "screenops_image_scale", 100) or 100))),
-                screenshot_delay_ms=max(0, min(30000, int(getattr(db_settings, "screenshot_delay_ms", 2000) or 2000))),
-                agent_max_iterations=int(getattr(db_settings, "agent_max_iterations", 10) or 10),
-                debug_logging=bool(getattr(db_settings, "debug_logging", False)),
-                max_parallel_files=int(getattr(db_settings, "max_parallel_files", 1) or 1),
-            )
+            response = _llm_settings_response(db_settings)
             print("[SETTINGS] Returning response", flush=True)
             return response
             
@@ -345,27 +401,7 @@ async def get_llm_settings(session: AsyncSession = Depends(get_session), current
     
     print(f"[GET_SETTINGS] Loaded: provider={db_settings.provider}, model={db_settings.model_name}, api_url={db_settings.api_url}", flush=True)
 
-    response = LLMSettingsResponse(
-        api_url=db_settings.api_url,
-        model_name=db_settings.model_name or app_settings.REASONING_MODEL,
-        provider=db_settings.provider or "openai",
-        api_key_set=bool(_resolved_openai_api_key(db_settings)),
-        screenops_api_key_set=bool(db_settings.screenops_api_key),
-        serper_api_key_set=bool(getattr(db_settings, "serper_api_key", None)),
-        small_model_name=getattr(db_settings, "small_model_name", None),
-        plan_model_name=getattr(db_settings, "plan_model_name", None),
-        max_steps=int(getattr(db_settings, "max_steps", 50) or 50),
-        compaction_auto=bool(getattr(db_settings, "compaction_auto", False)),
-        compaction_tail_turns=int(getattr(db_settings, "compaction_tail_turns", 4) or 4),
-        snapshot_enabled=bool(getattr(db_settings, "snapshot_enabled", False)),
-        screenops_api_url=getattr(db_settings, "screenops_api_url", None),
-        screenops_model=db_settings.screenops_model,
-        screenops_image_scale=max(25, min(100, int(getattr(db_settings, "screenops_image_scale", 100) or 100))),
-        screenshot_delay_ms=max(0, min(30000, int(getattr(db_settings, "screenshot_delay_ms", 2000) or 2000))),
-        agent_max_iterations=int(getattr(db_settings, "agent_max_iterations", 10) or 10),
-        debug_logging=bool(getattr(db_settings, "debug_logging", False)),
-        max_parallel_files=int(getattr(db_settings, "max_parallel_files", 1) or 1),
-    )
+    response = _llm_settings_response(db_settings)
 
     print(f"[GET_SETTINGS] Returning: provider={response.provider}, model={response.model_name}, api_url={response.api_url}", flush=True)
     return response
@@ -407,10 +443,11 @@ async def test_llm_connection(settings_data: LLMSettings, session: AsyncSession 
 
         if settings_data.provider == "openai" or settings_data.provider == "custom":
             client = AsyncOpenAI(**client_kwargs)
-            response = await client.chat.completions.create(
+            response = await _openai_chat_completion(
+                client,
                 model=settings_data.model_name,
                 messages=[{"role": "user", "content": "Say OK"}],
-                max_tokens=5
+                token_limit=5,
             )
             response_model = response.model
             response_content = response.choices[0].message.content
@@ -548,8 +585,8 @@ async def get_model_name(session: AsyncSession = Depends(get_session), current_u
     """Get the current model name (for internal use)."""
     db_settings = await get_or_create_settings(session)
     return {
-        "model_name": db_settings.model_name or app_settings.REASONING_MODEL,
-        "provider": db_settings.provider or "openai"
+        "model_name": db_settings.model_name or "",
+        "provider": db_settings.provider or ""
     }
 
 
@@ -581,14 +618,19 @@ async def get_active_llm_settings(session: AsyncSession, consumer_key: str | Non
     return {
         "api_key": api_key,
         "api_url": api_url,
-        "model_name": db_settings.model_name or app_settings.REASONING_MODEL,
-        "provider": db_settings.provider or "openai",
+        "model_name": db_settings.model_name or "",
+        "provider": db_settings.provider or "",
         "screenops_api_key": db_settings.screenops_api_key,
         "screenops_api_url": getattr(db_settings, "screenops_api_url", None),
         "screenops_model": getattr(db_settings, "screenops_model", None),
         "screenops_image_scale": max(25, min(100, int(getattr(db_settings, "screenops_image_scale", 100) or 100))),
         "screenshot_delay_ms": max(0, min(30000, int(getattr(db_settings, "screenshot_delay_ms", 2000) or 2000))),
         "serper_api_key": getattr(db_settings, "serper_api_key", None),
+        "embedding_model": getattr(db_settings, "embedding_model", None) or app_settings.TEAMKNOWPARSE_EMBEDDING_MODEL,
+        "embedding_base_url": _resolved_embedding_base_url(db_settings),
+        "embedding_api_key": _resolved_embedding_api_key(db_settings),
+        "embedding_chroma_collection": getattr(db_settings, "embedding_chroma_collection", None) or app_settings.TEAMKNOWPARSE_CHROMA_COLLECTION,
+        "embedding_debug_log": bool(getattr(db_settings, "embedding_debug_log", None) if getattr(db_settings, "embedding_debug_log", None) is not None else app_settings.TEAMKNOWPARSE_EMBEDDING_DEBUG_LOG),
         "small_model_name": getattr(db_settings, "small_model_name", None),
         "plan_model_name": getattr(db_settings, "plan_model_name", None),
         "max_steps": max(1, min(200, int(getattr(db_settings, "max_steps", 50) or 50))),

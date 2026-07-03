@@ -252,7 +252,8 @@ async def get_tenant_team_ids(current_user: CurrentUser, session: AsyncSession) 
     zero_admin sees all teams. Other users see only their tenant's teams.
     """
     from app.models.team import Team
-    from sqlalchemy import or_, text
+    from app.db.expressions import json_bool_true
+    from sqlalchemy import or_
     if current_user.role == "zero_admin":
         result = await session.execute(select(Team.team_id))
     else:
@@ -261,7 +262,7 @@ async def get_tenant_team_ids(current_user: CurrentUser, session: AsyncSession) 
             select(Team.team_id).where(
                 or_(
                     Team.tenant_id == current_user.tenant_id,
-                    text("json_extract(teams.metadata_json, '$.is_prebuilt') = 1"),
+                    json_bool_true(Team.metadata_json, "is_prebuilt"),
                 )
             )
         )

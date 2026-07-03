@@ -134,20 +134,9 @@ async def store_mcp_docs_kb(
     Returns:
         The kb team_id key (for KB tool access).
     """
-    from app.rag.kb_store import KnowledgeBaseStore
-
-    team_id = f"{MCP_TEAM_PREFIX}{server_name}"
-
-    # Store the KB directly — no Team row needed
-    kb_store = KnowledgeBaseStore()
-    stats = await kb_store.store_mcp_docs(
-        team_id=team_id,
-        pages=pages,
-        api_name=api_name,
+    raise RuntimeError(
+        "MCP Builder legacy docs KB storage is disabled. Use TeamKnowParse-backed training instead."
     )
-
-    logger.info("mcp_docs_kb_created", team_id=team_id, server_name=server_name, **stats)
-    return team_id
 
 
 # ---------------------------------------------------------------------------

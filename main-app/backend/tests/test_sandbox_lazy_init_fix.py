@@ -10,8 +10,11 @@ This test suite verifies that:
 
 import pytest
 import asyncio
+from pathlib import Path
 from unittest.mock import MagicMock, AsyncMock, patch, Mock
 from datetime import datetime, timedelta
+
+BACKEND_DIR = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture
@@ -44,7 +47,7 @@ def mock_request():
     request = MagicMock()
     request.client = MagicMock()
     request.client.host = "192.168.1.1"
-    request.headers = {"user-agent": "Mozilla/5.0"}
+    request.headers = MagicMock()
     request.headers.get = MagicMock(return_value="Mozilla/5.0")
     return request
 
@@ -97,8 +100,7 @@ class TestFileBrowseSessionCreation:
         see directories until they sent a message.
         """
         # Read the files.py endpoint to verify implementation
-        from pathlib import Path
-        files_path = Path("/Users/nvp/retrace-enterprise-trial/main-app/backend/app/api/files.py")
+        files_path = BACKEND_DIR / "app/api/files.py"
         content = files_path.read_text()
 
         # Verify the fix is in place
@@ -113,8 +115,7 @@ class TestLogging:
 
     def test_files_logging_implemented(self):
         """Verify logging statements in files.py."""
-        from pathlib import Path
-        files_path = Path("/Users/nvp/retrace-enterprise-trial/main-app/backend/app/api/files.py")
+        files_path = BACKEND_DIR / "app/api/files.py"
         content = files_path.read_text()
 
         # Should have logging for success
@@ -129,8 +130,7 @@ class TestLogging:
 
     def test_auth_logging_implemented(self):
         """Verify logging statements in auth.py."""
-        from pathlib import Path
-        auth_path = Path("/Users/nvp/retrace-enterprise-trial/main-app/backend/app/api/auth.py")
+        auth_path = BACKEND_DIR / "app/api/auth.py"
         content = auth_path.read_text()
 
         # Should have logging for successful eager init
@@ -147,31 +147,27 @@ class TestCodeCorrectness:
     def test_files_py_syntax_valid(self):
         """Verify files.py has valid Python syntax."""
         import py_compile
-        from pathlib import Path
-        files_path = Path("/Users/nvp/retrace-enterprise-trial/main-app/backend/app/api/files.py")
+        files_path = BACKEND_DIR / "app/api/files.py"
         # Should not raise exception
         py_compile.compile(str(files_path), doraise=True)
 
     def test_auth_py_syntax_valid(self):
         """Verify auth.py has valid Python syntax."""
         import py_compile
-        from pathlib import Path
-        auth_path = Path("/Users/nvp/retrace-enterprise-trial/main-app/backend/app/api/auth.py")
+        auth_path = BACKEND_DIR / "app/api/auth.py"
         # Should not raise exception
         py_compile.compile(str(auth_path), doraise=True)
 
     def test_auth_imports_asyncio(self):
         """Verify auth.py imports asyncio for background tasks."""
-        from pathlib import Path
-        auth_path = Path("/Users/nvp/retrace-enterprise-trial/main-app/backend/app/api/auth.py")
+        auth_path = BACKEND_DIR / "app/api/auth.py"
         content = auth_path.read_text()
 
         assert "import asyncio" in content, "auth.py should import asyncio"
 
     def test_files_imports_concurrent_futures(self):
         """Verify files.py imports concurrent.futures for timeout."""
-        from pathlib import Path
-        files_path = Path("/Users/nvp/retrace-enterprise-trial/main-app/backend/app/api/files.py")
+        files_path = BACKEND_DIR / "app/api/files.py"
         content = files_path.read_text()
 
         assert "import concurrent.futures" in content, "files.py should import concurrent.futures"
@@ -183,8 +179,7 @@ class TestCodeCorrectness:
         `import structlog`, causing TypeError on every call because stdlib
         logging rejects kwargs like `user_id=...`.
         """
-        from pathlib import Path
-        files_path = Path("/Users/nvp/retrace-enterprise-trial/main-app/backend/app/api/files.py")
+        files_path = BACKEND_DIR / "app/api/files.py"
         content = files_path.read_text()
 
         assert "import structlog" in content, "files.py must use structlog, not stdlib logging"

@@ -251,7 +251,7 @@ const staticPages: SearchResult[] = [
   { id: 'page-mcp-builder', title: 'MCP Builder', subtitle: 'Build MCP servers from APIs', type: 'page', icon: Blocks, href: '/mcp-builder' },
   { id: 'page-settings', title: 'Settings', subtitle: 'Platform configuration', type: 'page', icon: Settings, href: '/settings' },
   { id: 'setting-theme', title: 'Interface Identity', subtitle: 'Theme and appearance settings', type: 'setting', icon: SlidersHorizontal, href: '/settings' },
-  { id: 'setting-llm', title: 'Intelligence Engine', subtitle: 'LLM provider configuration', type: 'setting', icon: Zap, href: '/settings' },
+  { id: 'setting-llm', title: 'Intelligence Engine', subtitle: 'LLM provider configuration', type: 'setting', icon: Zap, href: '/settings#intelligence-engine' },
 ]
 
 function GlobalSearch() {
@@ -520,10 +520,10 @@ export default function Layout() {
   // the Intelligence Engine icon + password). Stored in localStorage as
   // 'rt-dev-mode' = 'true'. Listen for changes via storage events.
   const [devMode, setDevMode] = useState(
-    () => localStorage.getItem('rt-dev-mode') === 'true'
+    () => localStorage.getItem('rt-dev-mode') !== 'false'
   )
   useEffect(() => {
-    const onStorage = () => setDevMode(localStorage.getItem('rt-dev-mode') === 'true')
+    const onStorage = () => setDevMode(localStorage.getItem('rt-dev-mode') !== 'false')
     window.addEventListener('storage', onStorage)
     // Also poll every second to catch same-tab changes (since storage event only fires cross-tab)
     const interval = setInterval(onStorage, 1000)

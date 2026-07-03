@@ -385,6 +385,10 @@ class OpenCodeManager:
         api_url = llm.get("api_url", "")
         model_name = llm.get("model_name", "gpt-4o")
         provider = llm.get("provider", "openai")
+        if not api_key and provider == "openai":
+            api_key = os.getenv("OPENAI_API_KEY") or os.getenv("EMBEDDING_API_KEY") or ""
+        elif not api_key and provider == "anthropic":
+            api_key = os.getenv("ANTHROPIC_API_KEY") or ""
 
         # If the caller supplied a model_override (e.g. from the frontend's
         # model picker), it's expected to be "provider/model" — split it and

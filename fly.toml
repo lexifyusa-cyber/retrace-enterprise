@@ -4,8 +4,8 @@
 # Single shared dev environment:
 #   - push to `main`  -> auto-deploy (see .github/workflows/fly-deploy.yml)
 #   - manual workflow -> deploy any branch here for live testing
-# SQLite lives on the `retrace_data` volume so data survives deploys. Because a
-# Fly volume attaches to one machine, this app runs exactly one machine.
+# PostgreSQL is provided by Fly Postgres in iad. ChromaDB remains on the
+# `retrace_data` volume at /data/chroma_teamknowparse.
 
 app = "retrace-dev"
 primary_region = "iad"
@@ -18,8 +18,8 @@ primary_region = "iad"
   HOST = "0.0.0.0"
   PORT = "8000"
   LOG_FORMAT = "json"
-  # SQLite on the mounted volume (absolute path -> 4 slashes after the scheme).
-  DATABASE_URL = "sqlite+aiosqlite:////data/retrace.db"
+  # DATABASE_URL is set via Fly secret/env from the attached Fly Postgres database.
+  TEAMKNOWPARSE_CHROMA_DIR = "/data/chroma_teamknowparse"
   # Managed OpenCode: the backend spawns one OC server per user by running
   # this wrapper (bun run src/index.ts serve ...). Unset = managed mode.
   RETRACE_OPENCODE_BIN = "/opt/opencode/run-from-source.sh"
@@ -51,7 +51,7 @@ primary_region = "iad"
     method = "GET"
     path = "/health"
 
-# Persistent storage for the SQLite database.
+# Persistent storage for ChromaDB and other local artifacts.
 [[mounts]]
   source = "retrace_data"
   destination = "/data"

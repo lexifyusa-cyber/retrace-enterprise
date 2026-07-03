@@ -11,6 +11,7 @@ python-socketio>=5.11.1
 sqlalchemy>=2.0.25
 alembic>=1.13.1
 asyncpg>=0.29.0
+psycopg[binary]>=3.1.18
 aiosqlite>=0.19.0
 greenlet>=3.0.0
 
@@ -45,6 +46,7 @@ tavily-python>=0.5.0
 pymupdf>=1.24.0
 pdfplumber>=0.10.4
 python-docx>=1.1.0
+python-pptx>=0.6.23
 mistune>=3.0.2
 beautifulsoup4>=4.12.3
 
@@ -54,6 +56,7 @@ pdf2image>=1.16.3
 
 # Numerical
 numpy>=1.24.0,<2.0.0
+chromadb>=0.5.0
 
 # Excel support (for ticket export processing)
 openpyxl>=3.1.2

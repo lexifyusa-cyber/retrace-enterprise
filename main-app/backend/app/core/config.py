@@ -7,9 +7,7 @@ from pathlib import Path
 from typing import Literal
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Calculate absolute database path to ensure persistence
 _backend_dir = Path(__file__).parent.parent.parent  # app/core/config.py -> app -> main-app/backend
-_db_path = _backend_dir / "retrace.db"
 
 
 class Settings(BaseSettings):
@@ -29,8 +27,7 @@ class Settings(BaseSettings):
     DEBUG: bool = True
     
     # Database
-    # Use absolute path to ensure database persists across restarts
-    DATABASE_URL: str = f"sqlite+aiosqlite:///{_db_path.absolute()}"
+    DATABASE_URL: str = "postgresql+asyncpg://retrace:retrace_dev_password@localhost:5432/retrace"
     
     # Authentication
     JWT_SECRET: str = "change-this-in-production-super-secret-key"
@@ -54,6 +51,52 @@ class Settings(BaseSettings):
     REASONING_MODEL: str = "gpt-4o"
     VISION_MODEL: str = "gpt-4-vision-preview"
     RETRACE_ENABLE_TOOL_SEARCH: bool = False
+
+    # TeamKnowParse KB pipeline
+    TEAMKNOWPARSE_KB_ENABLED: bool = False
+    TEAMKNOWPARSE_VECTOR_ENABLED: bool = False
+    TEAMKNOWPARSE_PIPELINE_ENABLED: bool = False
+    TEAMKNOWPARSE_PROJECT_DIR: str = str((_backend_dir.parent.parent / "teamknowparse").absolute())
+    TEAMKNOWPARSE_UPLOADS_DIR: str = str((_backend_dir.parent.parent / "teamknowparse" / "uploads").absolute())
+    TEAMKNOWPARSE_RUNS_DIR: str = str((_backend_dir.parent.parent / "teamknowparse" / "runs").absolute())
+    TEAMKNOWPARSE_COMMAND: str = ""
+    TEAMKNOWPARSE_MAX_UPLOAD_MB: int = 1024
+    TEAMKNOWPARSE_CHROMA_DIR: str = str((_backend_dir / "chroma_teamknowparse").absolute())
+    TEAMKNOWPARSE_CHROMA_COLLECTION: str = "teamknowparse_kb_chunks"
+    TEAMKNOWPARSE_EMBEDDING_MODEL: str = "text-embedding-3-small"
+    TEAMKNOWPARSE_EMBEDDING_BASE_URL: str = ""
+    TEAMKNOWPARSE_EMBEDDING_BATCH_SIZE: int = 96
+    TEAMKNOWPARSE_EMBEDDING_CONCURRENCY: int = 4
+    TEAMKNOWPARSE_EMBEDDING_SUBCHUNK_CHARS: int = 1600
+    TEAMKNOWPARSE_EMBEDDING_SUBCHUNK_OVERLAP: int = 160
+    TEAMKNOWPARSE_EMBEDDING_BATCH_MAX_CHARS: int = 120000
+    TEAMKNOWPARSE_EMBEDDING_DEBUG_LOG: bool = False
+    TEAMKNOWPARSE_VLM_ENDPOINT: str = ""
+    TEAMKNOWPARSE_VLM_MODEL: str = "qwen3.5-2b"
+    TEAMKNOWPARSE_VLM_WORKERS: int = 10
+    TEAMKNOWPARSE_VLM_BATCH_SIZE: int = 1
+    TEAMKNOWPARSE_MAX_INFLIGHT_VLM_BATCHES: int = 8
+    TEAMKNOWPARSE_VLM_REQUEST_TIMEOUT_SECONDS: int = 45
+    TEAMKNOWPARSE_MIXED_VLM_ENABLED: bool = True
+    TEAMKNOWPARSE_MIXED_VLM_MIN_IMAGE_AREA_RATIO: float = 0.04
+    TEAMKNOWPARSE_MIXED_VLM_MAX_REGIONS_PER_PAGE: int = 2
+    TEAMKNOWPARSE_MIXED_VLM_HEADER_FOOTER_BAND_RATIO: float = 0.10
+    TEAMKNOWPARSE_MIXED_VLM_MIN_CROP_WIDTH_PX: int = 96
+    TEAMKNOWPARSE_MIXED_VLM_MIN_CROP_HEIGHT_PX: int = 96
+    TEAMKNOWPARSE_VLM_TEMPERATURE: float = 0.0
+    TEAMKNOWPARSE_VLM_TOP_P: float = 1.0
+    TEAMKNOWPARSE_VLM_TOP_K: int = 1
+    TEAMKNOWPARSE_VLM_MAX_TOKENS: int = 1024
+    TEAMKNOWPARSE_VLM_COMPLEX_MAX_TOKENS: int = 2048
+    TEAMKNOWPARSE_VLM_MIN_PIXELS: int = 200704
+    TEAMKNOWPARSE_VLM_MAX_PIXELS: int = 1003520
+    TEAMKNOWPARSE_RENDER_ZOOM: float = 1.5
+    TEAMKNOWPARSE_MAX_RETRIES: int = 1
+    TEAMKNOWPARSE_VLM_RETRY_BACKOFF_SECONDS: float = 0.75
+    TEAMKNOWPARSE_ARTIFACT_ENCRYPTION_KEY: str = ""
+    TEAMKNOWPARSE_ARTIFACT_ENCRYPTION_KEY_FILE: str = ""
+    TEAMKNOWPARSE_ARTIFACT_ENCRYPTION_ENABLED: bool = False
+    EMBEDDING_API_KEY: str = ""
     
     # Supabase (remote auth — desktop app validates JWT against Supabase)
     SUPABASE_URL: str = ""
@@ -81,6 +124,7 @@ class Settings(BaseSettings):
 
     # Logging
     LOG_LEVEL: str = "DEBUG"
+    RETRACE_LLM_LOG_FALLBACK: bool = False
     LOG_FORMAT: Literal["json", "console"] = "json"
     
     @property

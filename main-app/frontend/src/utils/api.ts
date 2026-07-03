@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { buildRetrievalDebugPayload } from '@/utils/embeddingFlow'
 import { Pod, FolderGroup, Team, TrainingJob, QueryResponse, DirectoryListing, AgentSession, AgentTool, Conversation } from '@/types'
 
 const api = axios.create({
@@ -168,8 +169,32 @@ export const teamApi = {
     return response.data
   },
   
-  trainAll: async (teamId: string) => {
-    const response = await api.post(`/teams/${teamId}/train`)
+  trainAll: async (teamId: string, options?: { teamknowparse_mode?: 'txt' | 'mixed'; pipeline?: string }) => {
+    const response = await api.post(`/teams/${teamId}/train`, {
+      ...(options?.pipeline ? { pipeline: options.pipeline } : {}),
+      teamknowparse_mode: options?.teamknowparse_mode || 'mixed',
+    })
+    return response.data
+  },
+
+  uploadTrainingZip: async (teamId: string, file: File) => {
+    const form = new FormData()
+    form.append('file', file)
+    const response = await api.post(`/teams/${teamId}/upload-training-zip`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    return response.data
+  },
+
+  uploadTrainingFiles: async (teamId: string, files: File[]) => {
+    const form = new FormData()
+    files.forEach((file) => {
+      form.append('files', file)
+      form.append('relative_paths', file.webkitRelativePath || file.name)
+    })
+    const response = await api.post(`/teams/${teamId}/upload-training-files`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
     return response.data
   },
   
@@ -193,6 +218,34 @@ export const teamApi = {
     return response.data
   },
 
+  listTeamKnowParseRuns: async (teamId: string) => {
+    const response = await api.get(`/teams/${teamId}/teamknowparse-runs`)
+    return response.data
+  },
+
+  listTeamKnowParseArtifacts: async (teamId: string, runId: string) => {
+    const response = await api.get(`/teams/${teamId}/teamknowparse-runs/${runId}/artifacts`)
+    return response.data
+  },
+
+  getKbRecords: async (teamId: string, runId?: string) => {
+    const response = await api.get(`/teams/${teamId}/kb-records`, { params: { run_id: runId } })
+    return response.data
+  },
+
+  debugRetrieval: async (teamId: string, body: { question: string; top_k?: number }) => {
+    const response = await api.post(`/teams/${teamId}/retrieval-debug`, buildRetrievalDebugPayload(body.question, body.top_k ?? 5))
+    return response.data
+  },
+
+  artifactUrl: (teamId: string, runId: string, artifactPath: string, download = false) => {
+    const encodedPath = artifactPath.split('/').map(encodeURIComponent).join('/')
+    return `/api/v1/teams/${teamId}/teamknowparse-runs/${runId}/artifacts/${encodedPath}${download ? '?download=true' : ''}`
+  },
+
+  artifactsZipUrl: (teamId: string, runId: string) =>
+    `/api/v1/teams/${teamId}/teamknowparse-runs/${runId}/artifacts.zip`,
+
   generatePod: async (teamId: string, targetOs: string, agentName?: string) => {
     const response = await api.post(`/teams/${teamId}/generate-pod`, null, {
       params: { target_os: targetOs, agent_name: agentName }
@@ -213,6 +266,30 @@ export const teamApi = {
 
 // Folder Group APIs (kept for backward compatibility and training)
 export const groupApi = {
+  list: async (): Promise<FolderGroup[]> => {
+    const response = await api.get('/groups')
+    return response.data
+  },
+
+  create: async (data: {
+    pod_id: string
+    group_name: string
+    group_type: string
+    folder_paths: Array<{
+      absolute_path: string
+      scan_recursive: boolean
+      file_filters?: { include: string[]; exclude: string[] }
+    }>
+  }): Promise<FolderGroup> => {
+    const response = await api.post('/groups', data)
+    return response.data
+  },
+
+  delete: async (groupId: string) => {
+    const response = await api.delete(`/groups/${groupId}`)
+    return response.data
+  },
+
   startTraining: async (groupId: string) => {
     const response = await api.post(`/groups/${groupId}/train`)
     return response.data

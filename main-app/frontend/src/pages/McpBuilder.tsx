@@ -84,7 +84,7 @@ export default function McpBuilder() {
 
   const navigate = useNavigate()
   const [teams, setTeams] = useState<Team[]>([])
-  const [selectedTeamId, setSelectedTeamId] = useState<string>(_saved.selectedTeamId ?? '')
+  const [selectedTeamId, setSelectedTeamId] = useState<string | null>(_saved.selectedTeamId ?? '')
 
   const [endpoints, setEndpoints] = useState<EndpointInfo[] | null>(_saved.endpoints ?? null)
   const [isAnalyzing, setIsAnalyzing] = useState(false)
@@ -375,7 +375,7 @@ export default function McpBuilder() {
 
   const handleCopy = async () => {
     if (!result?.mcpServers) return
-    await navigator.clipboard.writeText(JSON.stringify({ mcpServers: result.mcpServers }, null, 2))
+    await navigator.clipboard.writeText(JSON.stringify({ mcpServers: result?.mcpServers }, null, 2))
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
   }
@@ -970,7 +970,7 @@ export default function McpBuilder() {
                         <label className="text-sm font-medium text-rt-text-muted">Target Retrace Team</label>
                         <div className="relative">
                           <select
-                            value={selectedTeamId}
+                            value={selectedTeamId || ''}
                             onChange={(e) => setSelectedTeamId(e.target.value)}
                             className="w-full bg-rt-bg border border-rt-border rounded-lg px-4 py-3 text-sm focus:ring-2 focus:ring-rt-primary/20 focus:border-rt-primary transition-all text-rt-text appearance-none cursor-pointer"
                           >
@@ -1536,7 +1536,7 @@ export default function McpBuilder() {
                 )}
 
                 {/* ===== SUCCESS RESULT WITH TABS ===== */}
-                {(result?.status === 'success' || result?.status === 'warning') && (
+                {(result?.status === 'success' || (result?.status as string | undefined) === 'warning') && (
                   <motion.div
                     initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
@@ -1551,8 +1551,8 @@ export default function McpBuilder() {
                         <div>
                           <h3 className="text-lg font-medium text-rt-success">Server Successfully Built</h3>
                           <p className="text-sm text-rt-text-muted mt-1">
-                            {result?.status === 'warning'
-                              ? result.message || 'Generation completed with warnings.'
+                            {(result?.status as string | undefined) === 'warning'
+                              ? result?.message || 'Generation completed with warnings.'
                               : 'Copy the config below to install into Claude Desktop or Cursor.'
                             }
                           </p>
@@ -1591,7 +1591,7 @@ export default function McpBuilder() {
                           <motion.div key="config" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }}>
                             <div className="relative group">
                               <pre className="bg-[#111] p-4 rounded-xl text-xs font-mono text-[#43ff64d9] overflow-x-auto border border-rt-border shadow-inner max-h-[300px] overflow-y-auto custom-scrollbar">
-                                {JSON.stringify({ mcpServers: result.mcpServers }, null, 2)}
+                                {JSON.stringify({ mcpServers: result?.mcpServers }, null, 2)}
                               </pre>
                               <button
                                 onClick={handleCopy}
@@ -1604,10 +1604,10 @@ export default function McpBuilder() {
                         )}
                         {resultTab === 'quickstart' && (
                           <motion.div key="quickstart" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }}>
-                            {result.quickStartCommands ? (
+                            {result?.quickStartCommands ? (
                               <div className="relative group">
                                 <pre className="bg-[#111] p-4 rounded-xl text-xs font-mono text-[#60a5fa] overflow-x-auto border border-rt-border shadow-inner whitespace-pre-wrap max-h-[300px] overflow-y-auto custom-scrollbar">
-                                  {result.quickStartCommands}
+                                  {result?.quickStartCommands}
                                 </pre>
                                 <button
                                   onClick={handleCopyCmd}
@@ -1732,7 +1732,7 @@ export default function McpBuilder() {
                       <AlertCircle className="w-6 h-6" />
                       <h3 className="text-lg font-medium">Generation Failed</h3>
                     </div>
-                    <p className="text-sm text-rt-text-muted">{result.message}</p>
+                    <p className="text-sm text-rt-text-muted">{result?.message}</p>
                   </div>
                 )}
 

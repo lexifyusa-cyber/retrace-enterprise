@@ -109,7 +109,7 @@ go build -o retrace-agent ./cmd/agent
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `DATABASE_URL` | PostgreSQL connection string | `sqlite:///./retrace.db` |
+| `DATABASE_URL` | PostgreSQL connection string | `postgresql+asyncpg://retrace:retrace_dev_password@localhost:5432/retrace` |
 | `OPENAI_API_KEY` | OpenAI API key for embeddings/LLM | Required |
 | `ANTHROPIC_API_KEY` | Claude API key (optional) | - |
 | `JWT_SECRET` | Secret for JWT tokens | Generated |

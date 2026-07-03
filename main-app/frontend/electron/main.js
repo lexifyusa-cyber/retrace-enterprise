@@ -37,11 +37,10 @@ function getStaticDir() {
 
 function getBackendEnv() {
   const appSupport = getAppSupportDir()
-  const dbPath = path.join(appSupport, 'knowledgepod.db')
   const staticDir = getStaticDir()
   return {
     ...process.env,
-    DATABASE_URL: `sqlite+aiosqlite:///${dbPath}`,
+    DATABASE_URL: process.env.DATABASE_URL || 'postgresql+asyncpg://retrace:retrace_dev_password@localhost:5432/retrace',
     APP_ENV: 'production',
     DEBUG: 'false',
     HOST: '127.0.0.1',
